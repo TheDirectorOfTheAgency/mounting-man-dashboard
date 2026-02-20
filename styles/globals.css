@@ -1,0 +1,109 @@
+/* styles/globals.css */
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #0a0a0a;
+  color: #ffffff;
+  font-family: 'IBM Plex Mono', monospace;
+  line-height: 1.6;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00ff00;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00cc00;
+}
+
+/* Selection */
+::selection {
+  background-color: #00ff00;
+  color: #0a0a0a;
+}
+
+/* Links */
+a {
+  color: #00ff00;
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+a:hover {
+  color: #00cc00;
+}
+
+/* Text utilities */
+.text-agency-green {
+  color: #00ff00;
+}
+
+.text-agency-yellow {
+  color: #ffff00;
+}
+
+.bg-agency-black {
+  background-color: #0a0a0a;
+}
+
+.bg-agency-dark {
+  background-color: #1a1a1a;
+}
+
+.border-agency-gray {
+  border-color: #333333;
+}
+
+/* Animations */
+@keyframes scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes pulse-green {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-scan {
+  animation: scan 8s linear infinite;
+}
+
+.animate-pulse-green {
+  animation: pulse-green 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Loading state */
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}

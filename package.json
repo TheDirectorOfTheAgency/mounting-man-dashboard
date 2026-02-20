@@ -1,0 +1,25 @@
+{
+  "name": "mounting-man-dashboard",
+  "version": "1.0.0",
+  "description": "The Agency - Tactical Business Intelligence Dashboard",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "next": "^14.2.3",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.17",
+    "postcss": "^8.4.33",
+    "recharts": "^2.10.3",
+    "axios": "^1.6.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.3"
+  }
+}
