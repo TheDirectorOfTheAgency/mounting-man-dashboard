@@ -274,8 +274,9 @@ Mobile drives 64% of conversions but Desktop has a better CPA. This is typical f
 - ✅ Remarketing budget increased from $5/day to $15/day (budget 14955992821)
 - Estimated savings: ~$100/month with no conversion loss
 
-#### 4. Kill Expensive Samsung Keywords
-- Pause "samsung the frame installation" Exact ($704 CPA, 1 conv)
+#### 4. Kill Expensive Samsung Keywords → ✅ DONE
+- ✅ **Paused "Samsung The Frame installation" [PHRASE]** in MSP- Samsung Frame campaign (criterion 2453417012864, ad group 185413012523) via API
+- Note: Exact match of same keyword in MSP - General TV Mounting was already in a REMOVED ad group (185082202749)
 - Review all Samsung Frame keywords with CPA > $300
 
 ### 🟡 SHORT-TERM (Next 2 Weeks)
@@ -409,13 +410,22 @@ The Mounting Man (128-790-7452)
 - [x] Create Website Click-to-Call conversion action ($150 value)
 - [x] Disable duplicate conversion actions (primaryForGoal=false)
 - [x] Redeploy production to Vercel with new env vars
+- [x] Pause "Samsung The Frame installation" [PHRASE] in MSP- Samsung Frame (criterion 2453417012864)
+- [x] Build Zenbooker → Google Ads offline conversion pipeline (lib/*, pages/api/webhooks/zenbooker.js)
+- [x] Create "Offline Job Completed" conversion action (ID: 7509313857, UPLOAD_CLICKS, primaryForGoal=false)
+- [x] Extract shared Google Ads auth module (lib/google-ads-auth.js)
+- [x] Create PII hashing utility (lib/hash-pii.js — SHA-256, Gmail normalization, E.164 phone)
+- [x] Set GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID and ZENBOOKER_WEBHOOK_SECRET in Vercel env
 
 ### 🔲 Still To Do
 - [ ] Add Website Click-to-Call GTM tag (send_to: AW-506833748/CvjaCNO9yvwbENTW1vEB)
 - [ ] Verify Google forwarding numbers are active for phone call tracking
-- [ ] Pause "samsung the frame installation" keyword ($704 CPA)
 - [ ] Apply demographic bid adjustments (age, gender, income) — requires manual campaign bidding changes (Smart Bidding blocks these)
-- [ ] Set up Square → Google Ads offline conversion import
+- [ ] Set up Vercel KV database (Vercel Dashboard → Storage → Create KV Database → link to project)
+- [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=XXXXX`
+- [ ] Enable Enhanced Conversions for Leads in Google Ads UI (Settings → Measurement → Enhanced conversions)
+- [ ] Verify Zenbooker webhook field names match FIELD_MAP (check Vercel logs after first webhook fires)
+- [ ] After 2 weeks: promote "Offline Job Completed" to primaryForGoal=true
 - [ ] After 2 weeks: review data with real conversions
 - [ ] After 30 days: restructure MantelMount + Samsung Frame campaigns
 - [ ] Build dedicated MantelMount campaign (MSP-focused, $10/day)

@@ -23,7 +23,11 @@ pages/_app.js                          # App wrapper, imports globals.css
 pages/_document.js                     # HTML shell, loads Google Fonts (Orbitron, IBM Plex Mono, Space Mono)
 pages/api/square-revenue.js            # Square Payments API proxy — paginates all payments, calculates revenue metrics
 pages/api/webflow-posts.js             # Webflow Collections API proxy — counts published/draft/archived blog posts
-pages/api/google-ads.js                # Google Ads REST API — OAuth + 15min cache + fallback to hardcoded data
+pages/api/google-ads.js                # Google Ads REST API — uses shared auth, 15min cache + fallback to hardcoded data
+pages/api/webhooks/zenbooker.js        # Zenbooker job.completed webhook → offline conversion upload to Google Ads
+lib/google-ads-auth.js                 # Shared OAuth2 token refresh — used by google-ads.js and conversions upload
+lib/hash-pii.js                        # PII normalization + SHA-256 hashing for Google Ads Enhanced Conversions
+lib/google-ads-conversions.js          # Google Ads uploadClickConversions wrapper (Enhanced Conversions for Leads)
 components/Dashboard.js                # THE main component — all UI lives here (~447 lines, monolithic)
 styles/globals.css                     # All custom CSS: HUD grid, scan lines, glow effects, noise overlay, panel styles
 tailwind.config.js                     # Custom colors (hud-*), fonts (mono, terminal), animations (scan, flicker)
@@ -45,6 +49,7 @@ vercel.json                            # Build config (framework: nextjs)
 - Recharts (AreaChart, LineChart) for data visualization
 - Axios for HTTP (both API routes and client-side)
 - Fonts: Orbitron (headings), IBM Plex Mono (body), Space Mono (alt mono)
+- @vercel/kv (Upstash Redis) for webhook deduplication and offline conversion audit trail (NOTE: @vercel/kv is deprecated, migrate to Upstash Redis Marketplace integration when setting up KV store)
 - No TypeScript, no tests, no state management library
 
 ## Environment Variables
@@ -65,6 +70,16 @@ All set in **Vercel project settings** for production. Local dev uses `.env.loca
 - `GOOGLE_ADS_CLIENT_SECRET` — OAuth client secret (SECRET) — Vercel env
 - `GOOGLE_ADS_REFRESH_TOKEN` — OAuth refresh token (SECRET) — Vercel env
 - `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — MCC ID (safe) — defaults to `3167428631` in code
+
+### Google Ads Offline Conversions
+- `GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID` — Conversion action ID (safe) — value: `7509313857`
+
+### Zenbooker Webhook
+- `ZENBOOKER_WEBHOOK_SECRET` — Secret for webhook auth (SECRET) — Vercel env
+
+### Vercel KV (Upstash Redis)
+- `KV_REST_API_URL` — Auto-set by Vercel when KV database is added
+- `KV_REST_API_TOKEN` — Auto-set by Vercel when KV database is added
 
 ### Dashboard Config
 - `NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL` — Refresh interval in ms (safe) — default: `300000` (5 min)
@@ -96,10 +111,23 @@ All set in **Vercel project settings** for production. Local dev uses `.env.loca
 - Falls back to hardcoded data if credentials missing or API fails
 - `allTimeSpend` hardcoded at `350000` — historical data for removed campaigns can't be queried
 
+### Offline Conversion Pipeline (Zenbooker → Google Ads)
+- **Why**: Samsung Frame, MantelMount, and stone/tile customers call/text Marshall first. He books for them in Zenbooker. These jobs are invisible to Google Ads because GTM only fires on self-booked /thank-you page visits. This pipeline captures those offline conversions.
+- **Flow**: Zenbooker `job.completed` webhook → `POST /api/webhooks/zenbooker?secret=XXXXX` → hash PII (SHA-256) → upload to Google Ads Enhanced Conversions for Leads → dedup via Vercel KV
+- **Conversion Action**: "Offline Job Completed" (ID: `7509313857`), type: UPLOAD_CLICKS, category: PURCHASE, `primaryForGoal: false` (promote to primary after 2 weeks of validated data)
+- **Auth**: Uses shared `lib/google-ads-auth.js` module. WRITE operations OMIT `login-customer-id` header (direct owner access).
+- **PII Hashing**: `lib/hash-pii.js` normalizes then SHA-256 hashes email (Gmail dot/plus removal), phone (E.164), and name (lowercase)
+- **Dedup**: Vercel KV key `conv:{jobId}` with 90-day TTL. Monthly stats at `conv:stats:{YYYY-MM}` with 365-day TTL.
+- **Field Mapping**: Zenbooker webhook payload field names are best-guess. The handler logs full raw payloads and uses a `FIELD_MAP` config at the top of `zenbooker.js` that tries multiple dot-notation paths per field. Adjust after inspecting first real webhook in Vercel logs.
+- **Default Value**: $300 if no invoice amount found in webhook payload
+- **Error Handling**: Always returns 200 to Zenbooker (even on upload failure) to prevent retry storms
+- **Webhook URL**: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=mountingman_webhook_2026`
+- **KV Status**: Lazy-loaded — works without KV configured (just skips dedup/stats). Set up Upstash Redis via Vercel Marketplace when ready.
+
 ## Conventions
 - All UI lives in a single monolithic `Dashboard.js` (~447 lines)
 - CSS classes use `hud-*` prefix (defined in tailwind.config.js + globals.css)
-- API routes are GET-only, return JSON with `error` field on failure
+- API routes are GET-only (except `/api/webhooks/*` which are POST), return JSON with `error` field on failure
 - Money values are dollars (not cents) in API responses to client
 - Hardcoded business targets: $32,000/mo revenue, 20 jobs/mo
 - Hardcoded geographic data: Minneapolis 81%, Houston 12%, Austin 7%
@@ -200,8 +228,17 @@ Disabled duplicates (primaryForGoal=false):
 - [x] Disable duplicate conversion actions — DONE 2026-02-21
 - [ ] Add Website Click-to-Call GTM tag (send_to: AW-506833748/CvjaCNO9yvwbENTW1vEB)
 - [ ] Verify Google forwarding numbers are active for phone call tracking
-- [ ] Pause expensive Samsung keyword "samsung the frame installation" ($704 CPA)
-- [ ] Set up Square → Google Ads offline conversion import
+- [x] Pause expensive Samsung keyword "Samsung The Frame installation" [PHRASE] — DONE 2026-02-21 (criterion 2453417012864)
+- [x] Build Zenbooker → Google Ads offline conversion pipeline — DONE 2026-02-21 (lib/*, pages/api/webhooks/zenbooker.js)
+- [x] Create "Offline Job Completed" conversion action (7509313857) — DONE 2026-02-21
+- [x] Extract shared Google Ads auth module — DONE 2026-02-21 (lib/google-ads-auth.js)
+- [ ] Set up Vercel KV database (Dashboard → Storage → Create KV Database)
+- [ ] Set ZENBOOKER_WEBHOOK_SECRET and GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID in Vercel env
+- [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=XXXXX`
+- [ ] **REQUIRED** Enable Enhanced Conversions for Leads in Google Ads UI (Settings → Measurement → Enhanced conversions → Turn on for leads) — cannot be done via Basic Access API, must be done in UI
+- [ ] Verify Zenbooker webhook field names match FIELD_MAP (check Vercel logs after first webhook)
+- [ ] After 2 weeks: promote "Offline Job Completed" to primaryForGoal=true
+- [ ] Add "OFFLINE CONVERSIONS" panel to Dashboard.js
 - [ ] Customer acquisition cost tracking
 - [ ] Revenue forecasting
 - [ ] Geographic heatmap (replace hardcoded data — API now supports geo queries)

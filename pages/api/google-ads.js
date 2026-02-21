@@ -3,38 +3,18 @@
 // Falls back to cached data if API credentials are not fully configured
 
 import axios from 'axios';
+import { getAccessToken, getDeveloperToken } from '../../lib/google-ads-auth.js';
 
 const GOOGLE_ADS_API_VERSION = 'v20';
 const CUSTOMER_ID = '1287907452';
 // The Agency MCC ID (Manager account that owns the developer token)
-// Required as login-customer-id header when accessing sub-accounts via MCC
+// Required as login-customer-id header when accessing sub-accounts via MCC (READ operations)
 const LOGIN_CUSTOMER_ID = process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || '3167428631';
 
 // Cache to avoid hitting API on every request
 let cachedData = null;
 let cacheTimestamp = 0;
 const CACHE_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-
-async function getAccessToken() {
-  const clientId = process.env.GOOGLE_ADS_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_ADS_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_ADS_REFRESH_TOKEN;
-
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error('Missing Google OAuth credentials');
-  }
-
-  const response = await axios.post('https://oauth2.googleapis.com/token', null, {
-    params: {
-      grant_type: 'refresh_token',
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-    },
-  });
-
-  return response.data.access_token;
-}
 
 async function queryGoogleAds(accessToken, developerToken, query) {
   const url = `https://googleads.googleapis.com/${GOOGLE_ADS_API_VERSION}/customers/${CUSTOMER_ID}/googleAds:searchStream`;
@@ -65,12 +45,7 @@ async function queryGoogleAds(accessToken, developerToken, query) {
 }
 
 async function fetchLiveGoogleAdsData() {
-  const developerToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
-
-  if (!developerToken) {
-    throw new Error('No developer token configured');
-  }
-
+  const developerToken = getDeveloperToken();
   const accessToken = await getAccessToken();
 
   // Get current date info for queries
