@@ -8,45 +8,51 @@ export default async function handler(req, res) {
 
   try {
     const token = process.env.NEXT_PUBLIC_WEBFLOW_TOKEN;
-    const siteId = process.env.NEXT_PUBLIC_WEBFLOW_SITE_ID;
     const collectionId = process.env.NEXT_PUBLIC_WEBFLOW_INSTALLATIONS_COLLECTION_ID;
 
-    if (!token || !siteId || !collectionId) {
-      return res.status(400).json({ error: 'Missing Webflow credentials' });
+    if (!token || !collectionId) {
+      return res.status(400).json({ error: 'Missing Webflow credentials', hasToken: !!token, hasCollection: !!collectionId });
     }
 
-    // Get all items from Installations collection
-    const response = await axios.get(
-      `https://api.webflow.com/v1/collections/${collectionId}/items`,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'accept-version': '1.0',
-        },
-      }
-    );
+    // Paginate through all items
+    let allItems = [];
+    let offset = 0;
+    const limit = 100;
 
-    const items = response.data.items || [];
-    
-    // Filter for published posts only
-    const publishedPosts = items.filter(item => !item.archived && !item.draft);
-    
-    // Count by status and extract other metrics
-    const draftCount = items.filter(item => item.draft).length;
-    const archivedCount = items.filter(item => item.archived).length;
+    while (true) {
+      const response = await axios.get(
+        `https://api.webflow.com/v2/collections/${collectionId}/items`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+          params: { limit, offset },
+        }
+      );
+
+      const items = response.data.items || [];
+      allItems = allItems.concat(items);
+
+      if (items.length < limit) break;
+      offset += limit;
+    }
+
+    const published = allItems.filter(item => !item.isArchived && !item.isDraft).length;
+    const draft = allItems.filter(item => item.isDraft).length;
+    const archived = allItems.filter(item => item.isArchived).length;
 
     res.status(200).json({
-      published: publishedPosts.length,
-      draft: draftCount,
-      archived: archivedCount,
-      total: items.length,
+      published,
+      draft,
+      archived,
+      total: allItems.length,
       lastUpdated: new Date().toISOString(),
     });
   } catch (error) {
     console.error('Webflow API error:', error.response?.data || error.message);
     res.status(500).json({
       error: 'Failed to fetch Webflow data',
-      details: error.message,
+      details: error.response?.data || error.message,
     });
   }
 }

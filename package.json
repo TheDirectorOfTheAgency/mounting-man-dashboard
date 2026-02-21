@@ -9,14 +9,15 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "autoprefixer": "^10.4.17",
+    "axios": "^1.6.5",
+    "next": "^14.2.3",
+    "postcss": "^8.4.33",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "next": "^14.2.3",
-    "tailwindcss": "^3.4.1",
-    "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.33",
     "recharts": "^2.10.3",
-    "axios": "^1.6.5"
+    "tailwindcss": "^3.4.1",
+    "vercel": "^50.22.0"
   },
   "devDependencies": {
     "eslint": "^8.57.0",

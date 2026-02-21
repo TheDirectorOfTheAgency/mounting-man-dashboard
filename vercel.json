@@ -1,13 +1,5 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "env": [
-    "NEXT_PUBLIC_SQUARE_ACCESS_TOKEN",
-    "NEXT_PUBLIC_SQUARE_LOCATION_ID",
-    "NEXT_PUBLIC_WEBFLOW_TOKEN",
-    "NEXT_PUBLIC_WEBFLOW_SITE_ID",
-    "NEXT_PUBLIC_WEBFLOW_INSTALLATIONS_COLLECTION_ID",
-    "NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL"
-  ]
+  "framework": "nextjs"
 }
