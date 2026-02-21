@@ -122,7 +122,7 @@ All set in **Vercel project settings** for production. Local dev uses `.env.loca
 - **Default Value**: $300 if no invoice amount found in webhook payload
 - **Error Handling**: Always returns 200 to Zenbooker (even on upload failure) to prevent retry storms
 - **Webhook URL**: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=mountingman_webhook_2026`
-- **KV Status**: Lazy-loaded — works without KV configured (just skips dedup/stats). Set up Upstash Redis via Vercel Marketplace when ready.
+- **KV Status**: ✅ LIVE — Upstash Redis `mounting-man-kv` (Free plan, US East iad1) connected to mounting-man-dashboard with KV_ prefix. Env vars `KV_REST_API_URL` and `KV_REST_API_TOKEN` auto-set. Deduplication verified working 2026-02-21.
 
 ## Conventions
 - All UI lives in a single monolithic `Dashboard.js` (~447 lines)
@@ -232,8 +232,8 @@ Disabled duplicates (primaryForGoal=false):
 - [x] Build Zenbooker → Google Ads offline conversion pipeline — DONE 2026-02-21 (lib/*, pages/api/webhooks/zenbooker.js)
 - [x] Create "Offline Job Completed" conversion action (7509313857) — DONE 2026-02-21
 - [x] Extract shared Google Ads auth module — DONE 2026-02-21 (lib/google-ads-auth.js)
-- [ ] Set up Vercel KV database (Dashboard → Storage → Create KV Database)
-- [ ] Set ZENBOOKER_WEBHOOK_SECRET and GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID in Vercel env
+- [x] Set up Vercel KV database — DONE 2026-02-21 (Upstash Redis `mounting-man-kv`, Free plan, US East iad1, connected with KV_ prefix)
+- [x] Set ZENBOOKER_WEBHOOK_SECRET and GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID in Vercel env — DONE 2026-02-21
 - [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=XXXXX`
 - [ ] **REQUIRED** Enable Enhanced Conversions for Leads in Google Ads UI (Settings → Measurement → Enhanced conversions → Turn on for leads) — cannot be done via Basic Access API, must be done in UI
 - [ ] Verify Zenbooker webhook field names match FIELD_MAP (check Vercel logs after first webhook)
