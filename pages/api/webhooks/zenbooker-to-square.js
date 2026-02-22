@@ -25,6 +25,7 @@ const squareHeaders = () => ({
   Authorization:    `Bearer ${process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN}`,
   'Square-Version': SQUARE_VER,
   'Content-Type':   'application/json',
+  'Accept':         'application/json',
 });
 
 // ============================================================================
@@ -34,50 +35,49 @@ const squareHeaders = () => ({
 // ============================================================================
 const FIELD_MAP = {
   eventType:         ['type', 'event', 'event_type'],
-  jobId:             ['data.job.id', 'data.id', 'data.job_id', 'id'],
-  customerEmail:     ['data.customer.email',     'data.job.customer.email',     'data.customer_email'],
-  customerPhone:     ['data.customer.phone',      'data.job.customer.phone',     'data.customer_phone'],
-  customerFirstName: ['data.customer.first_name', 'data.job.customer.first_name'],
-  customerLastName:  ['data.customer.last_name',  'data.job.customer.last_name'],
-  customerName:      ['data.customer.name',        'data.job.customer.name',      'data.customer_name'],
+  jobId:             ['data.id', 'data.job.id', 'data.job_id', 'id'],
+  customerEmail:     ['data.customer.email', 'customer.email', 'data.job.customer.email', 'data.customer_email'],
+  customerPhone:     ['data.customer.phone', 'customer.phone', 'data.job.customer.phone', 'data.customer_phone'],
+  customerFirstName: ['data.customer.first_name', 'customer.first_name', 'data.job.customer.first_name'],
+  customerLastName:  ['data.customer.last_name',  'customer.last_name',  'data.job.customer.last_name'],
+  customerName:      ['data.customer.name', 'customer.name', 'data.job.customer.name', 'data.customer_name'],
 
-  // Top-level service category (e.g. "Mount 1 Or More TVs...")
+  // Top-level service category — ZenBooker sends as "service_name" at job root
   serviceName: [
-    'data.job.service.name', 'data.service.name',
-    'data.job.service_name', 'data.service_name',
-    'data.job.type',
+    'data.service_name',  'service_name',
+    'data.job.service_name', 'data.service.name', 'data.job.type',
   ],
 
-  // Selected options/add-ons (usually an array of {name, price} objects)
+  // Selected options — ZenBooker sends as service_fields array with selected_options
+  // Extraction handled specially below (service_fields[n].selected_options[m].text)
   lineItems: [
-    'data.job.line_items', 'data.line_items',
-    'data.job.options',    'data.options',
-    'data.job.items',      'data.items',
-    'data.job.services',   'data.services',
+    'data.service_fields', 'service_fields',
+    'data.job.service_fields', 'data.line_items', 'data.options',
   ],
 
-  scheduledAt:  ['data.job.scheduled_at', 'data.job.start_time', 'data.job.date', 'data.scheduled_at', 'data.start_date'],
-  totalAmount:  ['data.invoice.total',    'data.job.invoice.total', 'data.total_amount', 'data.job.total', 'data.amount'],
+  // ZenBooker sends start_date (ISO) for job start time
+  scheduledAt: ['data.start_date', 'start_date', 'data.job.start_date', 'data.scheduled_at', 'data.job.scheduled_at'],
+  totalAmount: ['data.invoice.total', 'invoice.total', 'data.job.invoice.total', 'data.total_amount'],
 
-  // Job service address (where the tech goes) — ZenBooker sends under data.address
-  jobStreet:   ['data.address.line1',       'data.job.address.line1',        'data.location.address'],
-  jobLine2:    ['data.address.line2',       'data.job.address.line2'],
-  jobCity:     ['data.address.city',        'data.job.address.city',         'data.location.city'],
-  jobState:    ['data.address.state',       'data.job.address.state',        'data.location.state'],
-  jobZip:      ['data.address.postal_code', 'data.job.address.postal_code',  'data.address.zip'],
-  jobDuration: ['data.duration',            'data.job.duration'],  // job length in minutes
-  notes:        ['data.job.notes',        'data.notes',             'data.customer.notes', 'data.job.description'],
+  // Job service address — ZenBooker sends under service_address (not address)
+  jobStreet: ['data.service_address.line1', 'service_address.line1', 'data.job.service_address.line1', 'data.address.line1'],
+  jobLine2:  ['data.service_address.line2', 'service_address.line2', 'data.job.service_address.line2', 'data.address.line2'],
+  jobCity:   ['data.service_address.city',  'service_address.city',  'data.job.service_address.city',  'data.address.city'],
+  jobState:  ['data.service_address.state', 'service_address.state', 'data.job.service_address.state', 'data.address.state'],
+  jobZip:    ['data.service_address.postal_code', 'service_address.postal_code', 'data.job.service_address.postal_code', 'data.address.postal_code'],
 
-  // Assigned technician/provider — field name unknown until first real webhook fires
-  // Check Vercel logs and update these paths if needed
+  // Duration — ZenBooker sends estimated_duration_seconds (convert ÷60 below)
+  jobDuration: ['data.estimated_duration_seconds', 'estimated_duration_seconds', 'data.job.estimated_duration_seconds', 'data.duration'],
+
+  notes: ['data.job_notes', 'job_notes', 'data.job.job_notes', 'data.notes', 'data.customer.notes'],
+
+  // Assigned providers — ZenBooker sends assigned_providers[] array, handled below
+  providerList:  ['data.assigned_providers', 'assigned_providers', 'data.job.assigned_providers'],
   providerName: [
-    'data.provider.name', 'data.job.provider.name',
-    'data.assigned_provider.name', 'data.technician.name', 'data.provider_name',
-    'data.job.technician.name', 'data.job.provider_name',
+    'data.assigned_provider.name', 'data.provider.name', 'data.job.provider.name', 'data.provider_name',
   ],
   providerEmail: [
-    'data.provider.email', 'data.job.provider.email',
-    'data.assigned_provider.email', 'data.technician.email',
+    'data.assigned_provider.email', 'data.provider.email', 'data.job.provider.email',
   ],
 };
 
@@ -89,6 +89,7 @@ const TECH_MAP = {
   'michael wenzel':       'TMSiHOOr7RGdl2Ki',
   'garrison gillard':     'TMT84KWHegsrcWFB',
   'marshall donnerbauer': 'TMY7unjtR-2XvVpg',
+  'marshall wayne':       'TMY7unjtR-2XvVpg',
   'marshall':             'TMY7unjtR-2XvVpg',
   'crashon traylor':      'TMmOwb6WS9cTplXu',
   'crashon traylor sr.':  'TMmOwb6WS9cTplXu',
@@ -388,6 +389,12 @@ function extractOptionName(item) {
   return null;
 }
 
+/** Strip ZenBooker quantity prefix from option text: "1 x 75 Inches" → "75 Inches" */
+function stripQuantityPrefix(text) {
+  if (!text) return text;
+  return text.replace(/^\d+\s*x\s+/i, '').trim();
+}
+
 /** Check if an option name represents a "none/no" selection — skip these. */
 function isNoSelection(name) {
   const lower = name.toLowerCase().trim();
@@ -429,7 +436,7 @@ function buildLineItems(serviceName, optionNames) {
       return false;
     }
     addedIds.add(variationId);
-    lineItems.push({ catalog_object_id: variationId, quantity: '1' });
+    lineItems.push({ catalog_object_id: variationId, quantity: '1', label });
     console.log(`  ✓ ${label} → ${variationId}`);
     return true;
   }
@@ -479,6 +486,32 @@ function buildLineItems(serviceName, optionNames) {
 // ============================================================================
 // SQUARE API CALLS
 // ============================================================================
+
+/** Batch-fetch catalog info for variation IDs. Returns { id → { version, bookable, durationMs } }. */
+async function fetchCatalogInfo(variationIds) {
+  const ids = [...new Set(variationIds.filter(Boolean))];
+  if (ids.length === 0) return {};
+  try {
+    const resp = await axios.post(
+      `${SQUARE_BASE}/catalog/batch-retrieve`,
+      { object_ids: ids },
+      { headers: squareHeaders() }
+    );
+    const map = {};
+    for (const obj of resp.data?.objects || []) {
+      const vd = obj.item_variation_data || {};
+      map[obj.id] = {
+        version:    obj.version,
+        bookable:   vd.available_for_booking === true,
+        durationMs: vd.service_duration || null,
+      };
+    }
+    return map;
+  } catch (err) {
+    console.error('Catalog batch-retrieve failed:', err.response?.data || err.message);
+    return {};
+  }
+}
 
 async function findSquareCustomer(email) {
   try {
@@ -530,18 +563,47 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note })
   }
 }
 
-async function createSquareBooking({ locationId, startAt, customerId, teamMemberId, lineItems, address, durationMinutes, customerNote, sellerNote, idempotencyKey }) {
+async function createSquareBooking({ locationId, startAt, customerId, teamMemberId, lineItems, catalogInfo, address, durationMinutes, customerNote, sellerNote, idempotencyKey }) {
   try {
-    // Build one appointment segment per catalog-backed line item.
-    // All segments share the same tech. First segment gets the job duration.
-    const catalogItems = (lineItems || []).filter(item => item.catalog_object_id);
-    const segments = catalogItems.length > 0
-      ? catalogItems.map((item, index) => {
-          const seg = { team_member_id: teamMemberId, service_variation_id: item.catalog_object_id };
-          if (index === 0 && durationMinutes) seg.duration_minutes = Math.round(Number(durationMinutes));
-          return seg;
-        })
-      : [{ team_member_id: teamMemberId }];
+    // Build an appointment segment for each bookable (APPOINTMENTS_SERVICE) item.
+    // Non-bookable items (REGULAR / physical products like brackets) go in seller_note.
+    const segments = [];
+    const nonBookableLabels = [];
+
+    for (const item of lineItems || []) {
+      const info = catalogInfo?.[item.catalog_object_id];
+      if (!item.catalog_object_id) {
+        // Freeform item (no catalog ID) — include label in seller note
+        if (item.name) nonBookableLabels.push(item.name);
+        continue;
+      }
+      if (info?.bookable) {
+        const seg = {
+          team_member_id: teamMemberId,
+          service_variation_id: item.catalog_object_id,
+          service_variation_version: info.version,
+        };
+        // Use catalog service_duration (ms → minutes) if available
+        if (info.durationMs) {
+          seg.duration_minutes = Math.round(info.durationMs / 60000);
+        }
+        segments.push(seg);
+        console.log(`  📅 Segment: ${item.label || item.catalog_object_id} (${seg.duration_minutes || '?'}min)`);
+      } else {
+        // REGULAR item (bracket/hardware) — can't be an appointment segment
+        nonBookableLabels.push(item.label || item.catalog_object_id);
+        console.log(`  📦 Item (non-bookable): ${item.label || item.catalog_object_id}`);
+      }
+    }
+
+    // Fallback: if no bookable segments found, create a bare segment
+    if (segments.length === 0) {
+      segments.push({
+        team_member_id: teamMemberId,
+        duration_minutes: durationMinutes ? Math.round(Number(durationMinutes)) : 120,
+      });
+      console.log('  ⚠ No bookable items — using bare segment');
+    }
 
     const booking = {
       location_id:          locationId,
@@ -560,17 +622,30 @@ async function createSquareBooking({ locationId, startAt, customerId, teamMember
       };
     }
     if (customerNote) booking.customer_note = customerNote;
-    if (sellerNote)   booking.seller_note   = sellerNote;
+
+    // Build seller note: ZenBooker job ref + any non-bookable (taxable) items
+    let finalSellerNote = sellerNote || '';
+    if (nonBookableLabels.length > 0) {
+      finalSellerNote += `\nItems to add (taxable): ${nonBookableLabels.join(', ')}`;
+    }
+    if (finalSellerNote.trim()) booking.seller_note = finalSellerNote.trim();
+
+    console.log(`Square booking: ${segments.length} segment(s), ${nonBookableLabels.length} item(s) in note`);
+    console.log('Square booking request:', JSON.stringify({ idempotency_key: idempotencyKey, booking }, null, 2));
 
     const resp = await axios.post(
       `${SQUARE_BASE}/bookings`,
       { idempotency_key: idempotencyKey, booking },
       { headers: squareHeaders() }
     );
-    return resp.data?.booking || null;
+    return { booking: resp.data?.booking || null, error: null };
   } catch (err) {
-    console.error('Square booking create failed:', err.response?.data || err.message);
-    return null;
+    const errors = err.response?.data?.errors || [];
+    const errSummary = errors.map(e => `${e.code}: ${e.detail} (field: ${e.field || 'n/a'})`).join('; ')
+      || err.response?.data
+      || err.message;
+    console.error('Square booking create failed:', JSON.stringify(err.response?.data || err.message));
+    return { booking: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
   }
 }
 
@@ -593,9 +668,22 @@ export default async function handler(req, res) {
 
   const payload = req.body;
 
-  // Always log full payload — essential for verifying field paths on first real webhook
+  // Log top-level keys + condensed payload (avoid Vercel log truncation)
   console.log('=== ZENBOOKER → SQUARE WEBHOOK ===');
-  console.log('Raw payload:', JSON.stringify(payload, null, 2));
+  console.log('Top-level keys:', Object.keys(payload || {}));
+  const dataKeys = payload?.data ? Object.keys(payload.data) : [];
+  console.log('data keys:', dataKeys);
+  console.log('Payload (condensed):', JSON.stringify({
+    type: payload?.type,
+    id: payload?.id || payload?.data?.id,
+    customer_email: payload?.data?.customer?.email || payload?.customer?.email,
+    service_name: payload?.data?.service_name || payload?.service_name,
+    service_address: payload?.data?.service_address || payload?.service_address,
+    assigned_providers: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map(p => p.name),
+    estimated_duration_seconds: payload?.data?.estimated_duration_seconds || payload?.estimated_duration_seconds,
+    start_date: payload?.data?.start_date || payload?.start_date,
+    service_fields_count: (payload?.data?.service_fields || payload?.service_fields || []).length,
+  }));
 
   try {
     const jobId        = resolveField(payload, FIELD_MAP.jobId);
@@ -604,17 +692,22 @@ export default async function handler(req, res) {
     const phone        = resolveField(payload, FIELD_MAP.customerPhone);
     const totalAmount  = resolveField(payload, FIELD_MAP.totalAmount);
     const scheduledAt  = resolveField(payload, FIELD_MAP.scheduledAt);
-    const notes        = resolveField(payload, FIELD_MAP.notes);
+    const rawNotes     = resolveField(payload, FIELD_MAP.notes);
+    // job_notes may be array of strings or a plain string
+    const notes = Array.isArray(rawNotes) ? rawNotes.join(' | ') : (rawNotes || null);
     const serviceName  = resolveField(payload, FIELD_MAP.serviceName) || '';
     const rawOptions   = resolveField(payload, FIELD_MAP.lineItems);
-    const providerName = resolveField(payload, FIELD_MAP.providerName);
-    const providerEmail= resolveField(payload, FIELD_MAP.providerEmail);
     const jobStreet    = resolveField(payload, FIELD_MAP.jobStreet);
     const jobLine2     = resolveField(payload, FIELD_MAP.jobLine2);
     const jobCity      = resolveField(payload, FIELD_MAP.jobCity);
     const jobState     = resolveField(payload, FIELD_MAP.jobState);
     const jobZip       = resolveField(payload, FIELD_MAP.jobZip);
-    const jobDuration  = resolveField(payload, FIELD_MAP.jobDuration);  // minutes
+
+    // Duration: ZenBooker sends estimated_duration_seconds — convert to minutes
+    const rawDuration  = resolveField(payload, FIELD_MAP.jobDuration);
+    const jobDuration  = rawDuration
+      ? (rawDuration > 300 ? Math.round(rawDuration / 60) : Math.round(rawDuration))
+      : null;
 
     let firstName = resolveField(payload, FIELD_MAP.customerFirstName);
     let lastName  = resolveField(payload, FIELD_MAP.customerLastName);
@@ -623,12 +716,33 @@ export default async function handler(req, res) {
       firstName = s.firstName; lastName = s.lastName;
     }
 
+    // Provider: ZenBooker sends assigned_providers[] array — take first entry
+    const rawProviders = resolveField(payload, FIELD_MAP.providerList);
+    const providerName = (Array.isArray(rawProviders) && rawProviders[0]?.name)
+      || resolveField(payload, FIELD_MAP.providerName)
+      || null;
+    const providerEmail = (Array.isArray(rawProviders) && rawProviders[0]?.email)
+      || resolveField(payload, FIELD_MAP.providerEmail)
+      || null;
+
     // Normalise option list → array of strings
+    // ZenBooker sends service_fields: [{field_name, selected_options: [{text}]}]
     const optionNames = [];
     if (Array.isArray(rawOptions)) {
       rawOptions.forEach(item => {
-        const n = extractOptionName(item);
-        if (n) optionNames.push(n);
+        // service_fields format: { field_name, selected_options: [{text, price, ...}] }
+        if (item?.selected_options && Array.isArray(item.selected_options)) {
+          item.selected_options.forEach(opt => {
+            // Prefer display_label (clean name) over text (which has "1 x " prefix for checkboxes)
+            const raw = (opt?.display_label || opt?.text || '').trim();
+            const n = stripQuantityPrefix(raw); // safety fallback if display_label missing
+            if (n) optionNames.push(n);
+          });
+        } else {
+          // fallback: legacy { name, price } or string
+          const n = extractOptionName(item);
+          if (n) optionNames.push(n);
+        }
       });
     }
 
@@ -673,33 +787,44 @@ export default async function handler(req, res) {
 
     // ── STEP 2: Create Square appointment (calendar / tech scheduling) ────────
     let booking = null;
+    let bookingSkipReason = null;
+    let bookingError = null;
     const startAt = parseScheduledAt(scheduledAt);
 
     if (!customer?.id) {
-      console.warn('Skipping booking — no Square customer ID');
+      bookingSkipReason = 'No Square customer ID';
     } else if (!techSquareId) {
-      console.warn(`Skipping booking — tech not mapped: "${providerName}"`);
+      bookingSkipReason = `Tech not mapped: "${providerName}"`;
     } else if (!startAt) {
-      console.warn(`Skipping booking — invalid scheduledAt: "${scheduledAt}"`);
+      bookingSkipReason = `Invalid scheduledAt: "${scheduledAt}"`;
     } else if (!jobStreet || !jobCity) {
-      console.warn(`Skipping booking — no service address (street: ${jobStreet}, city: ${jobCity})`);
+      bookingSkipReason = `No service address (street: ${jobStreet || 'null'}, city: ${jobCity || 'null'})`;
     } else if (!primaryVariationId) {
-      console.warn(`Skipping booking — no variation ID for service: "${serviceName}"`);
+      bookingSkipReason = `No variation ID for service: "${serviceName}"`;
     } else {
-      booking = await createSquareBooking({
+      // Fetch catalog info for all variation IDs (version, bookable status, duration)
+      const variationIds = lineItems.map(li => li.catalog_object_id).filter(Boolean);
+      const catalogInfo = await fetchCatalogInfo(variationIds);
+      console.log('Catalog info:', JSON.stringify(catalogInfo));
+
+      const result = await createSquareBooking({
         locationId:      LOCATION_ID,
         startAt,
         customerId:      customer.id,
         teamMemberId:    techSquareId,
         lineItems,
+        catalogInfo,
         address:         { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip },
         durationMinutes: jobDuration || null,
         customerNote:    notes   || undefined,
         sellerNote:      `ZenBooker Job: ${jobId}`,
         idempotencyKey:  `zb-${jobId}`,
       });
-      console.log(booking ? `Square booking created: ${booking.id}` : 'Booking creation FAILED');
+      booking = result?.booking || result;
+      bookingError = result?.error || null;
+      console.log(booking?.id ? `Square booking created: ${booking.id}` : `Booking creation FAILED: ${bookingError || 'unknown'}`);
     }
+    if (bookingSkipReason) console.warn(`Skipping booking — ${bookingSkipReason}`);
 
     // Always 200 to prevent ZenBooker retries
     return res.status(200).json({
@@ -708,7 +833,9 @@ export default async function handler(req, res) {
       squareCustomerId: customer?.id   || null,
       customerCreated:  !existingCustomer,
       squareBookingId:  booking?.id    || null,
-      bookingCreated:   !!booking,
+      bookingCreated:   !!booking?.id,
+      bookingSkipReason,
+      bookingError,
       techMatched:      !!techSquareId,
       techName:         providerName   || null,
     });
