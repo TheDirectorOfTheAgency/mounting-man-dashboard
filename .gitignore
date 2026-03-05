@@ -8,3 +8,6 @@ dist/
 build/
 .vercel
 .env*.local
+.claude/
+.env.vercel-prod
+.env.vercel-pull
