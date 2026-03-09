@@ -546,7 +546,7 @@ function sanitizePhone(raw) {
   return null; // unrecognizable — omit rather than fail customer creation
 }
 
-async function createSquareCustomer({ firstName, lastName, email, phone, note }) {
+async function createSquareCustomer({ firstName, lastName, email, phone, note, address }) {
   try {
     const body = {};
     if (firstName) body.given_name    = firstName;
@@ -555,6 +555,16 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note })
     const cleanPhone = sanitizePhone(phone);
     if (cleanPhone) body.phone_number = cleanPhone;
     if (note)      body.note          = note;
+    if (address?.street) {
+      body.address = {
+        address_line_1: address.street,
+        address_line_2: address.line2 || undefined,
+        locality:       address.city,
+        administrative_district_level_1: address.state || undefined,
+        postal_code:    address.zip   || undefined,
+        country:        'US',
+      };
+    }
     const resp = await axios.post(`${SQUARE_BASE}/customers`, body, { headers: squareHeaders() });
     return resp.data?.customer || null;
   } catch (err) {
@@ -611,6 +621,7 @@ async function createSquareBooking({ locationId, startAt, customerId, teamMember
       customer_id:          customerId,
       location_type:        'CUSTOMER_LOCATION',
       appointment_segments: segments,
+      sms_reminders_enabled: false,
     };
     if (address?.street) {
       booking.address = {
@@ -777,7 +788,7 @@ export default async function handler(req, res) {
         jobId        ? `Job: ${jobId}`             : null,
         providerName ? `Tech: ${providerName}`     : null,
       ].filter(Boolean).join(' | ');
-      customer = await createSquareCustomer({ firstName, lastName, email, phone, note });
+      customer = await createSquareCustomer({ firstName, lastName, email, phone, note, address: { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip } });
       console.log(customer ? `Square customer created: ${customer.id}` : 'Customer creation FAILED');
     }
 
