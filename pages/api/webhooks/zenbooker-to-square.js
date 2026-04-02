@@ -46,12 +46,16 @@ const FIELD_MAP = {
   serviceName: [
     'data.service_name',  'service_name',
     'data.job.service_name', 'data.service.name', 'data.job.type',
+    'data.services.0.service_name', 'services.0.service_name',
   ],
 
-  // Selected options — ZenBooker sends as service_fields array with selected_options
-  // Extraction handled specially below (service_fields[n].selected_options[m].text)
+  // Selected options — ZenBooker can send these either as top-level service_fields
+  // or nested under services[0].service_selections, depending on the webhook shape.
+  // Extraction handled specially below (selected_options[m].text / display_label).
   lineItems: [
     'data.service_fields', 'service_fields',
+    'data.services.0.service_selections', 'services.0.service_selections',
+    'data.services.0.service_fields', 'services.0.service_fields',
     'data.job.service_fields', 'data.line_items', 'data.options',
   ],
 
@@ -95,6 +99,9 @@ const TECH_MAP = {
   'crashon traylor sr.':  'TMmOwb6WS9cTplXu',
   'crashon':              'TMmOwb6WS9cTplXu',
 };
+
+const DEFAULT_TECH_NAME = 'Marshall Donnerbauer';
+const DEFAULT_TECH_ID = 'TMY7unjtR-2XvVpg';
 
 // ============================================================================
 // MAIN SERVICE MAP — Reserved for Phase 2: Square Appointments
@@ -224,6 +231,41 @@ const MAIN_SERVICE_MAP = {
   },
 };
 
+const FIREPLACE_SERVICE_MAP = {
+  'Mount 1 Or More TVs (Normal TV Onto Any Surface)': {
+    'Under 50 Inches': 'VL4QAU3GBHLZ4ZGCJUAO53W4', // $200
+    '43 Inches':       'VL4QAU3GBHLZ4ZGCJUAO53W4',
+    '50 Inches':       '5LVUCPQGN3QZW2AYEYZRVFTS', // $200
+    '55 Inches':       'WXFH7HSFOVKECZ2JMJD3GP3W', // $200
+    '60 Inches':       'NIXDOUHRKSBOBHTAHLGGGH37', // $200
+    '65 Inches':       'FCXBZCUOG2GVP7LYBMNJL7E2', // $200
+    '70 Inches':       'OLLMXR2VIRJNNIV7SADD52C7', // $250
+    '75 Inches':       'PUK5RW55CEN7UEKR4RGHDKFV', // $275
+    '80 Inches':       'S5L3YKMHOMU7RYRHQIB2N2VT', // $300
+    '85 Inches':       'ANA56W25SMZYAW6AFYMXK5PK', // $300
+    '86 Inches':       'ANA56W25SMZYAW6AFYMXK5PK',
+    '87" to 100"':     'C5LRCSQMLKU3TXXXYKVOWBQF', // $550
+    '98" or 100" TV':  'C5LRCSQMLKU3TXXXYKVOWBQF',
+    _default:          'FCXBZCUOG2GVP7LYBMNJL7E2',
+  },
+  'Mount 1 Or More TVs (Normal TV(s) Onto Any Surface.)': {
+    'Under 50 Inches': 'VL4QAU3GBHLZ4ZGCJUAO53W4',
+    '43 Inches':       'VL4QAU3GBHLZ4ZGCJUAO53W4',
+    '50 Inches':       '5LVUCPQGN3QZW2AYEYZRVFTS',
+    '55 Inches':       'WXFH7HSFOVKECZ2JMJD3GP3W',
+    '60 Inches':       'NIXDOUHRKSBOBHTAHLGGGH37',
+    '65 Inches':       'FCXBZCUOG2GVP7LYBMNJL7E2',
+    '70 Inches':       'OLLMXR2VIRJNNIV7SADD52C7',
+    '75 Inches':       'PUK5RW55CEN7UEKR4RGHDKFV',
+    '80 Inches':       'S5L3YKMHOMU7RYRHQIB2N2VT',
+    '85 Inches':       'ANA56W25SMZYAW6AFYMXK5PK',
+    '86 Inches':       'ANA56W25SMZYAW6AFYMXK5PK',
+    '87" to 100"':     'C5LRCSQMLKU3TXXXYKVOWBQF',
+    '98" or 100" TV':  'C5LRCSQMLKU3TXXXYKVOWBQF',
+    _default:          'FCXBZCUOG2GVP7LYBMNJL7E2',
+  },
+};
+
 // ============================================================================
 // OPTION MAP — Reserved for Phase 2: Square Appointments
 // ZenBooker selected option name → Square catalog VARIATION ID (direct lookup)
@@ -234,78 +276,80 @@ const OPTION_MAP = {
 
   // ── Wall mount / bracket items (REGULAR, taxable in MN) ──────────────────
   // Square category: "TV Mounting – ZenBooker (Items)" (A2OMV7PZ725T6Z44YPOEOUTM)
-  'Fixed Bracket':                                       '55AH2PEGDHUA4QSUCP5FEEPS', // Fixed Mounting Bracket $50
-  'Fixed':                                               '55AH2PEGDHUA4QSUCP5FEEPS',
-  'Standard Tilt Mount (For Up to 86" TVs)':             'L2A7RYGRBNHFHXGBU6PACVWA', // Standard Tilt Bracket $75
-  'Tilting':                                             'L2A7RYGRBNHFHXGBU6PACVWA',
-  'Buy Tilt TV Mounting Bracket':                        'L2A7RYGRBNHFHXGBU6PACVWA',
-  '98" -  100" TV Tilt Bracket':                        'L2A7RYGRBNHFHXGBU6PACVWA',
-  'Standard Full Motion Mount (For up to 86" TVs)':      'D247N27TKKKR76EQBMZQZK3M', // Standard Full Motion Bracket $100
-  'Full Motion':                                         'D247N27TKKKR76EQBMZQZK3M',
-  'Buy Full Motion (Articulating) TV Mounting Bracket':  'D247N27TKKKR76EQBMZQZK3M',
-  'Corner Mounting Bracket':                             'D247N27TKKKR76EQBMZQZK3M', // closest match
-  'Flush Mounting Bracket':                              'DBOM6BP4K3P5TLOAJ3NNM3RM', // Flush Mounting Bracket $135
-  'Premium 4D Tilt Mount':                               'HFVX6IJLPWDRRTN2JKOY4SZZ', // Premium 4D Tilt Bracket $100
-  'Premium Tilt Mounting Bracket':                       'DND3X262IGHVDL6LX3RCMTMF', // Premium Tilt Bracket $200
-  'Premium Full Motion Mounting Bracket':                '57WCFYOYU6BFIZLZ2DWUF2HY', // Premium Full Motion Bracket $200
-  'Premium Full Motion Mounting Bracket (Special)':      '57WCFYOYU6BFIZLZ2DWUF2HY',
+  'Fixed Bracket':                                       'XXW6UNO5ELUXQ7TVHJJFPGAR', // TV Mount / Bracket → Fixed $50
+  'Fixed':                                               'XXW6UNO5ELUXQ7TVHJJFPGAR',
+  'Standard Tilt Mount (For Up to 86" TVs)':             'HDME4QNZXQGGKMFKQCG3MP2A', // TV Mount / Bracket → Standard Tilt $75
+  'Tilting':                                             'HDME4QNZXQGGKMFKQCG3MP2A',
+  'Buy Tilt TV Mounting Bracket':                        'HDME4QNZXQGGKMFKQCG3MP2A',
+  '98" -  100" TV Tilt Bracket':                        'HDME4QNZXQGGKMFKQCG3MP2A',
+  'Standard Full Motion Mount (For up to 86" TVs)':      'OCWEQ2XTRFFJPC2YEQJULAPW', // TV Mount / Bracket → Standard Full Motion $100
+  'Full Motion':                                         'OCWEQ2XTRFFJPC2YEQJULAPW',
+  'Buy Full Motion (Articulating) TV Mounting Bracket':  'OCWEQ2XTRFFJPC2YEQJULAPW',
+  'Corner Mounting Bracket':                             'OCWEQ2XTRFFJPC2YEQJULAPW',
+  'Flush Mounting Bracket':                              '5N5OV2NBZN6TOQEE5PDU6WN2', // TV Mount / Bracket → Flush $135
+  'Premium 4D Tilt Mount':                               'YU6RUNKKNK2EI7DTN2IPEWPD', // TV Mount / Bracket → Premium 4D Tilt $100
+  'Premium Tilt Mounting Bracket':                       'MDLM3WBWCJV7JZAEGKUXOW4C', // TV Mount / Bracket → Premium Tilt $200
+  'Premium Full Motion Mounting Bracket':                'NL6QS6KDHESFCY5PDQNFW2YQ', // TV Mount / Bracket → Premium Full Motion $200
+  'Premium Full Motion Mounting Bracket (Special)':      'NL6QS6KDHESFCY5PDQNFW2YQ',
 
   // ── Soundbar labor (APPOINTMENTS_SERVICE, not taxed) ─────────────────────
   // Square item: "Soundbar Mounting – Labor" (PFVBZCBVBGMAGZDGJLHVQET4)
-  'Yes I Need A Sound Bar Mounted':                      'HVB2FXY7J4DCLUFANSXPFD5K', // 1 Soundbar $100
-  'I Need One Sound Bar Mounted':                        'HVB2FXY7J4DCLUFANSXPFD5K',
-  'Mount Sound Bar':                                     'HVB2FXY7J4DCLUFANSXPFD5K',
-  'Mount Soundbar':                                      'HVB2FXY7J4DCLUFANSXPFD5K',
-  'Mount Soundbar ':                                     'HVB2FXY7J4DCLUFANSXPFD5K', // trailing space variant
+  'Yes I Need A Sound Bar Mounted':                      'SWNAVW6UAOKR2DV4FBEJRUOT', // Soundbar Mounting → Yes $100
+  'I Need One Sound Bar Mounted':                        'SWNAVW6UAOKR2DV4FBEJRUOT',
+  'Mount Sound Bar':                                     'SWNAVW6UAOKR2DV4FBEJRUOT',
+  'Mount Soundbar':                                      'SWNAVW6UAOKR2DV4FBEJRUOT',
+  'Mount Soundbar ':                                     'SWNAVW6UAOKR2DV4FBEJRUOT', // trailing space variant
   'I Need Two Sound Bars Mounted':                       '7HOG7EI2MG6OILS3MAHXX25M', // 2 Soundbars $200
 
   // ── Soundbar brackets (REGULAR, taxable in MN) ───────────────────────────
   // Square items: "Soundbar Mounting Bracket" / "Premium Soundbar Mounting Bracket"
-  'Soundbar Mounting Bracket':                           'KUMC7O6HO5DST6JBLJIVBUHF', // $50
-  'Buy Sound Bar Mounting Bracket':                      'KUMC7O6HO5DST6JBLJIVBUHF',
-  'Yes - Give me a standard sound bar mounting bracket.':'KUMC7O6HO5DST6JBLJIVBUHF',
-  'Purchase Soundbar Mounting Bracket':                  'KUMC7O6HO5DST6JBLJIVBUHF',
-  'Yes - Give me a premium sound bar mounting bracket.': 'QHUSXQ26RPN4RTA4XYFZ72CM', // Premium Soundbar Bracket $100
+  'Soundbar Mounting Bracket':                           '3Q23ZPDYQLJYLM6NVGBUVG6K', // Soundbar Bracket → Standard $50
+  'Buy Sound Bar Mounting Bracket':                      '3Q23ZPDYQLJYLM6NVGBUVG6K',
+  'Yes - Give me a standard sound bar mounting bracket.':'3Q23ZPDYQLJYLM6NVGBUVG6K',
+  'Purchase Soundbar Mounting Bracket':                  '3Q23ZPDYQLJYLM6NVGBUVG6K',
+  'Yes - Give me a premium sound bar mounting bracket.': 'ARXV4EQUKYK7CYK4ARTHIDHN', // Soundbar Bracket → Premium $100
 
   // ── Soundbar cord concealing (maps to exterior concealing service) ────────
-  'Conceal Sound Bar Cords As Well':                     'IWQQAUULEAVV3AME5HSRB56Z', // Exterior Concealing Standard $75
+  'Conceal Sound Bar Cords As Well':                     'HWHVY252QHA5JZJI5NMP5WU2', // Cord Concealing → In-Wall With Soundbar Cords $300
 
   // ── In-wall cord concealing (APPOINTMENTS_SERVICE) ───────────────────────
   // Square item: "Cord Concealing – In-Wall" (WTOJ5OLNW7MULFPYRNQW56F3)
-  'In-Wall Concealing (And Install An Outlet Behind TV)':                              'UNHHA5ESDCV7JUDH5EMHIFVZ', // Drywall + Outlet $250
-  'Install New Outlet & Hide Cords In Wall':                                           'UNHHA5ESDCV7JUDH5EMHIFVZ',
-  'In-Wall Concealing (Drywall)':                                                      '3CARZMA4DWQROXSRPWJRCO3L', // Drywall $250
-  'In Wall Cord Concealing Through Drywall Fireplace Cavity':                          'DM5VQTXV456O7QKI6KHVTDWG', // Through Fireplace $350
-  'In Wall Cord Concealing Through Drywall Fireplace':                                 'DM5VQTXV456O7QKI6KHVTDWG',
-  'In Wall Cord Concealing Through Plaster Fireplace':                                 'DM5VQTXV456O7QKI6KHVTDWG',
-  'In-Wall Concealing Through A Fireplace (Drywall Exterior) And Install An Outlet Behind TV': 'DM5VQTXV456O7QKI6KHVTDWG',
-  'In-Wall Concealing Through A Fireplace (Drywall) And Install An Outlet Behind TV':  'DM5VQTXV456O7QKI6KHVTDWG',
-  'In-Wall Concealing Through Brick Fireplace':                                        'DM5VQTXV456O7QKI6KHVTDWG',
-  'In Wall Cord Concealing & Installing Outlet Through Stone Fireplace':               'DM5VQTXV456O7QKI6KHVTDWG',
-  'In Wall Cord Concealing & Installing Outlet Through Brick Fireplace':               'DM5VQTXV456O7QKI6KHVTDWG',
-  'In Wall Cord Concealing With Soundbar Cords':                                       'XYH7FSYYKZO6OF755ERB6BI3', // With Soundbar $300
-  'Conceal Cords Through Already Existing Conduit':                                    'WHX4TXZ5SZVO4NIDBMVUUY4C', // Through Conduit $50
-  'Concealing Through Existing Conduit':                                               'WHX4TXZ5SZVO4NIDBMVUUY4C',
+  'In-Wall Concealing (And Install An Outlet Behind TV)':                              'BBKPIPW7ZL7O2XMO25Q535LV', // Cord Concealing → In-Wall + New Outlet $400
+  'Install New Outlet & Hide Cords In Wall':                                           'BBKPIPW7ZL7O2XMO25Q535LV',
+  'In-Wall Concealing (Drywall)':                                                      'MRYFWOHANW7NL4XGMV5SMIOG', // Cord Concealing → In-Wall w/ Power Bridge (Drywall) $250
+  'In-Wall w/ Power Bridge (Drywall)':                                                 'MRYFWOHANW7NL4XGMV5SMIOG',
+  'In Wall Cord Concealing Through Drywall Fireplace Cavity':                          'MYOL5QYOWAVRKNE77FAHN2CG', // Cord Concealing → In-Wall Through Fireplace $350
+  'In Wall Cord Concealing Through Drywall Fireplace':                                 'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In Wall Cord Concealing Through Plaster Fireplace':                                 'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In-Wall Concealing Through A Fireplace (Drywall Exterior) And Install An Outlet Behind TV': 'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In-Wall Concealing Through A Fireplace (Drywall) And Install An Outlet Behind TV':  'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In-Wall Concealing Through Brick Fireplace':                                        'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In Wall Cord Concealing & Installing Outlet Through Stone Fireplace':               'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In Wall Cord Concealing & Installing Outlet Through Brick Fireplace':               'MYOL5QYOWAVRKNE77FAHN2CG',
+  'In Wall Cord Concealing With Soundbar Cords':                                       'HWHVY252QHA5JZJI5NMP5WU2', // Cord Concealing → In-Wall With Soundbar Cords $300
+  'Conceal Cords Through Already Existing Conduit':                                    'UXQ6MF63SGKNPKXJHOH6TVNC', // Cord Concealing → Through Existing Conduit $50
+  'Concealing Through Existing Conduit':                                               'UXQ6MF63SGKNPKXJHOH6TVNC',
 
   // ── Exterior cord concealing (APPOINTMENTS_SERVICE) ──────────────────────
   // Square item: "Cord Concealing – Exterior" (M6VI2UEOR462UOYAR43ZZZCJ)
-  'Exterior Concealing (Not above fireplace.)':          'IWQQAUULEAVV3AME5HSRB56Z', // Standard $75
-  'Exterior Cord Concealing (Not around fireplace.)':    'IWQQAUULEAVV3AME5HSRB56Z',
-  'Exterior Concealing':                                 'IWQQAUULEAVV3AME5HSRB56Z',
-  'Exterior Concealing Around A Fireplace':              'IBWPIY7NZVO4YLMB5Q5PNPKC', // Around Fireplace $125
-  'Exterior Concealing Around A Brick Fireplace':        'IBWPIY7NZVO4YLMB5Q5PNPKC',
-  'Exterior Cord Concealing Around Fireplace':           'IBWPIY7NZVO4YLMB5Q5PNPKC',
+  'Exterior Concealing (Not above fireplace.)':          'NVQPYMKHEFSM45FIJTXBDP2Q', // Cord Concealing → Exterior $75
+  'Exterior Cord Concealing (Not around fireplace.)':    'NVQPYMKHEFSM45FIJTXBDP2Q',
+  'Exterior Concealing':                                 'NVQPYMKHEFSM45FIJTXBDP2Q',
+  'Exterior Concealing Around A Fireplace':              'VYDX7EYT4TTEKELJVHT65FLW', // Cord Concealing → Exterior Around Fireplace $125
+  'Exterior Concealing Around A Brick Fireplace':        'VYDX7EYT4TTEKELJVHT65FLW',
+  'Exterior Cord Concealing Around Fireplace':           'VYDX7EYT4TTEKELJVHT65FLW',
 
-  // ── Recessed power bridge (APPOINTMENTS_SERVICE) ─────────────────────────
-  // Square item: "Recessed Power Bridge Installation" (BJKRV645JPTTHROHCYQNKP64)
-  'Recessed Power Bridge Installation':                                                'N4KBR74BGIRNIDYVSAI3YUNN', // $750
-  'Recessed Outlet & Cords Concealed Through Wall':                                    'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Recessed Box and Electrical Outlet Installation Behind TV (Drywall)':               'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Recessed Box and Electrical Outlet Installation Behind TV (Plaster)':               'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Recessed Box Behind TV to Store Components (With Electrical)':                      'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Recessed Box Behind TV (Drywall) to Store Components (With Electrical)':            'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Recessed Box and Electrical Outlet Installation Behind TV':                         'N4KBR74BGIRNIDYVSAI3YUNN',
-  'Yes - I Need the RB100 Installed':                                                  'N4KBR74BGIRNIDYVSAI3YUNN',
+  // ── Recessed power bridge / recessed box (APPOINTMENTS_SERVICE) ─────────
+  // Square items: generic cord concealing + legacy recessed box sync item
+  'Recessed Power Bridge Installation':                                                'MRYFWOHANW7NL4XGMV5SMIOG', // Cord Concealing → Power Bridge $250
+  'Recessed Outlet & Cords Concealed Through Wall':                                    'MRYFWOHANW7NL4XGMV5SMIOG', // Cord Concealing → Power Bridge $250
+  'Recessed Box and Electrical Outlet Installation Behind TV (Drywall)':               '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Recessed Box and Electrical Outlet Installation Behind TV (Plaster)':               '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Recessed Box Behind TV to Store Components (With Electrical)':                      '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Recessed Box Behind TV (Drywall) to Store Components (With Electrical)':            '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Recessed Box and Electrical Outlet Installation Behind TV':                         '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Recessed Box Installation':                                                         '7DVPGCFPKYANLK7ZHDZLKIEH',
+  'Yes - I Need the RB100 Installed':                                                  '7DVPGCFPKYANLK7ZHDZLKIEH',
 
   // ── Unmount add-ons (when unmounting is part of another service) ──────────
   // Square item: "TV Unmount Service" (5LMQCZPBPRJJX4M52KRE7KWR)
@@ -320,20 +364,22 @@ const OPTION_MAP = {
   'Over 65"':                     'OZLOPB5BTXDKJZB7BXDKYCKR',
   'Unmount 76" to 86" TV':        'PZMQG57A32MY54XF7EHJ3Q7T', // $125
 
-  // ── Wall surface surcharge (APPOINTMENTS_SERVICE) ────────────────────────
-  // Square item: "Wall Surface Surcharge" (CDMC4GCCSNNMMC3SXUQJWKYK)
-  'Plaster':                                            'VQOSFODLG5AGMD5XJ3OEWVJ3', // $50
-  'Plaster Walls':                                      'VQOSFODLG5AGMD5XJ3OEWVJ3',
-  'Plaster Wall':                                       'VQOSFODLG5AGMD5XJ3OEWVJ3',
-  'Brick':                                              'IJI3Q75TILAX6EMMEUQZIHIE', // $100
-  'Brick Walls':                                        'IJI3Q75TILAX6EMMEUQZIHIE',
-  'Brick Wall':                                         'IJI3Q75TILAX6EMMEUQZIHIE',
-  'Stone':                                              'OZCBEPL2WU6CUM5EOCU4ZYDC', // $150
-  'Stone Wall':                                         'OZCBEPL2WU6CUM5EOCU4ZYDC',
-  'Stone Walls':                                        'OZCBEPL2WU6CUM5EOCU4ZYDC',
-  'Porcelain Tile':                                     '2RLFPQ6RSJXRZA2GXOAHYYTQ', // $150
-  'Ceramic Tile':                                       '2RLFPQ6RSJXRZA2GXOAHYYTQ',
-  'Tile Wall':                                          '2RLFPQ6RSJXRZA2GXOAHYYTQ',
+  // ── Wall surface selections (APPOINTMENTS_SERVICE) ───────────────────────
+  // Square item: "What Surface Is The TV Going Onto?" (57XGNN7MD55Y262FR3YS6UQH)
+  'Plaster':                                            'UH4KYZ5VHDNPV2V57VE4J2GC', // $50
+  'Plaster Walls':                                      'UH4KYZ5VHDNPV2V57VE4J2GC',
+  'Plaster Wall':                                       'UH4KYZ5VHDNPV2V57VE4J2GC',
+  'Brick':                                              'AKARFSUH7CSBYJLNNZGWCRRR', // $100
+  'Brick Walls':                                        'AKARFSUH7CSBYJLNNZGWCRRR',
+  'Brick Wall':                                         'AKARFSUH7CSBYJLNNZGWCRRR',
+  'Stone':                                              '6X7VHWLJLHGNEJKIYFBQ2M4M', // $150
+  'Stone Wall':                                         '6X7VHWLJLHGNEJKIYFBQ2M4M',
+  'Stone Walls':                                        '6X7VHWLJLHGNEJKIYFBQ2M4M',
+  'Faux Brick':                                         '6X7VHWLJLHGNEJKIYFBQ2M4M',
+  'Porcelain Tile':                                     'FIBV6ASXYHJFR7T4PS62QYYQ', // $150
+  'Ceramic Tile':                                       'FIBV6ASXYHJFR7T4PS62QYYQ',
+  'Tile Wall':                                          'FIBV6ASXYHJFR7T4PS62QYYQ',
+  'Wood Slats':                                         '2U5PLCGMIEIMSI3UA5QSCH6E', // $100
 
   // ── Specialty ─────────────────────────────────────────────────────────────
   'Storm Shell Assembly':                               'HOHISWDYWICVXD2C5LOI7SEW', // existing item $500
@@ -389,10 +435,397 @@ function extractOptionName(item) {
   return null;
 }
 
-/** Strip ZenBooker quantity prefix from option text: "1 x 75 Inches" → "75 Inches" */
-function stripQuantityPrefix(text) {
-  if (!text) return text;
-  return text.replace(/^\d+\s*x\s+/i, '').trim();
+function stripLineItemPrefix(label) {
+  return String(label || '').replace(/^(Service|Option):\s*/, '').trim();
+}
+
+function summarizeLabels(labels) {
+  const counts = new Map();
+  for (const rawLabel of labels || []) {
+    const label = stripLineItemPrefix(rawLabel);
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()].map(([label, count]) => (
+    count > 1 ? `${label} x${count}` : label
+  ));
+}
+
+function expandSelectionLabels(selections) {
+  const labels = [];
+  for (const selection of selections || []) {
+    const quantity = Math.max(1, Number(selection?.quantity) || 1);
+    for (let i = 0; i < quantity; i += 1) {
+      labels.push(selection?.label);
+    }
+  }
+  return labels.filter(Boolean);
+}
+
+function cleanFieldName(fieldName) {
+  return String(fieldName || 'Selection')
+    .replace(/\s+/g, ' ')
+    .replace(/[:?]+$/g, '')
+    .trim();
+}
+
+function shortFieldName(fieldName) {
+  const cleaned = cleanFieldName(fieldName);
+  const lower = cleaned.toLowerCase();
+
+  if (lower.includes('size')) return 'Size';
+  if (lower.includes('surface') || lower.includes('wall')) return 'Surface';
+  if (lower.includes('sound bar') || lower.includes('soundbar')) return 'Soundbar';
+  if (lower.includes('conceal') || lower.includes('cord') || lower.includes('outlet') || lower.includes('conduit')) return 'Cord Concealment';
+  if (lower.includes('bracket') || lower.includes('mount')) return 'Bracket';
+  if (lower.includes('unmount')) return 'Unmount';
+
+  return cleaned;
+}
+
+function getFieldCategory(fieldName) {
+  const cleaned = cleanFieldName(fieldName);
+  const lower = cleaned.toLowerCase();
+
+  if (lower.includes('size')) return 'size';
+  if (lower.includes('fireplace')) return 'fireplace';
+  if (lower.includes('surface') || lower.includes('wall')) return 'surface';
+  if (lower.includes('sound bar') || lower.includes('soundbar')) return 'soundbar';
+  if (lower.includes('conceal') || lower.includes('cord') || lower.includes('outlet') || lower.includes('conduit')) return 'concealment';
+  if (lower.includes('unmount')) return 'unmount';
+  if (lower.includes('bracket') || lower.includes('mount')) return 'bracket';
+
+  return 'other';
+}
+
+function normalizeDisplayLabel(label) {
+  return String(label || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\.$/g, '')
+    .trim();
+}
+
+function normalizeSelectionForSummary(fieldName, label) {
+  const category = getFieldCategory(fieldName);
+  const normalized = normalizeDisplayLabel(label);
+  const lower = normalized.toLowerCase();
+
+  if (!normalized || lower === 'other') return null;
+
+  switch (category) {
+    case 'size':
+      return normalized;
+    case 'fireplace':
+      if (lower.includes('not going above a fireplace')) return 'standard wall placement';
+      if (lower.includes('above a fireplace')) return 'above fireplace';
+      return normalized;
+    case 'surface':
+      if (lower === 'normal drywall' || lower === 'drywall') return 'drywall';
+      if (lower.includes('stone')) return 'stone / faux brick';
+      if (lower.includes('tile')) return 'tile';
+      if (lower.includes('wood slats')) return 'wood slats';
+      if (lower.includes('brick')) return 'brick';
+      if (lower.includes('plaster')) return 'plaster';
+      return normalized;
+    case 'bracket':
+      if (
+        lower.includes('do not need a mount') ||
+        lower.includes('have your own') ||
+        lower.includes('have my own') ||
+        lower.includes('already have')
+      ) return 'customer-supplied mount';
+      if (lower.includes('premium full motion')) return 'premium full-motion mount';
+      if (lower.includes('full motion')) return 'full-motion mount';
+      if (lower.includes('premium 4d tilt')) return 'premium 4D tilt mount';
+      if (lower.includes('premium tilt')) return 'premium tilt mount';
+      if (lower.includes('flush')) return 'flush mount';
+      if (lower.includes('tilt')) return 'tilt mount';
+      if (lower.includes('fixed')) return 'fixed mount';
+      if (lower.includes('corner')) return 'corner mount';
+      return normalized;
+    case 'soundbar':
+      if (
+        lower.includes('no - i have my own sound bar bracket') ||
+        lower.includes('none to be mounted') ||
+        lower.includes('no sound bar') ||
+        lower.includes('no soundbar')
+      ) return 'no soundbar bracket';
+      if (lower.includes('premium')) return 'premium soundbar bracket';
+      if (lower.includes('standard')) return 'standard soundbar bracket';
+      if (lower.includes('mount sound bar') || lower.includes('mount soundbar')) return 'soundbar mount';
+      return normalized;
+    case 'concealment':
+      if (lower.includes('no cord concealing')) return 'no cord concealment';
+      if (lower.includes('existing conduit')) return 'existing conduit concealment';
+      if (lower.includes('recessed box')) return 'recessed box behind TV';
+      if (lower.includes('brick fireplace')) return 'in-wall concealment through brick fireplace';
+      if (lower.includes('new outlet')) return 'new outlet with in-wall concealment';
+      if (lower.includes('in-wall') || lower.includes('in wall')) return 'in-wall concealment';
+      if (lower.includes('exterior') && lower.includes('fireplace')) return 'exterior concealment around fireplace';
+      if (lower.includes('exterior')) return 'exterior concealment';
+      return normalized;
+    case 'unmount':
+      if (lower.includes('no unmount')) return 'no unmount';
+      return normalized;
+    default:
+      if (isNoSelection(normalized)) return null;
+      return normalized;
+  }
+}
+
+function parseQuantitySelection(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return null;
+
+  const prefixedMatch = text.match(/^(\d+)\s*x\s+(.+)$/i);
+  if (prefixedMatch) {
+    return {
+      quantity: Math.max(1, Number(prefixedMatch[1]) || 1),
+      label: prefixedMatch[2].trim(),
+    };
+  }
+
+  return { quantity: 1, label: text };
+}
+
+function extractServiceFieldSelections(rawOptions) {
+  const fieldSelections = [];
+  const optionSelections = [];
+
+  if (!Array.isArray(rawOptions)) {
+    return { fieldSelections, optionSelections };
+  }
+
+  rawOptions.forEach((item, index) => {
+    const fieldName = cleanFieldName(
+      item?.field_name
+      || item?.name
+      || item?.label
+      || item?.title
+      || `Selection ${index + 1}`
+    );
+    const selections = [];
+
+    if (Array.isArray(item?.selected_options)) {
+      item.selected_options.forEach((opt) => {
+        const parsed = parseQuantitySelection(opt?.display_label || opt?.text || opt?.name || '');
+        if (!parsed?.label) return;
+
+        const selection = {
+          fieldName,
+          label: parsed.label,
+          quantity: parsed.quantity,
+          rawLabel: (opt?.display_label || opt?.text || opt?.name || '').trim(),
+        };
+
+        selections.push(selection);
+        optionSelections.push(selection);
+      });
+    } else {
+      const extracted = extractOptionName(item);
+      const parsed = parseQuantitySelection(extracted);
+      if (parsed?.label) {
+        const selection = {
+          fieldName,
+          label: parsed.label,
+          quantity: parsed.quantity,
+          rawLabel: extracted,
+        };
+        selections.push(selection);
+        optionSelections.push(selection);
+      }
+    }
+
+    if (selections.length > 0) {
+      fieldSelections.push({ fieldName, selections });
+    }
+  });
+
+  return { fieldSelections, optionSelections };
+}
+
+function addTvUnitDetail(tvUnit, category, value) {
+  if (!value) return;
+  if (!tvUnit.byCategory[category]) {
+    tvUnit.byCategory[category] = [];
+  }
+  if (!tvUnit.byCategory[category].includes(value)) {
+    tvUnit.byCategory[category].push(value);
+  }
+}
+
+function expandSelectionsForSummary(field) {
+  const expanded = [];
+  for (const selection of field?.selections || []) {
+    const summaryValue = normalizeSelectionForSummary(field.fieldName, selection.label);
+    if (!summaryValue) continue;
+    const quantity = Math.max(1, Number(selection.quantity) || 1);
+    for (let i = 0; i < quantity; i += 1) {
+      expanded.push(summaryValue);
+    }
+  }
+  return expanded;
+}
+
+function formatTvSizeLabel(sizeValue) {
+  const normalized = normalizeDisplayLabel(sizeValue);
+  if (!normalized) return null;
+
+  const lower = normalized.toLowerCase();
+  if (lower.includes('under 50')) return 'Under 50-inch TV';
+
+  const rangeMatch = normalized.match(/^(\d+)\s*["']?\s*to\s*(\d+)\s*["']?$/i);
+  if (rangeMatch) {
+    return `${rangeMatch[1]}-${rangeMatch[2]}-inch TV`;
+  }
+
+  const singleMatch = normalized.match(/^(\d+)\s*(inch|inches|["'])/i) || normalized.match(/^(\d+)$/);
+  if (singleMatch) {
+    return `${singleMatch[1]}-inch TV`;
+  }
+
+  return normalized;
+}
+
+function formatTvUnitSummary(tvUnit) {
+  const orderedCategories = ['size', 'fireplace', 'surface', 'bracket', 'soundbar', 'concealment', 'unmount', 'other'];
+  const parts = [];
+  const sizeValues = tvUnit.byCategory?.size || [];
+  const headline = sizeValues.length > 0
+    ? sizeValues.map(formatTvSizeLabel).filter(Boolean).join(' / ')
+    : 'TV mount';
+
+  for (const category of orderedCategories) {
+    if (category === 'size') continue;
+    const values = tvUnit.byCategory?.[category] || [];
+    if (values.length === 0) continue;
+    parts.push(values.join(' / '));
+  }
+
+  return parts.length > 0 ? `${headline}, ${parts.join(', ')}` : headline;
+}
+
+function summarizeTvUnitSummaries(tvUnits) {
+  const counts = new Map();
+
+  for (const tvUnit of tvUnits || []) {
+    const summary = tvUnit?.summary?.trim();
+    if (!summary) continue;
+    counts.set(summary, (counts.get(summary) || 0) + 1);
+  }
+
+  return [...counts.entries()].map(([summary, count]) => (
+    count > 1 ? `${count} x ${summary}` : summary
+  ));
+}
+
+function normalizeZenbookerJob({
+  jobId,
+  serviceName,
+  providerName,
+  fieldSelections,
+  unknownOptions,
+}) {
+  const serviceEntry = MAIN_SERVICE_MAP[serviceName];
+  const normalizedFields = (fieldSelections || [])
+    .map((field) => {
+      const expanded = expandSelectionsForSummary(field);
+      return expanded.length > 0 ? { ...field, category: getFieldCategory(field.fieldName), expanded } : null;
+    })
+    .filter(Boolean);
+
+  const sizeSelections = [];
+  if (serviceEntry) {
+    normalizedFields.forEach((field) => {
+      field.selections.forEach((selection) => {
+        if (serviceEntry[selection.label]) {
+          for (let i = 0; i < selection.quantity; i += 1) {
+            sizeSelections.push(selection.label);
+          }
+        }
+      });
+    });
+  }
+
+  const fieldCounts = normalizedFields.map((field) => field.expanded.length);
+  const tvCount = Math.max(1, sizeSelections.length > 0 ? sizeSelections.length : Math.max(...fieldCounts, 0));
+
+  const tvUnits = Array.from({ length: tvCount }, (_, index) => ({
+    ordinal: index + 1,
+    byCategory: {},
+  }));
+  const additionalSelections = [];
+
+  normalizedFields.forEach((field) => {
+    if (tvCount === 1) {
+      field.expanded.forEach((value) => addTvUnitDetail(tvUnits[0], field.category, value));
+      return;
+    }
+
+    if (field.expanded.length === tvCount) {
+      field.expanded.forEach((value, index) => addTvUnitDetail(tvUnits[index], field.category, value));
+      return;
+    }
+
+    const summary = summarizeLabels(field.expanded);
+    if (summary.length > 0) {
+      additionalSelections.push({
+        category: field.category,
+        fieldName: shortFieldName(field.fieldName),
+        values: summary,
+      });
+    }
+  });
+
+  return {
+    jobId,
+    serviceName,
+    providerName,
+    tvCount,
+    tvUnits: tvUnits.map((tvUnit) => ({
+      ...tvUnit,
+      summary: formatTvUnitSummary(tvUnit),
+    })),
+    additionalSelections,
+    unknownOptions: summarizeLabels(unknownOptions),
+  };
+}
+
+function buildReadableSellerNote({
+  existingSellerNote,
+  normalizedJob,
+  nonBookableLabels,
+}) {
+  const lines = [];
+
+  if (existingSellerNote) lines.push(existingSellerNote.trim());
+  if (normalizedJob?.serviceName) lines.push(`Service: ${normalizedJob.serviceName}`);
+  if (normalizedJob?.providerName) lines.push(`Tech: ${normalizedJob.providerName}`);
+
+  if ((normalizedJob?.tvUnits || []).length > 0) {
+    lines.push(`TV count: ${normalizedJob.tvCount}`);
+    summarizeTvUnitSummaries(normalizedJob.tvUnits).forEach((summary) => {
+      lines.push(summary);
+    });
+  }
+
+  if ((normalizedJob?.additionalSelections || []).length > 0) {
+    const selectionText = normalizedJob.additionalSelections.map((selection) => (
+      `${selection.fieldName}: ${selection.values.join('; ')}`
+    ));
+    lines.push(`Additional selections: ${selectionText.join(' | ')}`);
+  }
+
+  const taxableItems = summarizeLabels(nonBookableLabels);
+  if (taxableItems.length > 0) {
+    lines.push(`Items to add in Square: ${taxableItems.join('; ')}`);
+  }
+
+  if ((normalizedJob?.unknownOptions || []).length > 0) {
+    lines.push(`Unmapped ZenBooker options: ${normalizedJob.unknownOptions.join('; ')}`);
+  }
+
+  return lines.join('\n').trim();
 }
 
 /** Check if an option name represents a "none/no" selection — skip these. */
@@ -400,12 +833,32 @@ function isNoSelection(name) {
   const lower = name.toLowerCase().trim();
   return (
     lower === 'no' || lower === 'none' || lower === 'other' ||
-    lower.startsWith('no ') || lower.startsWith('do not need') ||
+    lower.startsWith('no ') || lower.startsWith('no -') ||
+    lower.startsWith('do not need') ||
     lower.startsWith('i have one') || lower.startsWith('i do not') ||
     lower.startsWith('no thanks') || lower.startsWith('no, ') ||
+    lower.includes('i have my own') || lower.includes('already have') ||
+    lower.includes('i already have') || lower.includes('no unmount') ||
+    lower.includes('not above a fireplace') || lower.includes('no sound bar') ||
+    lower.includes('no soundbar') || lower.includes('do not unmount') ||
     lower.includes('only the mantel mount installation') ||
     lower.includes('just the mounting') || lower.includes('not needed')
   );
+}
+
+function isInformationalSelection(name) {
+  const lower = name.toLowerCase().trim();
+  return lower === 'normal drywall' || lower === 'drywall';
+}
+
+function isAffirmativeFireplaceSelection(name) {
+  const lower = String(name || '').toLowerCase().trim();
+  return lower.includes('above a fireplace') && !lower.includes('not going above a fireplace');
+}
+
+function shouldUseFireplaceBaseService(serviceName, optionSelections) {
+  if (!FIREPLACE_SERVICE_MAP[serviceName]) return false;
+  return (optionSelections || []).some((selection) => isAffirmativeFireplaceSelection(selection?.label));
 }
 
 /** Look up Square Team Member ID from provider name. */
@@ -421,66 +874,115 @@ function lookupTech(providerName) {
   return null;
 }
 
+function isUnassignedProvider(providerName) {
+  if (!providerName) return true;
+  const key = String(providerName).toLowerCase().trim();
+  return key === 'unassigned' || key === 'not assigned' || key === 'none' || key === 'n/a';
+}
+
+function resolveTechAssignment(providerName) {
+  if (isUnassignedProvider(providerName)) {
+    return {
+      techSquareId: DEFAULT_TECH_ID,
+      resolvedProviderName: DEFAULT_TECH_NAME,
+      assignmentMode: 'defaulted_unassigned',
+    };
+  }
+
+  const mappedTechId = lookupTech(providerName);
+  if (mappedTechId) {
+    return {
+      techSquareId: mappedTechId,
+      resolvedProviderName: providerName,
+      assignmentMode: 'mapped_assigned',
+    };
+  }
+
+  return {
+    techSquareId: null,
+    resolvedProviderName: providerName,
+    assignmentMode: 'unmapped_assigned',
+  };
+}
+
 // ============================================================================
 // BUILD LINE ITEMS — fully synchronous, zero catalog API calls
 // ============================================================================
 
-function buildLineItems(serviceName, optionNames) {
+function buildLineItems(serviceName, optionSelections) {
   const lineItems = [];
   const addedIds = new Set(); // prevent duplicate variation IDs
+  const unknownOptions = [];
+  let unknownService = null;
 
-  function addVariation(variationId, label) {
+  function addVariation(variationId, label, { allowDuplicate = false } = {}) {
     if (!variationId) return false;
-    if (addedIds.has(variationId)) {
+    if (!allowDuplicate && addedIds.has(variationId)) {
       console.log(`  ↩ Skipping duplicate variation ${variationId} (${label})`);
       return false;
     }
-    addedIds.add(variationId);
+    if (!allowDuplicate) addedIds.add(variationId);
     lineItems.push({ catalog_object_id: variationId, quantity: '1', label });
     console.log(`  ✓ ${label} → ${variationId}`);
     return true;
   }
 
+  const usesFireplaceBaseService = shouldUseFireplaceBaseService(serviceName, optionSelections);
+  const serviceEntry = usesFireplaceBaseService
+    ? FIREPLACE_SERVICE_MAP[serviceName]
+    : MAIN_SERVICE_MAP[serviceName];
+  const squareServiceLabel = usesFireplaceBaseService ? 'TV Installation Over Fireplace' : serviceName;
+
   // 1) Map the top-level service → main variation (size option selects which)
-  const serviceEntry = MAIN_SERVICE_MAP[serviceName];
   if (serviceEntry) {
-    let chosenId = serviceEntry._default;
-    for (const optName of optionNames) {
-      if (serviceEntry[optName]) {
-        chosenId = serviceEntry[optName];
-        console.log(`  📐 Size match: "${optName}"`);
-        break;
-      }
+    const sizeSelections = (optionSelections || []).filter((selection) => (
+      !isNoSelection(selection.label) && serviceEntry[selection.label]
+    ));
+
+    if (sizeSelections.length > 0) {
+      sizeSelections.forEach((selection) => {
+        for (let i = 0; i < selection.quantity; i += 1) {
+          console.log(`  📐 Size match: "${selection.label}"`);
+          addVariation(serviceEntry[selection.label], `Service: ${squareServiceLabel} (${selection.label})`, { allowDuplicate: true });
+        }
+      });
+    } else {
+      addVariation(serviceEntry._default, `Service: ${squareServiceLabel}`);
     }
-    addVariation(chosenId, `Service: ${serviceName}`);
   } else if (serviceName) {
-    console.warn(`  ✗ Unknown service: "${serviceName}" — adding freeform`);
-    lineItems.push({
-      name: serviceName, quantity: '1',
-      base_price_money: { amount: 0, currency: 'USD' },
-    });
+    console.warn(`  ✗ Unknown service: "${serviceName}" — keeping in seller note`);
+    unknownService = serviceName;
   }
 
   // 2) Map each selected option → add-on variation (skip sizes already handled)
-  for (const optName of optionNames) {
+  for (const selection of optionSelections || []) {
+    const optName = selection.label;
     if (isNoSelection(optName)) continue;
+    if (isInformationalSelection(optName)) continue;
+    if (usesFireplaceBaseService && isAffirmativeFireplaceSelection(optName)) continue;
     // Skip if this option was a service-level size selector
     if (serviceEntry?.[optName]) continue;
 
     const variationId = OPTION_MAP[optName];
     if (variationId) {
-      addVariation(variationId, `Option: ${optName}`);
+      for (let i = 0; i < selection.quantity; i += 1) {
+        addVariation(variationId, `Option: ${optName}`, { allowDuplicate: true });
+      }
     } else {
-      // Unknown option — log it and add freeform so nothing is lost
-      console.warn(`  ? Unknown option: "${optName}" — adding freeform`);
-      lineItems.push({
-        name: optName, quantity: '1',
-        base_price_money: { amount: 0, currency: 'USD' },
-      });
+      // Unknown options stay in the seller note so the Square UI avoids $0 placeholders.
+      console.warn(`  ? Unknown option: "${optName}" — keeping in seller note`);
+      for (let i = 0; i < selection.quantity; i += 1) {
+        unknownOptions.push(optName);
+      }
     }
   }
 
-  return lineItems;
+  return {
+    lineItems,
+    unknownOptions,
+    unknownService,
+    effectiveServiceName: squareServiceLabel || serviceName || null,
+  };
 }
 
 // ============================================================================
@@ -573,18 +1075,25 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note, a
   }
 }
 
-async function createSquareBooking({ locationId, startAt, customerId, teamMemberId, lineItems, catalogInfo, address, durationMinutes, customerNote, sellerNote, idempotencyKey }) {
+async function createSquareBooking({
+  locationId,
+  startAt,
+  customerId,
+  teamMemberId,
+  lineItems,
+  catalogInfo,
+  address,
+  durationMinutes,
+  customerNote,
+  idempotencyKey,
+}) {
   try {
-    // Build an appointment segment for each bookable (APPOINTMENTS_SERVICE) item.
-    // Non-bookable items (REGULAR / physical products like brackets) go in seller_note.
+    // Build an appointment segment for every bookable service variation.
     const segments = [];
-    const nonBookableLabels = [];
 
     for (const item of lineItems || []) {
       const info = catalogInfo?.[item.catalog_object_id];
       if (!item.catalog_object_id) {
-        // Freeform item (no catalog ID) — include label in seller note
-        if (item.name) nonBookableLabels.push(item.name);
         continue;
       }
       if (info?.bookable) {
@@ -600,9 +1109,7 @@ async function createSquareBooking({ locationId, startAt, customerId, teamMember
         segments.push(seg);
         console.log(`  📅 Segment: ${item.label || item.catalog_object_id} (${seg.duration_minutes || '?'}min)`);
       } else {
-        // REGULAR item (bracket/hardware) — can't be an appointment segment
-        nonBookableLabels.push(item.label || item.catalog_object_id);
-        console.log(`  📦 Item (non-bookable): ${item.label || item.catalog_object_id}`);
+        console.log(`  ↩ Ignoring non-bookable item: ${item.label || item.catalog_object_id}`);
       }
     }
 
@@ -621,7 +1128,6 @@ async function createSquareBooking({ locationId, startAt, customerId, teamMember
       customer_id:          customerId,
       location_type:        'CUSTOMER_LOCATION',
       appointment_segments: segments,
-      sms_reminders_enabled: false,
     };
     if (address?.street) {
       booking.address = {
@@ -634,14 +1140,7 @@ async function createSquareBooking({ locationId, startAt, customerId, teamMember
     }
     if (customerNote) booking.customer_note = customerNote;
 
-    // Build seller note: ZenBooker job ref + any non-bookable (taxable) items
-    let finalSellerNote = sellerNote || '';
-    if (nonBookableLabels.length > 0) {
-      finalSellerNote += `\nItems to add (taxable): ${nonBookableLabels.join(', ')}`;
-    }
-    if (finalSellerNote.trim()) booking.seller_note = finalSellerNote.trim();
-
-    console.log(`Square booking: ${segments.length} segment(s), ${nonBookableLabels.length} item(s) in note`);
+    console.log(`Square booking: ${segments.length} segment(s)`);
     console.log('Square booking request:', JSON.stringify({ idempotency_key: idempotencyKey, booking }, null, 2));
 
     const resp = await axios.post(
@@ -693,7 +1192,13 @@ export default async function handler(req, res) {
     assigned_providers: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map(p => p.name),
     estimated_duration_seconds: payload?.data?.estimated_duration_seconds || payload?.estimated_duration_seconds,
     start_date: payload?.data?.start_date || payload?.start_date,
-    service_fields_count: (payload?.data?.service_fields || payload?.service_fields || []).length,
+    service_fields_count: (
+      payload?.data?.service_fields
+      || payload?.service_fields
+      || payload?.data?.services?.[0]?.service_selections
+      || payload?.services?.[0]?.service_selections
+      || []
+    ).length,
   }));
 
   try {
@@ -736,29 +1241,14 @@ export default async function handler(req, res) {
       || resolveField(payload, FIELD_MAP.providerEmail)
       || null;
 
-    // Normalise option list → array of strings
-    // ZenBooker sends service_fields: [{field_name, selected_options: [{text}]}]
-    const optionNames = [];
-    if (Array.isArray(rawOptions)) {
-      rawOptions.forEach(item => {
-        // service_fields format: { field_name, selected_options: [{text, price, ...}] }
-        if (item?.selected_options && Array.isArray(item.selected_options)) {
-          item.selected_options.forEach(opt => {
-            // Prefer display_label (clean name) over text (which has "1 x " prefix for checkboxes)
-            const raw = (opt?.display_label || opt?.text || '').trim();
-            const n = stripQuantityPrefix(raw); // safety fallback if display_label missing
-            if (n) optionNames.push(n);
-          });
-        } else {
-          // fallback: legacy { name, price } or string
-          const n = extractOptionName(item);
-          if (n) optionNames.push(n);
-        }
-      });
-    }
+    const { fieldSelections, optionSelections } = extractServiceFieldSelections(rawOptions);
 
-    // Technician lookup
-    const techSquareId = lookupTech(providerName);
+    // Technician lookup / fallback
+    const {
+      techSquareId,
+      resolvedProviderName,
+      assignmentMode,
+    } = resolveTechAssignment(providerName);
 
     console.log('Extracted:', {
       jobId, eventType, serviceName,
@@ -766,10 +1256,13 @@ export default async function handler(req, res) {
       phone:        phone     ? `***${phone.slice(-4)}`    : null,
       firstName:    firstName ? `${firstName[0]}***`       : null,
       scheduledAt, totalAmount,
-      providerName, techSquareId,
+      providerName, resolvedProviderName, techSquareId, assignmentMode,
       jobStreet, jobCity, jobState, jobZip, jobDuration,
-      optionCount: optionNames.length,
-      options: optionNames,
+      fieldCount: fieldSelections.length,
+      optionCount: optionSelections.length,
+      options: optionSelections.map((selection) => (
+        selection.quantity > 1 ? `${selection.label} x${selection.quantity}` : selection.label
+      )),
     });
 
     if (!email && !phone) {
@@ -786,15 +1279,40 @@ export default async function handler(req, res) {
         'Booked via ZenBooker',
         scheduledAt  ? `Appt: ${scheduledAt}`     : null,
         jobId        ? `Job: ${jobId}`             : null,
-        providerName ? `Tech: ${providerName}`     : null,
+        resolvedProviderName ? `Tech: ${resolvedProviderName}` : null,
       ].filter(Boolean).join(' | ');
       customer = await createSquareCustomer({ firstName, lastName, email, phone, note, address: { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip } });
       console.log(customer ? `Square customer created: ${customer.id}` : 'Customer creation FAILED');
     }
 
     // Build line items once — used by both booking and order
-    const lineItems = buildLineItems(serviceName, optionNames);
+    const {
+      lineItems,
+      unknownOptions,
+      unknownService,
+      effectiveServiceName,
+    } = buildLineItems(serviceName, optionSelections);
+    const normalizedJob = normalizeZenbookerJob({
+      jobId,
+      serviceName: effectiveServiceName || serviceName,
+      providerName: resolvedProviderName,
+      fieldSelections,
+      unknownOptions,
+    });
     const primaryVariationId = lineItems[0]?.catalog_object_id || null;
+
+    console.log('Normalized job:', JSON.stringify({
+      jobId: normalizedJob.jobId,
+      serviceName: normalizedJob.serviceName,
+      providerName: normalizedJob.providerName,
+      tvCount: normalizedJob.tvCount,
+      tvUnits: normalizedJob.tvUnits.map((tvUnit) => ({
+        ordinal: tvUnit.ordinal,
+        summary: tvUnit.summary,
+      })),
+      additionalSelections: normalizedJob.additionalSelections,
+      unknownOptions: normalizedJob.unknownOptions,
+    }, null, 2));
 
     // ── STEP 2: Create Square appointment (calendar / tech scheduling) ────────
     let booking = null;
@@ -828,7 +1346,6 @@ export default async function handler(req, res) {
         address:         { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip },
         durationMinutes: jobDuration || null,
         customerNote:    notes   || undefined,
-        sellerNote:      `ZenBooker Job: ${jobId}`,
         idempotencyKey:  `zb-${jobId}`,
       });
       booking = result?.booking || result;
@@ -848,7 +1365,9 @@ export default async function handler(req, res) {
       bookingSkipReason,
       bookingError,
       techMatched:      !!techSquareId,
-      techName:         providerName   || null,
+      techName:         resolvedProviderName || null,
+      techAssignmentMode: assignmentMode,
+      normalizedTvCount: normalizedJob.tvCount,
     });
 
   } catch (err) {
