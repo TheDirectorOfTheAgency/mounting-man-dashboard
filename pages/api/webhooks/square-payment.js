@@ -40,6 +40,7 @@ const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
 // Discord logging
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_OPS_CHANNEL = '1472767806452924520'; // #operations
+const DISCORD_INSTALL_THREAD = '1485380804707090643'; // Installation Posts thread in Q's #general
 
 // Upstash Redis — for dedup only
 const KV_URL   = process.env.KV_REST_API_URL;
@@ -239,6 +240,11 @@ export default async function handler(req, res) {
       await logDiscord(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
     }
 
+    // ---- Notify Q in Installation Posts thread ----
+    if (orderId) {
+      await notifyQInstallPost({ orderId, firstName, lastName, customer, amount });
+    }
+
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
 
@@ -263,6 +269,75 @@ export default async function handler(req, res) {
 // ============================================================================
 // SMS SENDER
 // ============================================================================
+
+// ============================================================================
+// Q INSTALL POST NOTIFICATION
+// ============================================================================
+
+async function notifyQInstallPost({ orderId, firstName, lastName, customer, amount }) {
+  if (!DISCORD_BOT_TOKEN) {
+    console.warn('[q-notify] No DISCORD_BOT_TOKEN — skipping Q notification');
+    return;
+  }
+
+  // ---- Fetch order line items from Square ----
+  let lineItems = [];
+  try {
+    const orderRes = await axios.get(`${SQUARE_BASE}/orders/${orderId}`, {
+      headers: squareHeaders(),
+    });
+    lineItems = orderRes.data?.order?.line_items || [];
+  } catch (err) {
+    console.error('[q-notify] Failed to fetch order:', err.response?.data || err.message);
+    // Continue without line items — still useful to notify Q
+  }
+
+  // ---- Parse job details from line items ----
+  // Square line items: name = service type, variation_name = TV size or mount type
+  const jobParts = lineItems
+    .filter(item => item.name && item.name !== 'Sales Tax' && item.name !== 'CC Processing Fee')
+    .map(item => {
+      const parts = [item.variation_name, item.name].filter(Boolean);
+      return parts.join(' — ');
+    });
+  const jobSummary = jobParts.length > 0 ? jobParts.join('\n') : '(job details unavailable)';
+
+  // ---- Build address from customer ----
+  const addr = customer.address || {};
+  const addressParts = [
+    addr.address_line_1,
+    addr.address_line_2,
+    addr.locality && addr.administrative_district_level_1
+      ? `${addr.locality}, ${addr.administrative_district_level_1}`
+      : addr.locality || addr.administrative_district_level_1,
+    addr.postal_code,
+  ].filter(Boolean);
+  const addressLine = addressParts.length > 0 ? addressParts.join(', ') : '(address not on file)';
+
+  // ---- Build message ----
+  const fullName = [firstName, lastName].filter(s => s && s !== 'there').join(' ') || firstName;
+  const message = [
+    `📸 **New job paid — ready for installation post**`,
+    `**Client**: ${fullName}`,
+    `**Address**: ${addressLine}`,
+    `**Job**:\n${jobParts.length > 0 ? jobParts.map(p => `  • ${p}`).join('\n') : '  • ' + jobSummary}`,
+    `**Amount**: $${amount}`,
+    ``,
+    `Drop the job photo and I'll have the post ready to publish.`,
+  ].join('\n');
+
+  // ---- Post to Installation Posts thread ----
+  try {
+    await axios.post(
+      `https://discord.com/api/v10/channels/${DISCORD_INSTALL_THREAD}/messages`,
+      { content: message },
+      { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+    );
+    console.log(`[q-notify] Posted to Installation Posts thread for ${fullName}`);
+  } catch (err) {
+    console.error('[q-notify] Discord post failed:', err.response?.data || err.message);
+  }
+}
 
 async function sendReviewSms(job) {
   const { firstName, phone, amount, paymentId } = job;
