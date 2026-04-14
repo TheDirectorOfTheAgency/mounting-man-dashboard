@@ -1,118 +1,142 @@
 // pages/api/square-revenue.js
+// Uses @vercel/kv for caching (same as rest of codebase)
+// All-time baseline hardcoded — cron updates it in Redis over time
+// Recent data: fetches only last 90 days from Square (~3-4 API calls)
 import axios from 'axios';
+
+const CACHE_KEY         = 'square:revenue:cache';
+const ALLTIME_CACHE_KEY = 'square:revenue:alltime';
+const CACHE_TTL_SECONDS = 2 * 60 * 60; // 2 hours
+const ALLTIME_BASELINE  = { total: 1678219, count: 4374 };
+
+let _kv = null;
+async function getKV() {
+  if (_kv !== null) return _kv;
+  try {
+    const mod = await import('@vercel/kv');
+    _kv = mod.kv;
+    return _kv;
+  } catch {
+    _kv = false;
+    return false;
+  }
+}
+
+async function fetchRecentPayments(token, locationId) {
+  const ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+  let allPayments = [];
+  let cursor = undefined;
+
+  do {
+    const params = new URLSearchParams({
+      location_id: locationId,
+      limit: '100',
+      begin_time: ninetyDaysAgo.toISOString(),
+    });
+    if (cursor) params.append('cursor', cursor);
+
+    const response = await axios.get(`https://connect.squareup.com/v2/payments?${params.toString()}`, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Square-Version': '2024-01-18' },
+    });
+
+    allPayments = allPayments.concat(response.data.payments || []);
+    cursor = response.data.cursor || null;
+  } while (cursor);
+
+  return allPayments;
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const kv = await getKV();
+
+  // Serve from cache if available
+  if (kv) {
+    try {
+      const cached = await kv.get(CACHE_KEY);
+      if (cached) return res.status(200).json(cached);
+    } catch {}
+  }
+
   try {
-    const token = process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
+    const token      = process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
     const locationId = process.env.NEXT_PUBLIC_SQUARE_LOCATION_ID;
 
     if (!token || !locationId) {
-      return res.status(400).json({ error: 'Missing Square credentials', hasToken: !!token, hasLocation: !!locationId });
+      return res.status(400).json({ error: 'Missing Square credentials' });
     }
 
-    // Paginate through all payments
-    let allPayments = [];
-    let cursor = undefined;
+    const TIMEZONE = 'America/Chicago';
+    const toLocalDateStr = (d) => d.toLocaleDateString('en-CA', { timeZone: TIMEZONE });
 
-    do {
-      const params = new URLSearchParams({ location_id: locationId, limit: '100' });
-      if (cursor) params.append('cursor', cursor);
+    const nowStr       = toLocalDateStr(new Date());
+    const thisMonthStr = nowStr.slice(0, 7);
+    const thisYearStr  = nowStr.slice(0, 4);
 
-      const response = await axios.get(`https://connect.squareup.com/v2/payments?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Square-Version': '2024-01-18',
-        },
-      });
+    // All-time: Redis if cron stored it, otherwise hardcoded baseline
+    let allTime = ALLTIME_BASELINE;
+    if (kv) {
+      try {
+        const cachedAllTime = await kv.get(ALLTIME_CACHE_KEY);
+        if (cachedAllTime) allTime = cachedAllTime;
+      } catch {}
+    }
 
-      const payments = response.data.payments || [];
-      allPayments = allPayments.concat(payments);
-      cursor = response.data.cursor || null;
-    } while (cursor);
+    // Recent: last 90 days only — fast
+    const recentPayments = await fetchRecentPayments(token, locationId);
 
-    // Calculate metrics
-    const now = new Date();
-    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let thisMonthTotal = 0, thisMonthCount = 0;
+    let todayTotal = 0, todayCount = 0;
+    let thisYearTotal = 0, thisYearCount = 0;
 
-    let allTimeTotal = 0;
-    let thisMonthTotal = 0;
-    let todayTotal = 0;
-    let allTimeCount = 0;
-    let thisMonthCount = 0;
-    let todayCount = 0;
-
-    // Build daily revenue for last 7 days
     const dailyMap = {};
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(now);
+      const d = new Date();
       d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      dailyMap[key] = 0;
+      dailyMap[toLocalDateStr(d)] = 0;
     }
 
-    allPayments.forEach((payment) => {
-      if (payment.status === 'COMPLETED') {
-        const amount = (payment.total_money?.amount || payment.amount_money?.amount || 0) / 100;
-        const createdAt = new Date(payment.created_at);
+    recentPayments.forEach((p) => {
+      if (p.status === 'COMPLETED') {
+        const amount  = (p.total_money?.amount || p.amount_money?.amount || 0) / 100;
+        const dateStr = toLocalDateStr(new Date(p.created_at));
 
-        allTimeTotal += amount;
-        allTimeCount += 1;
-
-        if (createdAt >= thisMonthStart) {
-          thisMonthTotal += amount;
-          thisMonthCount += 1;
-        }
-
-        if (createdAt >= todayStart) {
-          todayTotal += amount;
-          todayCount += 1;
-        }
-
-        // Daily bucketing
-        const dayKey = createdAt.toISOString().slice(0, 10);
-        if (dailyMap.hasOwnProperty(dayKey)) {
-          dailyMap[dayKey] += amount;
-        }
+        if (dateStr.slice(0, 4) === thisYearStr)  { thisYearTotal  += amount; thisYearCount++;  }
+        if (dateStr.slice(0, 7) === thisMonthStr)  { thisMonthTotal += amount; thisMonthCount++; }
+        if (dateStr === nowStr)                    { todayTotal     += amount; todayCount++;     }
+        if (dailyMap.hasOwnProperty(dateStr))      { dailyMap[dateStr] += amount; }
       }
     });
 
-    // Convert daily map to array
-    const days = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
     const revenueHistory = Object.entries(dailyMap).map(([dateStr, revenue]) => {
-      const d = new Date(dateStr + 'T12:00:00');
-      return {
-        date: days[d.getDay()],
-        revenue: parseFloat(revenue.toFixed(2)),
-      };
+      const d = new Date(dateStr + 'T18:00:00Z');
+      const dayLabel = d.toLocaleDateString('en-US', { timeZone: TIMEZONE, weekday: 'short' }).toUpperCase().slice(0, 3);
+      return { date: dayLabel, revenue: parseFloat(revenue.toFixed(2)) };
     });
 
-    res.status(200).json({
-      allTime: {
-        total: parseFloat(allTimeTotal.toFixed(2)),
-        count: allTimeCount,
-        avgValue: allTimeCount > 0 ? parseFloat((allTimeTotal / allTimeCount).toFixed(2)) : 0,
-      },
-      thisMonth: {
-        total: parseFloat(thisMonthTotal.toFixed(2)),
-        count: thisMonthCount,
-      },
-      today: {
-        total: parseFloat(todayTotal.toFixed(2)),
-        count: todayCount,
-      },
+    const result = {
+      allTime:   { total: allTime.total, count: allTime.count, avgValue: allTime.count > 0 ? parseFloat((allTime.total / allTime.count).toFixed(2)) : 0 },
+      thisYear:  { total: parseFloat(thisYearTotal.toFixed(2)), count: thisYearCount, avgValue: thisYearCount > 0 ? parseFloat((thisYearTotal / thisYearCount).toFixed(2)) : 0 },
+      thisMonth: { total: parseFloat(thisMonthTotal.toFixed(2)), count: thisMonthCount },
+      today:     { total: parseFloat(todayTotal.toFixed(2)), count: todayCount },
       revenueHistory,
       lastUpdated: new Date().toISOString(),
-    });
+    };
+
+    // Cache with @vercel/kv
+    if (kv) {
+      try { await kv.set(CACHE_KEY, result, { ex: CACHE_TTL_SECONDS }); } catch {}
+    }
+
+    return res.status(200).json(result);
+
   } catch (error) {
     console.error('Square API error:', error.response?.data || error.message);
-    res.status(500).json({
-      error: 'Failed to fetch Square data',
-      details: error.response?.data || error.message,
-    });
+    return res.status(500).json({ error: 'Failed to fetch Square data', details: error.response?.data || error.message });
   }
 }
