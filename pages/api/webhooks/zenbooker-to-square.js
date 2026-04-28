@@ -1,18 +1,18 @@
 // pages/api/webhooks/zenbooker-to-square.js
 // Receives ZenBooker booking webhooks → finds or creates Square customer record
 //
-// Phase 1 (active): Customer record only
+// Active flow
 //   1. Find or create Square customer by email
-//   2. Return customer ID — no orders, no appointments yet
-//
-// Phase 2 (future): Square Appointments
-//   - MAIN_SERVICE_MAP, OPTION_MAP, TECH_MAP, and buildLineItems() are already built
-//   - Will use Square Bookings API (/v2/bookings) to create appointments in Square Calendar
+//   2. Create a simplified Square appointment from TV size/fireplace segments
+//      plus unpaired TV wall bracket items
+//   3. Preserve cord concealment, wall surface, soundbar, unmount, and misc
+//      selections in the Square appointment note for manual review
 //
 // Webhook URL configured in ZenBooker:
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker-to-square?secret=<ZENBOOKER_WEBHOOK_SECRET>
 
 import axios from 'axios';
+import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
 
 // ============================================================================
 // SQUARE CONFIG
@@ -27,6 +27,50 @@ const squareHeaders = () => ({
   'Content-Type':   'application/json',
   'Accept':         'application/json',
 });
+
+let _kv = null;
+async function getKV() {
+  if (_kv !== null) return _kv;
+  try {
+    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+      _kv = false;
+      return false;
+    }
+    const mod = await import('@vercel/kv');
+    _kv = mod.kv;
+    return _kv;
+  } catch (err) {
+    console.warn('Failed to load @vercel/kv:', err.message);
+    _kv = false;
+    return false;
+  }
+}
+
+async function writeBookingAudit(jobId, audit) {
+  if (!jobId) return;
+  const kv = await getKV();
+  if (!kv) return;
+  try {
+    await kv.set(`zb2sq:${jobId}`, audit, { ex: 7776000 });
+  } catch (err) {
+    console.warn('Failed to write ZenBooker Square audit:', err.message);
+  }
+}
+
+async function logDiscord(message) {
+  const token = process.env.DISCORD_Q_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN;
+  const channelId = process.env.DISCORD_OPS_CHANNEL || '1472767806452924520';
+  if (!token) return;
+  try {
+    await axios.post(
+      `https://discord.com/api/v10/channels/${channelId}/messages`,
+      { content: message.slice(0, 1900) },
+      { headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    console.warn('Discord alert failed:', err.response?.data || err.message);
+  }
+}
 
 // ============================================================================
 // FIELD MAP — ZenBooker webhook payload paths (dot notation, tried in order)
@@ -516,8 +560,18 @@ function normalizeSelectionForSummary(fieldName, label) {
     case 'size':
       return normalized;
     case 'fireplace':
-      if (lower.includes('not going above a fireplace')) return 'standard wall placement';
-      if (lower.includes('above a fireplace')) return 'above fireplace';
+      if (
+        lower.includes('not going above a fireplace') ||
+        lower.includes('not above a fireplace') ||
+        lower.includes('not over a fireplace') ||
+        lower.includes('no fireplace')
+      ) return 'standard wall placement';
+      if (
+        lower.includes('above a fireplace') ||
+        lower.includes('above fireplace') ||
+        lower.includes('over a fireplace') ||
+        lower.includes('over fireplace')
+      ) return 'above fireplace';
       return normalized;
     case 'surface':
       if (lower === 'normal drywall' || lower === 'drywall') return 'drywall';
@@ -853,7 +907,18 @@ function isInformationalSelection(name) {
 
 function isAffirmativeFireplaceSelection(name) {
   const lower = String(name || '').toLowerCase().trim();
-  return lower.includes('above a fireplace') && !lower.includes('not going above a fireplace');
+  if (
+    lower.includes('not going above a fireplace') ||
+    lower.includes('not above a fireplace') ||
+    lower.includes('not over a fireplace') ||
+    lower.includes('no fireplace')
+  ) return false;
+  return (
+    lower.includes('above a fireplace') ||
+    lower.includes('above fireplace') ||
+    lower.includes('over a fireplace') ||
+    lower.includes('over fireplace')
+  );
 }
 
 function shouldUseFireplaceBaseService(serviceName, optionSelections) {
@@ -1285,33 +1350,34 @@ export default async function handler(req, res) {
       console.log(customer ? `Square customer created: ${customer.id}` : 'Customer creation FAILED');
     }
 
-    // Build line items once — used by both booking and order
-    const {
-      lineItems,
-      unknownOptions,
-      unknownService,
-      effectiveServiceName,
-    } = buildLineItems(serviceName, optionSelections);
     const normalizedJob = normalizeZenbookerJob({
       jobId,
-      serviceName: effectiveServiceName || serviceName,
+      serviceName,
       providerName: resolvedProviderName,
       fieldSelections,
-      unknownOptions,
+      unknownOptions: [],
     });
+    const appointmentModel = buildSquareAppointmentModel({
+      serviceName,
+      fieldSelections,
+      optionSelections,
+      rawNotes: notes || '',
+    });
+    const lineItems = appointmentModel.segmentItems;
     const primaryVariationId = lineItems[0]?.catalog_object_id || null;
 
-    console.log('Normalized job:', JSON.stringify({
+    console.log('Simplified appointment model:', JSON.stringify({
       jobId: normalizedJob.jobId,
       serviceName: normalizedJob.serviceName,
       providerName: normalizedJob.providerName,
-      tvCount: normalizedJob.tvCount,
-      tvUnits: normalizedJob.tvUnits.map((tvUnit) => ({
-        ordinal: tvUnit.ordinal,
-        summary: tvUnit.summary,
+      segmentCount: lineItems.length,
+      segments: lineItems.map((item) => ({
+        label: item.label,
+        catalog_object_id: item.catalog_object_id,
+        segmentType: item.segmentType,
       })),
-      additionalSelections: normalizedJob.additionalSelections,
-      unknownOptions: normalizedJob.unknownOptions,
+      mappingWarnings: appointmentModel.warnings,
+      unknownOptions: appointmentModel.unknownOptions,
     }, null, 2));
 
     // ── STEP 2: Create Square appointment (calendar / tech scheduling) ────────
@@ -1345,7 +1411,7 @@ export default async function handler(req, res) {
         catalogInfo,
         address:         { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip },
         durationMinutes: jobDuration || null,
-        customerNote:    notes   || undefined,
+        customerNote:    appointmentModel.note || undefined,
         idempotencyKey:  `zb-${jobId}`,
       });
       booking = result?.booking || result;
@@ -1353,6 +1419,35 @@ export default async function handler(req, res) {
       console.log(booking?.id ? `Square booking created: ${booking.id}` : `Booking creation FAILED: ${bookingError || 'unknown'}`);
     }
     if (bookingSkipReason) console.warn(`Skipping booking — ${bookingSkipReason}`);
+
+    await writeBookingAudit(jobId, {
+      jobId,
+      processedAt: new Date().toISOString(),
+      squareCustomerId: customer?.id || null,
+      squareBookingId: booking?.id || null,
+      bookingCreated: !!booking?.id,
+      bookingSkipReason,
+      bookingError,
+      serviceName,
+      segmentItems: lineItems.map((item) => ({
+        catalog_object_id: item.catalog_object_id,
+        label: item.label,
+        segmentType: item.segmentType,
+      })),
+      mappingWarnings: appointmentModel.warnings,
+      unknownOptions: appointmentModel.unknownOptions,
+    });
+
+    if (bookingSkipReason || bookingError || appointmentModel.warnings.length > 0) {
+      await logDiscord([
+        'ZenBooker to Square appointment needs review',
+        jobId ? `Job: ${jobId}` : null,
+        booking?.id ? `Square booking: ${booking.id}` : null,
+        bookingSkipReason ? `Skipped: ${bookingSkipReason}` : null,
+        bookingError ? `Error: ${bookingError}` : null,
+        appointmentModel.warnings.length ? `Warnings: ${appointmentModel.warnings.join(', ')}` : null,
+      ].filter(Boolean).join('\n'));
+    }
 
     // Always 200 to prevent ZenBooker retries
     return res.status(200).json({
@@ -1367,7 +1462,9 @@ export default async function handler(req, res) {
       techMatched:      !!techSquareId,
       techName:         resolvedProviderName || null,
       techAssignmentMode: assignmentMode,
-      normalizedTvCount: normalizedJob.tvCount,
+      segmentCount:     lineItems.length,
+      mappingWarnings:  appointmentModel.warnings,
+      unknownOptions:   appointmentModel.unknownOptions,
     });
 
   } catch (err) {

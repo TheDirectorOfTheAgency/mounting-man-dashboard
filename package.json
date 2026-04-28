@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs",
+    "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
