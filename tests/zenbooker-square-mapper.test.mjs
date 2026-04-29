@@ -180,6 +180,47 @@ test('non-standard base TV services still create the base appointment segment', 
   assert.match(model.note, /Surface: Brick/);
 });
 
+test('multi-service bookings create appointment segments for each ZenBooker service', () => {
+  const model = buildSquareAppointmentModel({
+    serviceGroups: [
+      {
+        serviceName: 'Picture Frame (Gallery) Style TVs (Samsung Frame, LG G Series, Hisense Canvas, TCL NXTFRAME...)',
+        fieldSelections: [
+          field('TV Size', ['65 Inches']),
+          field('Cord Concealment', ['Conceal Cords Through Already Existing Conduit']),
+        ],
+        optionSelections: [
+          selection('TV Size', '65 Inches'),
+          selection('Cord Concealment', 'Conceal Cords Through Already Existing Conduit'),
+        ],
+      },
+      {
+        serviceName: 'Mount 1 Or More TVs (Normal TV Onto Any Surface)',
+        fieldSelections: [
+          field('TV Size', ['75 Inches']),
+          field('Cord Concealment', ['Concealing Through Existing Conduit']),
+        ],
+        optionSelections: [
+          selection('TV Size', '75 Inches'),
+          selection('Cord Concealment', 'Concealing Through Existing Conduit'),
+        ],
+      },
+    ],
+    rawNotes: '',
+  });
+
+  assert.deepEqual(model.segmentItems.map((item) => item.catalog_object_id), [
+    'J34PODCQBCZ6Y32A6OKSSBNO',
+    'LJGOOVS5KIIJR7M2I7PDR5RP',
+  ]);
+  assert.match(model.note, /Frame \/ Gallery TV Installation:/);
+  assert.match(model.note, /TV sizes: 65 Inches/);
+  assert.match(model.note, /Standard TV Installation:/);
+  assert.match(model.note, /TV sizes: 75 Inches/);
+  assert.match(model.note, /Cord Concealment: Conceal Cords Through Already Existing Conduit/);
+  assert.match(model.note, /Cord Concealment: Concealing Through Existing Conduit/);
+});
+
 test('unmount add-ons are note-only when attached to a TV mounting service', () => {
   const model = buildSquareAppointmentModel({
     serviceName: 'Mount 1 Or More TVs (Normal TV Onto Any Surface)',

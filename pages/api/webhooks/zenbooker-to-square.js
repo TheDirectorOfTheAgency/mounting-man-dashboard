@@ -698,6 +698,64 @@ function extractServiceFieldSelections(rawOptions) {
   return { fieldSelections, optionSelections };
 }
 
+function getServiceSelectionsFromService(service) {
+  return (
+    service?.service_selections ||
+    service?.service_fields ||
+    service?.selected_options ||
+    service?.options ||
+    service?.line_items ||
+    []
+  );
+}
+
+function extractServiceGroups(payload, fallbackServiceName, fallbackRawOptions) {
+  const rawServices = resolveField(payload, [
+    'data.services',
+    'services',
+    'data.job.services',
+  ]);
+
+  if (Array.isArray(rawServices) && rawServices.length > 0) {
+    const serviceGroups = rawServices.map((service, index) => {
+      const serviceName = (
+        service?.service_name ||
+        service?.name ||
+        service?.service?.name ||
+        (rawServices.length === 1 ? fallbackServiceName : `Service ${index + 1}`)
+      );
+      const rawOptions = getServiceSelectionsFromService(service);
+      const { fieldSelections, optionSelections } = extractServiceFieldSelections(rawOptions);
+
+      return {
+        serviceName: String(serviceName || '').trim(),
+        fieldSelections,
+        optionSelections,
+      };
+    }).filter((group) => (
+      group.serviceName ||
+      group.fieldSelections.length > 0 ||
+      group.optionSelections.length > 0
+    ));
+
+    if (serviceGroups.length > 0) return serviceGroups;
+  }
+
+  const { fieldSelections, optionSelections } = extractServiceFieldSelections(fallbackRawOptions);
+  return [{
+    serviceName: String(fallbackServiceName || '').trim(),
+    fieldSelections,
+    optionSelections,
+  }];
+}
+
+function summarizeServiceNames(serviceGroups) {
+  const names = (serviceGroups || [])
+    .map((group) => group?.serviceName)
+    .filter(Boolean);
+  return names.join(' + ');
+}
+
 function addTvUnitDetail(tvUnit, category, value) {
   if (!value) return;
   if (!tvUnit.byCategory[category]) {
@@ -1248,11 +1306,16 @@ export default async function handler(req, res) {
   console.log('Top-level keys:', Object.keys(payload || {}));
   const dataKeys = payload?.data ? Object.keys(payload.data) : [];
   console.log('data keys:', dataKeys);
+  const loggedServices = payload?.data?.services || payload?.services || [];
   console.log('Payload (condensed):', JSON.stringify({
     type: payload?.type,
     id: payload?.id || payload?.data?.id,
     customer_email: payload?.data?.customer?.email || payload?.customer?.email,
     service_name: payload?.data?.service_name || payload?.service_name,
+    service_names: Array.isArray(loggedServices)
+      ? loggedServices.map((service) => service?.service_name || service?.name).filter(Boolean)
+      : [],
+    service_count: Array.isArray(loggedServices) ? loggedServices.length : 0,
     service_address: payload?.data?.service_address || payload?.service_address,
     assigned_providers: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map(p => p.name),
     estimated_duration_seconds: payload?.data?.estimated_duration_seconds || payload?.estimated_duration_seconds,
@@ -1276,7 +1339,7 @@ export default async function handler(req, res) {
     const rawNotes     = resolveField(payload, FIELD_MAP.notes);
     // job_notes may be array of strings or a plain string
     const notes = Array.isArray(rawNotes) ? rawNotes.join(' | ') : (rawNotes || null);
-    const serviceName  = resolveField(payload, FIELD_MAP.serviceName) || '';
+    const fallbackServiceName = resolveField(payload, FIELD_MAP.serviceName) || '';
     const rawOptions   = resolveField(payload, FIELD_MAP.lineItems);
     const jobStreet    = resolveField(payload, FIELD_MAP.jobStreet);
     const jobLine2     = resolveField(payload, FIELD_MAP.jobLine2);
@@ -1306,7 +1369,10 @@ export default async function handler(req, res) {
       || resolveField(payload, FIELD_MAP.providerEmail)
       || null;
 
-    const { fieldSelections, optionSelections } = extractServiceFieldSelections(rawOptions);
+    const serviceGroups = extractServiceGroups(payload, fallbackServiceName, rawOptions);
+    const serviceName = summarizeServiceNames(serviceGroups) || fallbackServiceName;
+    const fieldSelections = serviceGroups.flatMap((group) => group.fieldSelections || []);
+    const optionSelections = serviceGroups.flatMap((group) => group.optionSelections || []);
 
     // Technician lookup / fallback
     const {
@@ -1323,6 +1389,11 @@ export default async function handler(req, res) {
       scheduledAt, totalAmount,
       providerName, resolvedProviderName, techSquareId, assignmentMode,
       jobStreet, jobCity, jobState, jobZip, jobDuration,
+      serviceGroups: serviceGroups.map((group) => ({
+        serviceName: group.serviceName,
+        fieldCount: group.fieldSelections.length,
+        optionCount: group.optionSelections.length,
+      })),
       fieldCount: fieldSelections.length,
       optionCount: optionSelections.length,
       options: optionSelections.map((selection) => (
@@ -1358,9 +1429,7 @@ export default async function handler(req, res) {
       unknownOptions: [],
     });
     const appointmentModel = buildSquareAppointmentModel({
-      serviceName,
-      fieldSelections,
-      optionSelections,
+      serviceGroups,
       rawNotes: notes || '',
     });
     const lineItems = appointmentModel.segmentItems;
@@ -1395,7 +1464,7 @@ export default async function handler(req, res) {
     } else if (!jobStreet || !jobCity) {
       bookingSkipReason = `No service address (street: ${jobStreet || 'null'}, city: ${jobCity || 'null'})`;
     } else if (!primaryVariationId) {
-      bookingSkipReason = `No variation ID for service: "${serviceName}"`;
+      bookingSkipReason = `No variation ID for service(s): "${serviceName}"`;
     } else {
       // Fetch catalog info for all variation IDs (version, bookable status, duration)
       const variationIds = lineItems.map(li => li.catalog_object_id).filter(Boolean);
@@ -1429,6 +1498,11 @@ export default async function handler(req, res) {
       bookingSkipReason,
       bookingError,
       serviceName,
+      serviceGroups: serviceGroups.map((group) => ({
+        serviceName: group.serviceName,
+        fieldCount: group.fieldSelections.length,
+        optionCount: group.optionSelections.length,
+      })),
       segmentItems: lineItems.map((item) => ({
         catalog_object_id: item.catalog_object_id,
         label: item.label,
