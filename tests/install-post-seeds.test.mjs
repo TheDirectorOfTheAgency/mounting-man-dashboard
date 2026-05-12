@@ -49,7 +49,7 @@ test('multi-TV Square job creates one seed JSON per TV and does not repeat the w
 
   assert.equal(seeds.length, 3);
   assert.deepEqual(seeds.map((seed) => seed['tv-size']), ['50"', '75"', '65"']);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$250', '$248.62']);
+  assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$225', '$250']);
   assert.equal(seeds[0]['wall-surface'], 'Wood Slats');
   assert.equal(seeds[1]['wall-surface'], 'Drywall');
   assert.match(seeds[1]['job-notes'], /Drywall — Wall Type/);
@@ -60,7 +60,7 @@ test('multi-TV Square job creates one seed JSON per TV and does not repeat the w
   assert.ok(seeds.every((seed) => seed.price !== '$698.62'));
 });
 
-test('line-item prices use subtotal before tax and tip, with drywall inferred when no surcharge exists', () => {
+test('line-item prices use public service pricing, ignoring taxes, fees, tips, and discounts', () => {
   const seeds = buildInstallPostSeeds({
     customer,
     payment: { id: 'payment-tax', order_id: 'order-tax' },
@@ -70,42 +70,59 @@ test('line-item prices use subtotal before tax and tip, with drywall inferred wh
         name: 'TV Installation',
         variation_name: '50"',
         quantity: '1',
+        gross_sales_money: { amount: 15000 },
         total_money: { amount: 13522 },
         total_tax_money: { amount: 457 },
+        total_discount_money: { amount: 1935 },
+        total_service_charge_money: { amount: 0 },
+        total_card_surcharge_money: { amount: 0 },
+        note: 'Wood Slats',
       },
       {
         name: 'TV Installation',
         variation_name: '75"',
         quantity: '1',
+        gross_sales_money: { amount: 22500 },
         total_money: { amount: 20283 },
         total_tax_money: { amount: 686 },
+        total_discount_money: { amount: 2903 },
+        total_card_surcharge_money: { amount: 0 },
       },
       {
         name: 'TV Installation Over Fireplace',
         variation_name: '65"',
         quantity: '1',
+        gross_sales_money: { amount: 20000 },
         total_money: { amount: 18029 },
         total_tax_money: { amount: 610 },
+        total_discount_money: { amount: 2581 },
+        total_card_surcharge_money: { amount: 0 },
+        note: 'Brick',
       },
       {
         name: 'Wall Type',
         variation_name: 'Brick',
         quantity: '1',
+        gross_sales_money: { amount: 10000 },
         total_money: { amount: 9015 },
         total_tax_money: { amount: 305 },
+        total_discount_money: { amount: 1290 },
       },
       {
         name: 'Wall Type',
         variation_name: 'Wood Slats',
         quantity: '1',
+        gross_sales_money: { amount: 10000 },
         total_money: { amount: 9013 },
         total_tax_money: { amount: 304 },
+        total_discount_money: { amount: 1291 },
       },
     ],
   });
 
   assert.deepEqual(seeds.map((seed) => seed['wall-surface']), ['Wood Slats', 'Drywall', 'Brick']);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$217.74', '$195.97', '$261.29']);
+  assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$225', '$250']);
+  assert.ok(seeds.every((seed) => !['$195.97', '$261.29'].includes(seed.price)));
 });
 
 test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
@@ -135,20 +152,20 @@ test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
   assert.equal(seeds[0]['bracket-type'], 'Full Motion Bracket (Bought from us)');
   assert.equal(seeds[0]['soundbar-mounting'], true);
   assert.equal(seeds[0]['cable-management'], 'Exterior Concealment');
-  assert.equal(seeds[0].price, '$555');
+  assert.equal(seeds[0].price, '$525');
   assert.match(seeds[0]['job-notes'], /65" — TV Installation Over Fireplace/);
   assert.match(seeds[0]['job-notes'], /Soundbar Mounting/);
   assert.match(seeds[0]['job-notes'], /Exterior Concealment/);
 
   assert.equal(seeds[1]['tv-size'], '75"');
-  assert.equal(seeds[1].price, '$150');
+  assert.equal(seeds[1].price, '$225');
   assert.equal(seeds[1]['soundbar-mounting'], undefined);
 });
 
 test('formatted Discord copy exposes multiple copyable seed blocks', () => {
   const blocks = formatInstallSeedBlocks([
     { 'tv-size': '50"', 'wall-surface': 'Wood Slats', price: '$200' },
-    { 'tv-size': '65"', 'wall-surface': 'Brick', 'fireplace-type': 'Fireplace', price: '$248.62' },
+    { 'tv-size': '65"', 'wall-surface': 'Brick', 'fireplace-type': 'Fireplace', price: '$250' },
   ]);
 
   assert.match(blocks, /Suggested seed JSON 1 of 2/);
@@ -171,9 +188,9 @@ test('same-count brackets after all TVs map by index instead of piling onto the 
 
   assert.equal(seeds.length, 2);
   assert.equal(seeds[0]['bracket-type'], 'Fixed Bracket (Bought from us)');
-  assert.equal(seeds[0].price, '$220');
+  assert.equal(seeds[0].price, '$200');
   assert.equal(seeds[1]['bracket-type'], 'Full Motion Bracket (Bought from us)');
-  assert.equal(seeds[1].price, '$300');
+  assert.equal(seeds[1].price, '$250');
 });
 
 test('single add-on after all TVs is omitted when it cannot be tied to a specific TV', () => {
@@ -191,6 +208,6 @@ test('single add-on after all TVs is omitted when it cannot be tied to a specifi
   assert.equal(seeds.length, 2);
   assert.equal(seeds[0]['soundbar-mounting'], undefined);
   assert.equal(seeds[1]['soundbar-mounting'], undefined);
-  assert.equal(seeds[0].price, '$180');
-  assert.equal(seeds[1].price, '$220');
+  assert.equal(seeds[0].price, '$150');
+  assert.equal(seeds[1].price, '$150');
 });
