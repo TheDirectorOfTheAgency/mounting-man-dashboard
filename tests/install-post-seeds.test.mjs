@@ -106,3 +106,42 @@ test('formatted Discord copy exposes multiple copyable seed blocks', () => {
   assert.match(blocks, /Suggested seed JSON 2 of 2/);
   assert.equal((blocks.match(/```json/g) || []).length, 2);
 });
+
+test('same-count brackets after all TVs map by index instead of piling onto the last TV', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-789', order_id: 'order-789' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '55"', 18000),
+      line('TV Installation', '65"', 22000),
+      line('Fixed Bracket', '', 4000),
+      line('Full Motion Bracket', '', 8000),
+    ],
+  });
+
+  assert.equal(seeds.length, 2);
+  assert.equal(seeds[0]['bracket-type'], 'Fixed Bracket (Bought from us)');
+  assert.equal(seeds[0].price, '$220');
+  assert.equal(seeds[1]['bracket-type'], 'Full Motion Bracket (Bought from us)');
+  assert.equal(seeds[1].price, '$300');
+});
+
+test('single add-on after all TVs is omitted when it cannot be tied to a specific TV', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-999', order_id: 'order-999' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '55"', 18000),
+      line('TV Installation', '65"', 22000),
+      line('Soundbar Mounting', '', 7500),
+    ],
+  });
+
+  assert.equal(seeds.length, 2);
+  assert.equal(seeds[0]['soundbar-mounting'], undefined);
+  assert.equal(seeds[1]['soundbar-mounting'], undefined);
+  assert.equal(seeds[0].price, '$180');
+  assert.equal(seeds[1].price, '$220');
+});
