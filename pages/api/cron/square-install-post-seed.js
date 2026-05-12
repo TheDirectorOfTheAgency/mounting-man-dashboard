@@ -1,4 +1,9 @@
 import axios from 'axios';
+import {
+  buildInstallFacts as buildInstallSeedFacts,
+  buildInstallPostSeeds,
+  formatInstallSeedBlocks,
+} from '../../../lib/install-post-seeds.mjs';
 
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
 const SQUARE_VER = '2024-01-18';
@@ -305,7 +310,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
   }
   await kvSet(installDedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
 
-  const facts = buildInstallFacts({ lineItems, payment, order, customer });
+  const facts = buildInstallSeedFacts({ lineItems, payment, order, customer, teamMemberMap: TEAM_MEMBER_MAP });
   const fullName = [customer?.given_name, customer?.family_name].filter(Boolean).join(' ') || customer?.given_name || 'Customer';
   const addr = customer?.address || {};
   const addressParts = [
@@ -324,38 +329,21 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
   const jobParts = facts.sourceLabels;
   const jobSummary = jobParts.length > 0 ? jobParts.join('\n') : '(job details unavailable)';
 
-  const draftSeed = compactSeed({
-    city: facts.city,
-    state: facts.state,
-    title: '',
-    slug: '',
-    'post-body': '',
-    'post-summary': '',
-    'tv-size': facts.tvSize,
-    'tv-brand': facts.tvBrand,
-    'wall-surface': facts.wallSurface,
-    'metro-area': '',
-    'location-id': '',
-    'gallery-style': facts.galleryStyle,
-    'fireplace-type': facts.fireplaceType,
-    price: `$${amount}`,
-    'performed-by': facts.performedBy,
-    'street-name': facts.streetName,
-    'mount-type': '',
-    'room-type': '',
-    'bracket-type': facts.bracketType,
-    'hardware-used': '',
-    'cable-management': facts.cableManagement,
-    'job-notes': jobParts.join(' | '),
-    'local-reference': facts.streetName || '',
-    'nearby-cities': [],
-    'image-path': '',
-    'source-order-id': payment.order_id || '',
-    'source-payment-id': payment.id || '',
-    'trigger-status': triggerStatus,
-    'trigger-source-code': triggerSourceCode,
-    'trigger-event': triggerEvent,
+  const draftSeeds = buildInstallPostSeeds({
+    lineItems,
+    payment,
+    order,
+    customer,
+    amountCents,
+    orderId: payment.order_id || '',
+    paymentId: payment.id || '',
+    invoiceId: '',
+    triggerStatus,
+    triggerSourceCode,
+    triggerEvent,
+    teamMemberMap: TEAM_MEMBER_MAP,
   });
+  const draftSeed = draftSeeds[0] || {};
 
   const factLines = [
     facts.performedBy ? `Technician: ${facts.performedBy}` : '',
@@ -381,9 +369,16 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     `Fallback trigger: Vercel cron succeeded.`,
     `Trigger event: ${triggerEvent}.`,
     payment.order_id ? `Order ID: ${payment.order_id}.` : '',
-    `Wait for the photo in Discord thread ${DISCORD_INSTALL_THREAD}, then prepare the installation post from the queued seed JSON.`,
-    `Seed JSON: ${JSON.stringify(draftSeed)}`,
+    draftSeeds.length > 1
+      ? `Wait for the photo in Discord thread ${DISCORD_INSTALL_THREAD}, then use the matching seed JSON for that specific TV.`
+      : `Wait for the photo in Discord thread ${DISCORD_INSTALL_THREAD}, then prepare the installation post from the queued seed JSON.`,
+    draftSeeds.length > 1
+      ? `Seed JSONs: ${JSON.stringify(draftSeeds)}`
+      : `Seed JSON: ${JSON.stringify(draftSeed)}`,
   ].filter(Boolean).join(' ');
+  const seedIntro = draftSeeds.length > 1
+    ? `**Suggested seed JSONs**: ${draftSeeds.length} TVs found. Copy the JSON block that matches the photo; each price is that TV setup's line-item subtotal.`
+    : '';
 
   const message = [
     `${qMention}📸 **New job paid — ready for installation post**`,
@@ -396,11 +391,11 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     `**Trigger event**: ${triggerEvent}`,
     factLines.length > 0 ? `**Draft facts**:\n${factLines.map((line) => `  • ${line}`).join('\n')}` : '',
     '',
-    '**Suggested seed JSON**:',
-    '```json',
-    JSON.stringify(draftSeed, null, 2),
-    '```',
-    "Drop the job photo and I'll have the post ready to publish.",
+    seedIntro,
+    formatInstallSeedBlocks(draftSeeds),
+    draftSeeds.length > 1
+      ? 'Drop one job photo at a time with the matching JSON for that TV.'
+      : "Drop the job photo and I'll have the post ready to publish.",
   ].join('\n');
 
   await kvRpush(Q_QUEUE_KEY, JSON.stringify({
@@ -411,6 +406,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     paymentId: payment.id || '',
     threadId: DISCORD_INSTALL_THREAD,
     seed: draftSeed,
+    seeds: draftSeeds,
   }));
 
   // ---- Stage seed in dedicated Redis key for Q's photo handler ----
@@ -425,6 +421,8 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     threadId: DISCORD_INSTALL_THREAD,
     stagedAt: new Date().toISOString(),
     source: triggerSourceCode,
+    seeds: draftSeeds,
+    seedCount: draftSeeds.length,
   }), 172800); // 48h TTL
   await kvSadd('install-post:pending-index', pendingKey);
   console.log(`[install-seed-cron] Staged seed in Redis: ${pendingKey}`);
