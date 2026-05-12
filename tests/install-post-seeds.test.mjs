@@ -51,12 +51,61 @@ test('multi-TV Square job creates one seed JSON per TV and does not repeat the w
   assert.deepEqual(seeds.map((seed) => seed['tv-size']), ['50"', '75"', '65"']);
   assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$250', '$248.62']);
   assert.equal(seeds[0]['wall-surface'], 'Wood Slats');
-  assert.equal(seeds[1]['wall-surface'], 'Wood Slats');
+  assert.equal(seeds[1]['wall-surface'], 'Drywall');
+  assert.match(seeds[1]['job-notes'], /Drywall — Wall Type/);
   assert.equal(seeds[2]['wall-surface'], 'Brick');
   assert.equal(seeds[2]['fireplace-type'], 'Fireplace');
   assert.equal(seeds[0]['performed-by'], 'Marshall');
   assert.equal(seeds[0]['street-name'], 'West Lake Harriet Parkway');
   assert.ok(seeds.every((seed) => seed.price !== '$698.62'));
+});
+
+test('line-item prices use subtotal before tax and tip, with drywall inferred when no surcharge exists', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-tax', order_id: 'order-tax' },
+    order: {},
+    lineItems: [
+      {
+        name: 'TV Installation',
+        variation_name: '50"',
+        quantity: '1',
+        total_money: { amount: 13522 },
+        total_tax_money: { amount: 457 },
+      },
+      {
+        name: 'TV Installation',
+        variation_name: '75"',
+        quantity: '1',
+        total_money: { amount: 20283 },
+        total_tax_money: { amount: 686 },
+      },
+      {
+        name: 'TV Installation Over Fireplace',
+        variation_name: '65"',
+        quantity: '1',
+        total_money: { amount: 18029 },
+        total_tax_money: { amount: 610 },
+      },
+      {
+        name: 'Wall Type',
+        variation_name: 'Brick',
+        quantity: '1',
+        total_money: { amount: 9015 },
+        total_tax_money: { amount: 305 },
+      },
+      {
+        name: 'Wall Type',
+        variation_name: 'Wood Slats',
+        quantity: '1',
+        total_money: { amount: 9013 },
+        total_tax_money: { amount: 304 },
+      },
+    ],
+  });
+
+  assert.deepEqual(seeds.map((seed) => seed['wall-surface']), ['Wood Slats', 'Drywall', 'Brick']);
+  assert.deepEqual(seeds.map((seed) => seed.price), ['$217.74', '$195.97', '$261.29']);
 });
 
 test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
