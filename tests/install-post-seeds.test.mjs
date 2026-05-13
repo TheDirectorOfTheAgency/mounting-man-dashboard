@@ -211,3 +211,51 @@ test('single add-on after all TVs is omitted when it cannot be tied to a specifi
   assert.equal(seeds[0].price, '$150');
   assert.equal(seeds[1].price, '$150');
 });
+
+test('frame gallery multi-TV job assigns concealment by index and excludes extension cord supply', () => {
+  const chisagoCustomer = {
+    address: {
+      address_line_1: '29330 Kenwood Way',
+      locality: 'Chisago City',
+      administrative_district_level_1: 'Minnesota',
+      postal_code: '55013',
+    },
+  };
+
+  const seeds = buildInstallPostSeeds({
+    customer: chisagoCustomer,
+    payment: {
+      id: 'bFEWFQIA3Tu9WKnzoHtusKOyk3cZY',
+      order_id: 'MxkwIXQPszMiRM9zTAKkzS2ZkNAZY',
+      customer_id: 'HJM6W7HMKY79D2WWCP21W4NKWC',
+      amount_money: { amount: 115522, currency: 'USD' },
+      tip_money: { amount: 11552, currency: 'USD' },
+    },
+    order: {},
+    orderId: 'MxkwIXQPszMiRM9zTAKkzS2ZkNAZY',
+    paymentId: 'bFEWFQIA3Tu9WKnzoHtusKOyk3cZY',
+    triggerStatus: 'Square webhook succeeded',
+    triggerSourceCode: 'square-webhook',
+    triggerEvent: 'payment.updated',
+    lineItems: [
+      line('Frame / Gallery TV Installation', '43"', 25875),
+      line('Frame / Gallery TV Installation', '55"', 25875),
+      line('Frame / Gallery TV Installation', '55"', 25875),
+      line('Cord Concealing (Frame / Gallery)', 'In-Wall (Normal Wall)', 15525),
+      line('Cord Concealing (Frame / Gallery)', 'In-Wall (Normal Wall)', 15525),
+      line('Cord Concealing', 'Through Existing Conduit', 5175),
+      line('15’ Extension Cord', '', 1672),
+    ],
+  });
+
+  assert.equal(seeds.length, 3);
+  assert.deepEqual(seeds.map((seed) => seed['tv-size']), ['43"', '55"', '55"']);
+  assert.deepEqual(seeds.map((seed) => seed['cable-management']), [
+    'In-Wall Concealment',
+    'In-Wall Concealment',
+    'Existing Conduit',
+  ]);
+  assert.deepEqual(seeds.map((seed) => seed.price), ['$400', '$400', '$300']);
+  assert.ok(seeds.every((seed) => !seed['job-notes'].includes('Extension Cord')));
+  assert.ok(seeds.every((seed) => seed.price !== '$1155.22'));
+});
