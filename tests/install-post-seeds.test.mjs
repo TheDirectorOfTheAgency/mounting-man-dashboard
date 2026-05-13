@@ -60,7 +60,7 @@ test('multi-TV Square job creates one seed JSON per TV and does not repeat the w
   assert.ok(seeds.every((seed) => seed.price !== '$698.62'));
 });
 
-test('line-item prices use public service pricing, ignoring taxes, fees, tips, and discounts', () => {
+test('line-item prices use Square gross line amounts, ignoring taxes, fees, tips, and discounts', () => {
   const seeds = buildInstallPostSeeds({
     customer,
     payment: { id: 'payment-tax', order_id: 'order-tax' },
@@ -121,7 +121,7 @@ test('line-item prices use public service pricing, ignoring taxes, fees, tips, a
   });
 
   assert.deepEqual(seeds.map((seed) => seed['wall-surface']), ['Wood Slats', 'Drywall', 'Brick']);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$225', '$250']);
+  assert.deepEqual(seeds.map((seed) => seed.price), ['$250', '$225', '$300']);
   assert.ok(seeds.every((seed) => !['$195.97', '$261.29'].includes(seed.price)));
 });
 
@@ -258,4 +258,75 @@ test('frame gallery multi-TV job assigns concealment by index and excludes exten
   assert.deepEqual(seeds.map((seed) => seed.price), ['$400', '$400', '$300']);
   assert.ok(seeds.every((seed) => !seed['job-notes'].includes('Extension Cord')));
   assert.ok(seeds.every((seed) => seed.price !== '$1155.22'));
+});
+
+test('gallery seed uses Square line amount over fallback catalog price', () => {
+  const seeds = buildInstallPostSeeds({
+    customer: {
+      address: {
+        address_line_1: '123 Maple Plain Road',
+        locality: 'Maple Plain',
+        administrative_district_level_1: 'Minnesota',
+        postal_code: '55359',
+      },
+    },
+    payment: {
+      id: 'payment-gallery-400',
+      order_id: 'order-gallery-400',
+      amount_money: { amount: 44000, currency: 'USD' },
+      tip_money: { amount: 4000, currency: 'USD' },
+    },
+    order: {},
+    orderId: 'order-gallery-400',
+    paymentId: 'payment-gallery-400',
+    triggerStatus: 'Square webhook succeeded',
+    triggerSourceCode: 'square-webhook',
+    triggerEvent: 'payment.updated',
+    lineItems: [
+      {
+        name: 'Frame / Gallery TV Installation',
+        variation_name: '75"',
+        quantity: '1',
+        gross_sales_money: { amount: 40000, currency: 'USD' },
+        base_price_money: { amount: 40000, currency: 'USD' },
+        total_money: { amount: 40000, currency: 'USD' },
+      },
+    ],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['tv-brand'], 'Samsung Frame');
+  assert.equal(seeds[0]['gallery-style'], true);
+  assert.equal(seeds[0].price, '$400');
+  assert.notEqual(seeds[0].price, '$350');
+});
+
+test('mantelmount seed preserves model, category flag, and Square line amount', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-mm700', order_id: 'order-mm700' },
+    order: {},
+    orderId: 'order-mm700',
+    paymentId: 'payment-mm700',
+    triggerStatus: 'Square webhook succeeded',
+    triggerSourceCode: 'square-webhook',
+    triggerEvent: 'payment.updated',
+    lineItems: [
+      {
+        name: 'MantelMount Installation',
+        variation_name: 'MM700 75"',
+        quantity: '1',
+        gross_sales_money: { amount: 80000, currency: 'USD' },
+        base_price_money: { amount: 80000, currency: 'USD' },
+        total_money: { amount: 80000, currency: 'USD' },
+      },
+    ],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['tv-size'], '75"');
+  assert.equal(seeds[0].mantelmount, true);
+  assert.equal(seeds[0]['mount-type'], 'MantelMount MM700');
+  assert.match(seeds[0]['job-notes'], /75" — MantelMount MM700 Installation/);
+  assert.equal(seeds[0].price, '$800');
 });
