@@ -70,9 +70,13 @@ test('applies processing fee to all lines and sales tax only to hardware lines',
     CREDIT_CARD_PROCESSING_TAX.uid,
     SALES_TAX.uid,
   ]);
-  assert.deepEqual(orderRequest.order.taxes.map((tax) => tax.percentage), [
-    undefined,
-    undefined,
+  assert.deepEqual(orderRequest.order.taxes.map((tax) => Object.keys(tax).sort()), [
+    ['catalog_object_id', 'scope', 'uid'],
+    ['catalog_object_id', 'scope', 'uid'],
+  ]);
+  assert.deepEqual(orderRequest.order.taxes.map((tax) => tax.scope), [
+    'LINE_ITEM',
+    'LINE_ITEM',
   ]);
   assert.deepEqual(orderRequest.order.line_items[0].applied_taxes, [
     { tax_uid: CREDIT_CARD_PROCESSING_TAX.uid },
