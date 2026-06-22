@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  amountToCents,
   buildSquareInvoiceRequest,
   buildSquareOrderRequest,
   buildZenbookerInvoiceModel,
@@ -89,6 +90,25 @@ test('uses a fallback full-invoice line when ZenBooker pricing summary is missin
   assert.deepEqual(model.warnings, ['missing_pricing_summary']);
   assert.equal(model.lineItems[0].name, 'Handyman Work');
   assert.equal(model.lineItems[0].category, 'service');
+});
+
+test('normalizes fallback totals supplied as cents, dollars, or money-like objects', () => {
+  assert.equal(amountToCents(242.88), 24288);
+  assert.equal(amountToCents('242.88'), 24288);
+  assert.equal(amountToCents(24288), 24288);
+  assert.equal(amountToCents('24288'), 24288);
+  assert.equal(amountToCents({ amount: 24288 }), 24288);
+  assert.equal(amountToCents({ total: '242.88' }), 24288);
+
+  const model = buildZenbookerInvoiceModel({
+    rawServices: [],
+    fallbackServiceName: 'Mount 1 Or More TVs (Normal TV Onto Any Surface)',
+    totalAmount: { amount: 24288 },
+  });
+
+  assert.equal(model.subtotalCents, 24288);
+  assert.equal(model.lineItems.length, 1);
+  assert.equal(model.lineItems[0].totalCents, 24288);
 });
 
 test('invoice request creates a draft SHARE_MANUALLY full balance invoice', () => {

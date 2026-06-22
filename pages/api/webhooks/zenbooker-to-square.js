@@ -124,7 +124,20 @@ const FIELD_MAP = {
 
   // ZenBooker sends start_date (ISO) for job start time
   scheduledAt: ['data.start_date', 'start_date', 'data.job.start_date', 'data.scheduled_at', 'data.job.scheduled_at'],
-  totalAmount: ['data.invoice.total', 'invoice.total', 'data.job.invoice.total', 'data.total_amount'],
+  totalAmount: [
+    'data.invoice.total',
+    'invoice.total',
+    'data.job.invoice.total',
+    'data.invoice.amount',
+    'data.job.invoice.amount',
+    'data.total_amount',
+    'data.job.total',
+    'data.total',
+    'data.amount',
+    'total_amount',
+    'total',
+    'amount',
+  ],
 
   // Job service address — ZenBooker sends under service_address (not address)
   jobStreet: ['data.service_address.line1', 'service_address.line1', 'data.job.service_address.line1', 'data.address.line1'],
