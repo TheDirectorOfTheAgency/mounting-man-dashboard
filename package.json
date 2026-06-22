@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs",
+    "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs tests/zenbooker-square-invoice.test.mjs",
     "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs"
   },
   "dependencies": {
