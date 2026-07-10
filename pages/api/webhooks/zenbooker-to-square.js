@@ -1,104 +1,86 @@
 // pages/api/webhooks/zenbooker-to-square.js
 // Receives ZenBooker booking webhooks → finds or creates Square customer record
 //
-// Active flow
-//   1. Find or create Square customer by email/phone
-//   2. Build full-priced invoice lines from ZenBooker services[].pricing_summary
-//   3. Create a Square order with processing-fee tax on every line and sales tax
-//      only on hardware/item lines
-//   4. Create a Square draft invoice from the order; do not publish/auto-send
+// Phase 1 (active): Customer record only
+//   1. Find or create Square customer by email
+//   2. Return customer ID — no orders, no appointments yet
+//
+// Phase 2 (future): Square Appointments
+//   - MAIN_SERVICE_MAP, OPTION_MAP, TECH_MAP, and buildLineItems() are already built
+//   - Will use Square Bookings API (/v2/bookings) to create appointments in Square Calendar
 //
 // Webhook URL configured in ZenBooker:
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker-to-square?secret=<ZENBOOKER_WEBHOOK_SECRET>
 
 import axios from 'axios';
-import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
-import {
-  buildSquareInvoiceRequest,
-  buildSquareOrderRequest,
-  buildZenbookerInvoiceModel,
-} from '../../../lib/zenbooker-square-invoice.mjs';
+import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
+
+let cachedAttributionStore;
+async function getDefaultAttributionStore() {
+  if (cachedAttributionStore !== undefined) return cachedAttributionStore;
+  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+    cachedAttributionStore = null;
+    return cachedAttributionStore;
+  }
+  const { kv } = await import('@vercel/kv');
+  cachedAttributionStore = createAttributionStore(kv);
+  return cachedAttributionStore;
+}
+const mappingLogger = {
+  info(event, details) { console.log(event, details); },
+  error(event, details) { console.error(event, details); },
+};
+
+export async function persistAttributionMapping({
+  attributionStore,
+  jobId,
+  squareCustomerId,
+  squareBookingId = null,
+  logger = mappingLogger,
+}) {
+  if (!jobId || !squareCustomerId) {
+    return { saved: false, reason: 'MISSING_MAPPING_IDENTIFIER' };
+  }
+  if (!attributionStore) {
+    return { saved: false, reason: 'ATTRIBUTION_STORE_UNAVAILABLE' };
+  }
+  const jobRef = opaqueRef(jobId).slice(0, 12);
+  try {
+    await attributionStore.saveJobMapping({ jobId, squareCustomerId, squareBookingId });
+    logger.info('attribution_mapping_saved', {
+      jobRef,
+      hasSquareCustomer: true,
+      hasSquareBooking: Boolean(squareBookingId),
+    });
+    return { saved: true, jobRef };
+  } catch {
+    logger.error('attribution_mapping_failed', { jobRef });
+    return { saved: false, reason: 'ATTRIBUTION_MAPPING_WRITE_FAILED', jobRef };
+  }
+}
 
 // ============================================================================
 // SQUARE CONFIG
 // ============================================================================
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
 const SQUARE_VER  = '2024-01-18';
-const LOCATION_ID = process.env.NEXT_PUBLIC_SQUARE_LOCATION_ID || 'LVNM3Z4RVRWDK';
-const SQUARE_ACCESS_TOKEN = process.env.SQUARE_ACCESS_TOKEN || process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
+const LOCATION_ID = process.env.SQUARE_LOCATION_ID || process.env.NEXT_PUBLIC_SQUARE_LOCATION_ID || 'LVNM3Z4RVRWDK';
 
 const squareHeaders = () => ({
-  Authorization:    `Bearer ${SQUARE_ACCESS_TOKEN}`,
+  Authorization:    `Bearer ${process.env.SQUARE_ACCESS_TOKEN || process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN}`,
   'Square-Version': SQUARE_VER,
   'Content-Type':   'application/json',
   'Accept':         'application/json',
 });
 
-let _kv = null;
-async function getKV() {
-  if (_kv !== null) return _kv;
-  try {
-    if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
-      _kv = false;
-      return false;
-    }
-    const mod = await import('@vercel/kv');
-    _kv = mod.kv;
-    return _kv;
-  } catch (err) {
-    console.warn('Failed to load @vercel/kv:', err.message);
-    _kv = false;
-    return false;
-  }
-}
-
-async function writeBookingAudit(jobId, audit) {
-  if (!jobId) return;
-  const kv = await getKV();
-  if (!kv) return;
-  try {
-    await kv.set(`zb2sq:${jobId}`, audit, { ex: 7776000 });
-  } catch (err) {
-    console.warn('Failed to write ZenBooker Square audit:', err.message);
-  }
-}
-
-async function readBookingAudit(jobId) {
-  if (!jobId) return null;
-  const kv = await getKV();
-  if (!kv) return null;
-  try {
-    return await kv.get(`zb2sq:${jobId}`);
-  } catch (err) {
-    console.warn('Failed to read ZenBooker Square audit:', err.message);
-    return null;
-  }
-}
-
-async function logDiscord(message) {
-  const token = process.env.DISCORD_Q_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN;
-  const channelId = process.env.DISCORD_OPS_CHANNEL || '1472767806452924520';
-  if (!token) return;
-  try {
-    await axios.post(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      { content: message.slice(0, 1900) },
-      { headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' } }
-    );
-  } catch (err) {
-    console.warn('Discord alert failed:', err.response?.data || err.message);
-  }
-}
-
 // ============================================================================
 // FIELD MAP — ZenBooker webhook payload paths (dot notation, tried in order)
-// Always logs the full raw payload — check Vercel logs after first webhook
-// to verify/adjust these paths.
+// Field variants are normalized without writing raw webhook data to logs.
 // ============================================================================
 const FIELD_MAP = {
   eventType:         ['type', 'event', 'event_type'],
   jobId:             ['data.id', 'data.job.id', 'data.job_id', 'id'],
-  jobNumber:         ['data.job_number', 'job_number', 'data.job.job_number', 'data.number', 'number'],
   customerEmail:     ['data.customer.email', 'customer.email', 'data.job.customer.email', 'data.customer_email'],
   customerPhone:     ['data.customer.phone', 'customer.phone', 'data.job.customer.phone', 'data.customer_phone'],
   customerFirstName: ['data.customer.first_name', 'customer.first_name', 'data.job.customer.first_name'],
@@ -124,20 +106,7 @@ const FIELD_MAP = {
 
   // ZenBooker sends start_date (ISO) for job start time
   scheduledAt: ['data.start_date', 'start_date', 'data.job.start_date', 'data.scheduled_at', 'data.job.scheduled_at'],
-  totalAmount: [
-    'data.invoice.total',
-    'invoice.total',
-    'data.job.invoice.total',
-    'data.invoice.amount',
-    'data.job.invoice.amount',
-    'data.total_amount',
-    'data.job.total',
-    'data.total',
-    'data.amount',
-    'total_amount',
-    'total',
-    'amount',
-  ],
+  totalAmount: ['data.invoice.total', 'invoice.total', 'data.job.invoice.total', 'data.total_amount'],
 
   // Job service address — ZenBooker sends under service_address (not address)
   jobStreet: ['data.service_address.line1', 'service_address.line1', 'data.job.service_address.line1', 'data.address.line1'],
@@ -592,18 +561,8 @@ function normalizeSelectionForSummary(fieldName, label) {
     case 'size':
       return normalized;
     case 'fireplace':
-      if (
-        lower.includes('not going above a fireplace') ||
-        lower.includes('not above a fireplace') ||
-        lower.includes('not over a fireplace') ||
-        lower.includes('no fireplace')
-      ) return 'standard wall placement';
-      if (
-        lower.includes('above a fireplace') ||
-        lower.includes('above fireplace') ||
-        lower.includes('over a fireplace') ||
-        lower.includes('over fireplace')
-      ) return 'above fireplace';
+      if (lower.includes('not going above a fireplace')) return 'standard wall placement';
+      if (lower.includes('above a fireplace')) return 'above fireplace';
       return normalized;
     case 'surface':
       if (lower === 'normal drywall' || lower === 'drywall') return 'drywall';
@@ -700,7 +659,8 @@ function extractServiceFieldSelections(rawOptions) {
         const selection = {
           fieldName,
           label: parsed.label,
-          quantity: parsed.quantity,
+          // Use the higher of: text-parsed quantity ("3 x 55 Inches") OR opt.quantity property
+          quantity: Math.max(parsed.quantity, Number(opt?.quantity) || 1),
           rawLabel: (opt?.display_label || opt?.text || opt?.name || '').trim(),
         };
 
@@ -728,64 +688,6 @@ function extractServiceFieldSelections(rawOptions) {
   });
 
   return { fieldSelections, optionSelections };
-}
-
-function getServiceSelectionsFromService(service) {
-  return (
-    service?.service_selections ||
-    service?.service_fields ||
-    service?.selected_options ||
-    service?.options ||
-    service?.line_items ||
-    []
-  );
-}
-
-function extractServiceGroups(payload, fallbackServiceName, fallbackRawOptions) {
-  const rawServices = resolveField(payload, [
-    'data.services',
-    'services',
-    'data.job.services',
-  ]);
-
-  if (Array.isArray(rawServices) && rawServices.length > 0) {
-    const serviceGroups = rawServices.map((service, index) => {
-      const serviceName = (
-        service?.service_name ||
-        service?.name ||
-        service?.service?.name ||
-        (rawServices.length === 1 ? fallbackServiceName : `Service ${index + 1}`)
-      );
-      const rawOptions = getServiceSelectionsFromService(service);
-      const { fieldSelections, optionSelections } = extractServiceFieldSelections(rawOptions);
-
-      return {
-        serviceName: String(serviceName || '').trim(),
-        fieldSelections,
-        optionSelections,
-      };
-    }).filter((group) => (
-      group.serviceName ||
-      group.fieldSelections.length > 0 ||
-      group.optionSelections.length > 0
-    ));
-
-    if (serviceGroups.length > 0) return serviceGroups;
-  }
-
-  const { fieldSelections, optionSelections } = extractServiceFieldSelections(fallbackRawOptions);
-  return [{
-    serviceName: String(fallbackServiceName || '').trim(),
-    fieldSelections,
-    optionSelections,
-  }];
-}
-
-function summarizeServiceNames(serviceGroups) {
-  const names = (serviceGroups || [])
-    .map((group) => group?.serviceName)
-    .filter(Boolean);
-  return names.join(' + ');
 }
 
 function addTvUnitDetail(tvUnit, category, value) {
@@ -997,18 +899,7 @@ function isInformationalSelection(name) {
 
 function isAffirmativeFireplaceSelection(name) {
   const lower = String(name || '').toLowerCase().trim();
-  if (
-    lower.includes('not going above a fireplace') ||
-    lower.includes('not above a fireplace') ||
-    lower.includes('not over a fireplace') ||
-    lower.includes('no fireplace')
-  ) return false;
-  return (
-    lower.includes('above a fireplace') ||
-    lower.includes('above fireplace') ||
-    lower.includes('over a fireplace') ||
-    lower.includes('over fireplace')
-  );
+  return lower.includes('above a fireplace') && !lower.includes('not going above a fireplace');
 }
 
 function shouldUseFireplaceBaseService(serviceName, optionSelections) {
@@ -1073,12 +964,10 @@ function buildLineItems(serviceName, optionSelections) {
   function addVariation(variationId, label, { allowDuplicate = false } = {}) {
     if (!variationId) return false;
     if (!allowDuplicate && addedIds.has(variationId)) {
-      console.log(`  ↩ Skipping duplicate variation ${variationId} (${label})`);
       return false;
     }
     if (!allowDuplicate) addedIds.add(variationId);
     lineItems.push({ catalog_object_id: variationId, quantity: '1', label });
-    console.log(`  ✓ ${label} → ${variationId}`);
     return true;
   }
 
@@ -1097,7 +986,6 @@ function buildLineItems(serviceName, optionSelections) {
     if (sizeSelections.length > 0) {
       sizeSelections.forEach((selection) => {
         for (let i = 0; i < selection.quantity; i += 1) {
-          console.log(`  📐 Size match: "${selection.label}"`);
           addVariation(serviceEntry[selection.label], `Service: ${squareServiceLabel} (${selection.label})`, { allowDuplicate: true });
         }
       });
@@ -1105,7 +993,6 @@ function buildLineItems(serviceName, optionSelections) {
       addVariation(serviceEntry._default, `Service: ${squareServiceLabel}`);
     }
   } else if (serviceName) {
-    console.warn(`  ✗ Unknown service: "${serviceName}" — keeping in seller note`);
     unknownService = serviceName;
   }
 
@@ -1125,7 +1012,6 @@ function buildLineItems(serviceName, optionSelections) {
       }
     } else {
       // Unknown options stay in the seller note so the Square UI avoids $0 placeholders.
-      console.warn(`  ? Unknown option: "${optName}" — keeping in seller note`);
       for (let i = 0; i < selection.quantity; i += 1) {
         unknownOptions.push(optName);
       }
@@ -1144,33 +1030,60 @@ function buildLineItems(serviceName, optionSelections) {
 // SQUARE API CALLS
 // ============================================================================
 
-async function searchSquareCustomers(filter) {
+/** Batch-fetch catalog info for variation IDs. Returns { id → { version, bookable, durationMs } }. */
+async function fetchCatalogInfo(variationIds) {
+  const ids = [...new Set(variationIds.filter(Boolean))];
+  if (ids.length === 0) return {};
+  try {
+    const resp = await axios.post(
+      `${SQUARE_BASE}/catalog/batch-retrieve`,
+      { object_ids: ids },
+      { headers: squareHeaders() }
+    );
+    const map = {};
+    for (const obj of resp.data?.objects || []) {
+      const vd = obj.item_variation_data || {};
+      map[obj.id] = {
+        version:    obj.version,
+        bookable:   vd.available_for_booking === true,
+        durationMs: vd.service_duration || null,
+      };
+    }
+    return map;
+  } catch (err) {
+    console.error('square_catalog_batch_retrieve_failed', {
+      httpStatus: err.response?.status || null,
+      errorType: err.name || 'Error',
+    });
+    return {};
+  }
+}
+
+async function findSquareCustomer(email) {
   try {
     const resp = await axios.post(
       `${SQUARE_BASE}/customers/search`,
-      { query: { filter } },
+      { query: { filter: { email_address: { exact: email } } } },
       { headers: squareHeaders() }
     );
     return resp.data?.customers?.[0] || null;
   } catch (err) {
-    console.error('Square customer search failed:', err.response?.data || err.message);
+    console.error('square_customer_search_failed', {
+      httpStatus: err.response?.status || null,
+      errorType: err.name || 'Error',
+    });
     return null;
   }
 }
 
-async function findSquareCustomerByEmail(email) {
-  if (!email) return null;
-  return searchSquareCustomers({ email_address: { exact: email } });
-}
-
-async function findSquareCustomerByPhone(phone) {
-  const cleanPhone = sanitizePhone(phone);
-  if (!cleanPhone) return null;
-  return searchSquareCustomers({ phone_number: { exact: cleanPhone } });
-}
-
-async function findSquareCustomer({ email, phone }) {
-  return (await findSquareCustomerByEmail(email)) || (await findSquareCustomerByPhone(phone));
+/** Convert ZenBooker datetime (any parseable format) to RFC 3339. Returns null if unparseable. */
+function parseScheduledAt(raw) {
+  if (!raw) return null;
+  try {
+    const d = new Date(raw);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString(); // always valid RFC 3339
+  } catch { return null; }
 }
 
 /** Normalize phone to E.164 (+1XXXXXXXXXX). Returns null if unrecognizable — Square rejects non-E.164. */
@@ -1204,67 +1117,99 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note, a
     const resp = await axios.post(`${SQUARE_BASE}/customers`, body, { headers: squareHeaders() });
     return resp.data?.customer || null;
   } catch (err) {
-    console.error('Square customer create failed:', err.response?.data || err.message);
+    console.error('square_customer_create_failed', {
+      httpStatus: err.response?.status || null,
+      errorType: err.name || 'Error',
+    });
     return null;
   }
 }
 
-function summarizeSquareError(err) {
-  const errors = err.response?.data?.errors || [];
-  const summary = errors.map((error) => (
-    `${error.code}: ${error.detail || error.category || 'Square error'}${error.field ? ` (field: ${error.field})` : ''}`
-  )).join('; ');
-  return summary || err.response?.data || err.message;
-}
-
-async function createSquareOrder(orderRequest) {
+async function createSquareBooking({
+  locationId,
+  startAt,
+  customerId,
+  teamMemberId,
+  lineItems,
+  catalogInfo,
+  address,
+  durationMinutes,
+  customerNote,
+  idempotencyKey,
+}) {
   try {
-    console.log('Square order request:', JSON.stringify({
-      idempotency_key: orderRequest.idempotency_key,
-      order: {
-        ...orderRequest.order,
-        customer_id: orderRequest.order?.customer_id ? '[customer]' : undefined,
-      },
-    }, null, 2));
+    // Build an appointment segment for every bookable service variation.
+    const segments = [];
+
+    for (const item of lineItems || []) {
+      const info = catalogInfo?.[item.catalog_object_id];
+      if (!item.catalog_object_id) {
+        continue;
+      }
+      if (info?.bookable) {
+        const seg = {
+          team_member_id: teamMemberId,
+          service_variation_id: item.catalog_object_id,
+          service_variation_version: info.version,
+        };
+        // Use catalog service_duration (ms → minutes) if available
+        if (info.durationMs) {
+          seg.duration_minutes = Math.round(info.durationMs / 60000);
+        }
+        segments.push(seg);
+      }
+    }
+
+    // Fallback: if no bookable segments found, create a bare segment
+    if (segments.length === 0) {
+      segments.push({
+        team_member_id: teamMemberId,
+        duration_minutes: durationMinutes ? Math.round(Number(durationMinutes)) : 120,
+      });
+    }
+
+    const booking = {
+      location_id:          locationId,
+      start_at:             startAt,
+      customer_id:          customerId,
+      location_type:        'CUSTOMER_LOCATION',
+      appointment_segments: segments,
+    };
+    if (address?.street) {
+      booking.address = {
+        address_line_1: address.street,
+        address_line_2: address.line2 || undefined,
+        locality:       address.city,
+        administrative_district_level_1: address.state || undefined,
+        postal_code:    address.zip   || undefined,
+      };
+    }
+    if (customerNote) booking.customer_note = customerNote;
+
+    console.log('square_booking_request_ready', {
+      segmentCount: segments.length,
+      hasCustomer: Boolean(customerId),
+      hasAddress: Boolean(address?.street),
+      hasCustomerNote: Boolean(customerNote),
+    });
 
     const resp = await axios.post(
-      `${SQUARE_BASE}/orders`,
-      orderRequest,
+      `${SQUARE_BASE}/bookings`,
+      { idempotency_key: idempotencyKey, booking },
       { headers: squareHeaders() }
     );
-    return { order: resp.data?.order || null, error: null };
+    return { booking: resp.data?.booking || null, error: null };
   } catch (err) {
-    const errSummary = summarizeSquareError(err);
-    console.error('Square order create failed:', JSON.stringify(err.response?.data || err.message));
-    return { order: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
+    const errors = err.response?.data?.errors || [];
+    const errSummary = errors.map(e => `${e.code}: ${e.detail} (field: ${e.field || 'n/a'})`).join('; ')
+      || err.response?.data
+      || err.message;
+    console.error('square_booking_create_failed', {
+      httpStatus: err.response?.status || null,
+      errorCodes: errors.map((entry) => entry.code).filter(Boolean),
+    });
+    return { booking: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
   }
-}
-
-async function createSquareInvoice(invoiceRequest) {
-  try {
-    console.log('Square invoice request:', JSON.stringify({
-      idempotency_key: invoiceRequest.idempotency_key,
-      invoice: {
-        ...invoiceRequest.invoice,
-        primary_recipient: invoiceRequest.invoice?.primary_recipient?.customer_id ? { customer_id: '[customer]' } : undefined,
-      },
-    }, null, 2));
-
-    const resp = await axios.post(
-      `${SQUARE_BASE}/invoices`,
-      invoiceRequest,
-      { headers: squareHeaders() }
-    );
-    return { invoice: resp.data?.invoice || null, error: null };
-  } catch (err) {
-    const errSummary = summarizeSquareError(err);
-    console.error('Square invoice create failed:', JSON.stringify(err.response?.data || err.message));
-    return { invoice: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
-  }
-}
-
-function formatAddressLine({ street, line2, city, state, zip }) {
-  return [street, line2, [city, state, zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
 
 // ============================================================================
@@ -1286,37 +1231,26 @@ export default async function handler(req, res) {
 
   const payload = req.body;
 
-  // Log top-level keys + condensed payload (avoid Vercel log truncation)
-  console.log('=== ZENBOOKER → SQUARE WEBHOOK ===');
-  console.log('Top-level keys:', Object.keys(payload || {}));
+  console.log('zenbooker_square_webhook_received', {
+    topLevelFieldCount: Object.keys(payload || {}).length,
+  });
   const dataKeys = payload?.data ? Object.keys(payload.data) : [];
-  console.log('data keys:', dataKeys);
-  const loggedServices = payload?.data?.services || payload?.services || [];
-  console.log('Payload (condensed):', JSON.stringify({
-    type: payload?.type,
-    id: payload?.id || payload?.data?.id,
-    customer_email: payload?.data?.customer?.email || payload?.customer?.email,
-    service_name: payload?.data?.service_name || payload?.service_name,
-    service_names: Array.isArray(loggedServices)
-      ? loggedServices.map((service) => service?.service_name || service?.name).filter(Boolean)
-      : [],
-    service_count: Array.isArray(loggedServices) ? loggedServices.length : 0,
-    service_address: payload?.data?.service_address || payload?.service_address,
-    assigned_providers: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map(p => p.name),
-    estimated_duration_seconds: payload?.data?.estimated_duration_seconds || payload?.estimated_duration_seconds,
-    start_date: payload?.data?.start_date || payload?.start_date,
-    service_fields_count: (
+  console.log('zenbooker_square_payload_shape', {
+    dataFieldCount: dataKeys.length,
+    hasCustomer: Boolean(payload?.data?.customer || payload?.customer),
+    hasServiceAddress: Boolean(payload?.data?.service_address || payload?.service_address),
+    assignedProviderCount: (payload?.data?.assigned_providers || payload?.assigned_providers || []).length,
+    serviceFieldCount: (
       payload?.data?.service_fields
       || payload?.service_fields
       || payload?.data?.services?.[0]?.service_selections
       || payload?.services?.[0]?.service_selections
       || []
     ).length,
-  }));
+  });
 
   try {
     const jobId        = resolveField(payload, FIELD_MAP.jobId);
-    const jobNumber    = resolveField(payload, FIELD_MAP.jobNumber);
     const eventType    = resolveField(payload, FIELD_MAP.eventType);
     const email        = resolveField(payload, FIELD_MAP.customerEmail);
     const phone        = resolveField(payload, FIELD_MAP.customerPhone);
@@ -1325,7 +1259,7 @@ export default async function handler(req, res) {
     const rawNotes     = resolveField(payload, FIELD_MAP.notes);
     // job_notes may be array of strings or a plain string
     const notes = Array.isArray(rawNotes) ? rawNotes.join(' | ') : (rawNotes || null);
-    const fallbackServiceName = resolveField(payload, FIELD_MAP.serviceName) || '';
+    const serviceName  = resolveField(payload, FIELD_MAP.serviceName) || '';
     const rawOptions   = resolveField(payload, FIELD_MAP.lineItems);
     const jobStreet    = resolveField(payload, FIELD_MAP.jobStreet);
     const jobLine2     = resolveField(payload, FIELD_MAP.jobLine2);
@@ -1355,11 +1289,7 @@ export default async function handler(req, res) {
       || resolveField(payload, FIELD_MAP.providerEmail)
       || null;
 
-    const serviceGroups = extractServiceGroups(payload, fallbackServiceName, rawOptions);
-    const rawServices = resolveField(payload, ['data.services', 'services', 'data.job.services']) || [];
-    const serviceName = summarizeServiceNames(serviceGroups) || fallbackServiceName;
-    const fieldSelections = serviceGroups.flatMap((group) => group.fieldSelections || []);
-    const optionSelections = serviceGroups.flatMap((group) => group.optionSelections || []);
+    const { fieldSelections, optionSelections } = extractServiceFieldSelections(rawOptions);
 
     // Technician lookup / fallback
     const {
@@ -1368,59 +1298,31 @@ export default async function handler(req, res) {
       assignmentMode,
     } = resolveTechAssignment(providerName);
 
-    console.log('Extracted:', {
-      jobId, jobNumber, eventType, serviceName,
-      email:        email     ? `${email.slice(0,3)}***`   : null,
-      phone:        phone     ? `***${phone.slice(-4)}`    : null,
-      firstName:    firstName ? `${firstName[0]}***`       : null,
-      scheduledAt, totalAmount,
-      providerName, resolvedProviderName, techSquareId, assignmentMode,
-      jobStreet, jobCity, jobState, jobZip, jobDuration,
-      serviceGroups: serviceGroups.map((group) => ({
-        serviceName: group.serviceName,
-        fieldCount: group.fieldSelections.length,
-        optionCount: group.optionSelections.length,
-      })),
+    const jobRef = jobId ? opaqueRef(jobId).slice(0, 12) : null;
+    console.log('zenbooker_square_fields_extracted', {
+      jobRef,
+      eventType,
+      hasEmail: Boolean(email),
+      hasPhone: Boolean(phone),
+      hasSchedule: Boolean(scheduledAt),
+      hasInvoiceTotal: totalAmount !== null && totalAmount !== undefined,
+      hasMappedProvider: Boolean(techSquareId),
+      assignmentMode,
+      hasAddress: Boolean(jobStreet && jobCity),
+      hasDuration: Boolean(jobDuration),
       fieldCount: fieldSelections.length,
       optionCount: optionSelections.length,
-      options: optionSelections.map((selection) => (
-        selection.quantity > 1 ? `${selection.label} x${selection.quantity}` : selection.label
-      )),
     });
-
-    if (!jobId) {
-      return res.status(200).json({ skipped: true, reason: 'No ZenBooker job ID' });
-    }
 
     if (!email && !phone) {
       return res.status(200).json({ skipped: true, reason: 'No customer email or phone' });
     }
 
-    const dryRun = req.query.dryRun === '1'
-      || req.query.dry_run === '1'
-      || process.env.ZENBOOKER_SQUARE_INVOICE_DRY_RUN === '1';
-    const existingAudit = await readBookingAudit(jobId);
-    if (!dryRun && existingAudit?.squareInvoiceId) {
-      console.log(`Square invoice already recorded for ZenBooker job ${jobId}: ${existingAudit.squareInvoiceId}`);
-      return res.status(200).json({
-        processed: true,
-        skipped: true,
-        reason: 'Square invoice already exists for ZenBooker job',
-        jobId,
-        jobNumber: jobNumber || null,
-        squareCustomerId: existingAudit.squareCustomerId || null,
-        squareOrderId: existingAudit.squareOrderId || null,
-        squareInvoiceId: existingAudit.squareInvoiceId || null,
-      });
-    }
-
     // ── STEP 1: Find or create Square customer ────────────────────────────────
-    let existingCustomer = await findSquareCustomer({ email, phone });
+    let existingCustomer = email ? await findSquareCustomer(email) : null;
     let customer = existingCustomer;
     if (customer) {
-      console.log(`Square customer found: ${customer.id}`);
-    } else if (dryRun) {
-      console.log('Dry-run: Square customer would be created');
+      console.log('square_customer_found', { jobRef });
     } else {
       const note = [
         'Booked via ZenBooker',
@@ -1429,183 +1331,111 @@ export default async function handler(req, res) {
         resolvedProviderName ? `Tech: ${resolvedProviderName}` : null,
       ].filter(Boolean).join(' | ');
       customer = await createSquareCustomer({ firstName, lastName, email, phone, note, address: { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip } });
-      console.log(customer ? `Square customer created: ${customer.id}` : 'Customer creation FAILED');
+      console.log(customer ? 'square_customer_created' : 'square_customer_creation_failed', { jobRef });
     }
 
-    const appointmentModel = buildSquareAppointmentModel({
-      serviceGroups,
-      rawNotes: notes || '',
-    });
-    const invoiceModel = buildZenbookerInvoiceModel({
-      rawServices,
-      fallbackServiceName: serviceName,
-      totalAmount,
-    });
-    const addressLine = formatAddressLine({
-      street: jobStreet,
-      line2: jobLine2,
-      city: jobCity,
-      state: jobState,
-      zip: jobZip,
-    });
-    const mappingWarnings = [...new Set([
-      ...invoiceModel.warnings,
-      ...appointmentModel.warnings,
-    ])];
-
-    console.log('Square invoice model:', JSON.stringify({
+    // Build line items once — used by both booking and order
+    const {
+      lineItems,
+      unknownOptions,
+      unknownService,
+      effectiveServiceName,
+    } = buildLineItems(serviceName, optionSelections);
+    const normalizedJob = normalizeZenbookerJob({
       jobId,
-      jobNumber,
-      serviceName,
-      dryRun,
-      subtotalCents: invoiceModel.subtotalCents,
-      expectedTotalCents: invoiceModel.expectedTotalCents,
-      lineCount: invoiceModel.lineItems.length,
-      lines: invoiceModel.lineItems.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        basePriceCents: item.basePriceCents,
-        category: item.category,
-        appliedTaxUids: item.appliedTaxUids,
-      })),
-      mappingWarnings,
-      unknownOptions: appointmentModel.unknownOptions,
-    }, null, 2));
+      serviceName: effectiveServiceName || serviceName,
+      providerName: resolvedProviderName,
+      fieldSelections,
+      unknownOptions,
+    });
+    const primaryVariationId = lineItems[0]?.catalog_object_id || null;
 
-    // ── STEP 2: Create Square order + draft invoice ──────────────────────────
-    let order = null;
-    let invoice = null;
-    let orderError = null;
-    let invoiceError = null;
-    let invoiceSkipReason = null;
-    const requestCustomerId = customer?.id || (dryRun ? 'DRY_RUN_CUSTOMER' : null);
+    console.log('zenbooker_square_job_normalized', {
+      jobRef,
+      tvCount: normalizedJob.tvCount,
+      additionalSelectionCount: normalizedJob.additionalSelections.length,
+      unknownOptionCount: normalizedJob.unknownOptions.length,
+    });
 
-    const orderRequest = requestCustomerId ? buildSquareOrderRequest({
-      locationId: LOCATION_ID,
-      customerId: requestCustomerId,
-      jobId,
-      jobNumber,
-      serviceName,
-      scheduledAt,
-      invoiceModel,
-    }) : null;
+    // ── STEP 2: Create Square appointment (calendar / tech scheduling) ────────
+    let booking = null;
+    let bookingSkipReason = null;
+    let bookingError = null;
+    const startAt = parseScheduledAt(scheduledAt);
 
-    if (!requestCustomerId) {
-      invoiceSkipReason = 'No Square customer ID';
-    } else if (invoiceModel.lineItems.length === 0) {
-      invoiceSkipReason = 'No priced ZenBooker invoice lines';
-    } else if (dryRun) {
-      console.log('Dry-run: Square order/invoice would be created');
+    if (!customer?.id) {
+      bookingSkipReason = 'No Square customer ID';
+    } else if (!techSquareId) {
+      bookingSkipReason = `Tech not mapped: "${providerName}"`;
+    } else if (!startAt) {
+      bookingSkipReason = `Invalid scheduledAt: "${scheduledAt}"`;
+    } else if (!jobStreet || !jobCity) {
+      bookingSkipReason = `No service address (street: ${jobStreet || 'null'}, city: ${jobCity || 'null'})`;
+    } else if (!primaryVariationId) {
+      bookingSkipReason = `No variation ID for service: "${serviceName}"`;
     } else {
-      const orderResult = await createSquareOrder(orderRequest);
-      order = orderResult.order;
-      orderError = orderResult.error;
+      // Fetch catalog info for all variation IDs (version, bookable status, duration)
+      const variationIds = lineItems.map(li => li.catalog_object_id).filter(Boolean);
+      const catalogInfo = await fetchCatalogInfo(variationIds);
+      console.log('square_catalog_info_loaded', { jobRef, variationCount: Object.keys(catalogInfo).length });
 
-      if (!order?.id) {
-        invoiceSkipReason = `Square order creation failed: ${orderError || 'unknown error'}`;
-      } else {
-        const invoiceRequest = buildSquareInvoiceRequest({
-          locationId: LOCATION_ID,
-          orderId: order.id,
-          customerId: customer.id,
-          jobId,
-          jobNumber,
-          serviceName,
-          scheduledAt,
-          addressLine,
-          sellerNote: appointmentModel.note || notes || '',
-        });
-        const invoiceResult = await createSquareInvoice(invoiceRequest);
-        invoice = invoiceResult.invoice;
-        invoiceError = invoiceResult.error;
-        if (!invoice?.id) {
-          invoiceSkipReason = `Square invoice creation failed: ${invoiceError || 'unknown error'}`;
-        }
-      }
+      const result = await createSquareBooking({
+        locationId:      LOCATION_ID,
+        startAt,
+        customerId:      customer.id,
+        teamMemberId:    techSquareId,
+        lineItems,
+        catalogInfo,
+        address:         { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip },
+        durationMinutes: jobDuration || null,
+        customerNote:    notes   || undefined,
+        idempotencyKey:  `zb-${jobId}`,
+      });
+      booking = result?.booking || result;
+      bookingError = result?.error || null;
+      console.log(booking?.id ? 'square_booking_created' : 'square_booking_creation_failed', {
+        jobRef,
+        hasError: Boolean(bookingError),
+      });
     }
+    if (bookingSkipReason) console.warn('square_booking_skipped', { jobRef, reason: bookingSkipReason });
 
-    if (invoiceSkipReason) console.warn(`Skipping invoice — ${invoiceSkipReason}`);
-
-    const audit = {
+    const attributionStore = await getDefaultAttributionStore();
+    const mappingResult = await persistAttributionMapping({
+      attributionStore,
       jobId,
-      jobNumber: jobNumber || null,
-      processedAt: new Date().toISOString(),
-      mode: dryRun ? 'dry_run' : 'draft_invoice',
       squareCustomerId: customer?.id || null,
-      squareOrderId: order?.id || null,
-      squareInvoiceId: invoice?.id || null,
-      orderCreated: !!order?.id,
-      invoiceCreated: !!invoice?.id,
-      invoiceStatus: invoice?.status || null,
-      invoiceSkipReason,
-      orderError,
-      invoiceError,
-      serviceName,
-      serviceGroups: serviceGroups.map((group) => ({
-        serviceName: group.serviceName,
-        fieldCount: group.fieldSelections.length,
-        optionCount: group.optionSelections.length,
-      })),
-      invoiceLines: invoiceModel.lineItems.map((item) => ({
-        name: item.name,
-        quantity: item.quantity,
-        basePriceCents: item.basePriceCents,
-        totalCents: item.totalCents,
-        category: item.category,
-        appliedTaxUids: item.appliedTaxUids,
-      })),
-      mappingWarnings,
-      unknownOptions: appointmentModel.unknownOptions,
-    };
-
-    if (!dryRun) {
-      await writeBookingAudit(jobId, audit);
-    }
-
-    if (invoiceSkipReason || orderError || invoiceError || mappingWarnings.length > 0) {
-      await logDiscord([
-        'ZenBooker to Square invoice needs review',
-        jobNumber ? `Job #: ${jobNumber}` : null,
-        jobId ? `Job ID: ${jobId}` : null,
-        order?.id ? `Square order: ${order.id}` : null,
-        invoice?.id ? `Square invoice: ${invoice.id}` : null,
-        invoice?.status ? `Invoice status: ${invoice.status}` : null,
-        invoiceSkipReason ? `Skipped: ${invoiceSkipReason}` : null,
-        orderError ? `Order error: ${orderError}` : null,
-        invoiceError ? `Invoice error: ${invoiceError}` : null,
-        mappingWarnings.length ? `Warnings: ${mappingWarnings.join(', ')}` : null,
-      ].filter(Boolean).join('\n'));
+      squareBookingId: booking?.id || null,
+    });
+    if (!mappingResult.saved && mappingResult.reason !== 'MISSING_MAPPING_IDENTIFIER') {
+      return res.status(503).json({
+        processed: false,
+        retryable: true,
+        errorCode: mappingResult.reason,
+        jobRef,
+      });
     }
 
     // Always 200 to prevent ZenBooker retries
     return res.status(200).json({
       processed:        true,
-      dryRun,
-      jobId,
-      jobNumber:        jobNumber || null,
-      squareCustomerId: customer?.id   || null,
-      customerCreated:  !dryRun && !existingCustomer && !!customer?.id,
-      squareOrderId:    order?.id      || null,
-      orderCreated:     !!order?.id,
-      squareInvoiceId:  invoice?.id    || null,
-      invoiceCreated:   !!invoice?.id,
-      invoiceStatus:    invoice?.status || null,
-      invoiceSkipReason,
-      orderError,
-      invoiceError,
+      jobRef,
+      hasSquareCustomer: Boolean(customer?.id),
+      customerCreated:  !existingCustomer,
+      bookingCreated:   !!booking?.id,
+      attributionMappingSaved: mappingResult.saved,
+      bookingSkipReason,
+      bookingError,
       techMatched:      !!techSquareId,
-      techName:         resolvedProviderName || null,
       techAssignmentMode: assignmentMode,
-      lineCount:        invoiceModel.lineItems.length,
-      subtotalCents:    invoiceModel.subtotalCents,
-      expectedTotalCents: invoiceModel.expectedTotalCents,
-      mappingWarnings,
-      unknownOptions:   appointmentModel.unknownOptions,
-      dryRunOrderRequest: dryRun ? orderRequest : undefined,
+      normalizedTvCount: normalizedJob.tvCount,
     });
 
   } catch (err) {
-    console.error('ZenBooker→Square error:', err.message, err.stack);
-    return res.status(200).json({ processed: false, error: err.message });
+    console.error('zenbooker_square_unhandled_error', {
+      errorType: err.name || 'Error',
+      httpStatus: err.response?.status || null,
+    });
+    return res.status(503).json({ processed: false, retryable: true, errorCode: 'INTERNAL_ERROR' });
   }
 }

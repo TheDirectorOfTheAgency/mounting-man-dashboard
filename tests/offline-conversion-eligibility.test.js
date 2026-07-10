@@ -1,0 +1,131 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  evaluateJob,
+  extractJobCandidate,
+  normalizeAcquisition,
+  opaqueRef,
+} from '../lib/offline-conversion-eligibility.js';
+
+function eligibleJob(overrides = {}) {
+  return {
+    customerCreated: true,
+    status: 'complete',
+    email: 'customer@example.com',
+    phone: null,
+    consentStatus: 'GRANTED',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    disclosureVersion: '2026-07-10',
+    ...overrides,
+  };
+}
+
+test('a customer-created completed job with matching data and disclosure is eligible', () => {
+  assert.deepEqual(evaluateJob(eligibleJob()), { eligible: true, reason: null });
+});
+
+test('staff and test jobs are ineligible', () => {
+  assert.equal(evaluateJob(eligibleJob({ customerCreated: false })).reason, 'STAFF_OR_TEST_JOB');
+  assert.equal(evaluateJob(eligibleJob({ isTest: true })).reason, 'STAFF_OR_TEST_JOB');
+});
+
+test('incomplete jobs are ineligible', () => {
+  assert.equal(evaluateJob(eligibleJob({ status: 'scheduled' })).reason, 'JOB_NOT_COMPLETED');
+});
+
+test('denied consent is ineligible', () => {
+  assert.equal(evaluateJob(eligibleJob({ consentStatus: 'DENIED' })).reason, 'CONSENT_DENIED');
+});
+
+test('an email or phone is required for enhanced conversion matching', () => {
+  assert.equal(
+    evaluateJob(eligibleJob({ email: null, phone: null })).reason,
+    'MISSING_CUSTOMER_IDENTIFIER'
+  );
+});
+
+test('the configured customer-facing disclosure is required', () => {
+  assert.equal(evaluateJob(eligibleJob({ disclosureVersion: null })).reason, 'PRIVACY_DISCLOSURE_MISSING');
+});
+
+test('a valid completion timestamp is required', () => {
+  assert.equal(evaluateJob(eligibleJob({ completedAt: null })).reason, 'MISSING_COMPLETION_TIME');
+  assert.equal(evaluateJob(eligibleJob({ completedAt: 'not-a-date' })).reason, 'MISSING_COMPLETION_TIME');
+});
+
+test('paid acquisition requires an explicit click id or paid medium', () => {
+  assert.equal(normalizeAcquisition({ source: 'Google' }).paidEvidence, false);
+  assert.equal(normalizeAcquisition({ utm_medium: 'cpc' }).paidEvidence, true);
+  assert.equal(normalizeAcquisition({ utmMedium: 'paid_search' }).paidEvidence, true);
+  assert.equal(normalizeAcquisition({ gclid: 'opaque-click-id' }).paidEvidence, true);
+});
+
+test('acquisition normalization records presence and classifications, not raw values', () => {
+  const result = normalizeAcquisition({
+    source: 'Google',
+    utm_source: 'google',
+    utm_medium: 'cpc',
+    utm_campaign: 'brand',
+    landing_page: 'https://example.com/secret-path',
+    gclid: 'opaque-click-id',
+  });
+
+  assert.deepEqual(result, {
+    paidEvidence: true,
+    paidMarker: 'gclid',
+    sourceClass: 'google',
+    mediumClass: 'cpc',
+    hasCampaign: true,
+    hasLandingContext: true,
+    hasGclid: true,
+    hasGbraid: false,
+    hasWbraid: false,
+  });
+  assert.equal(JSON.stringify(result).includes('opaque-click-id'), false);
+  assert.equal(JSON.stringify(result).includes('secret-path'), false);
+});
+
+test('candidate extraction accepts common ZenBooker job shapes without invoice value fallback', () => {
+  const candidate = extractJobCandidate(
+    {
+      event: 'job.completed',
+      data: {
+        id: 'job-sensitive-id',
+        status: 'complete',
+        created_by: 'customer',
+        completed_at: '2026-07-10T15:30:00.000Z',
+        customer: {
+          id: 'zen-customer-sensitive',
+          email: 'customer@example.com',
+          phone: '+16125550123',
+        },
+        booking_session: 'booking-session-sensitive',
+        consent: { ad_user_data: 'GRANTED' },
+        invoice: { total: 99999 },
+        tracking: { utm_medium: 'cpc' },
+      },
+    },
+    { disclosureVersion: '2026-07-10' }
+  );
+
+  assert.equal(candidate.jobId, 'job-sensitive-id');
+  assert.equal(candidate.zenCustomerId, 'zen-customer-sensitive');
+  assert.equal(candidate.bookingSession, 'booking-session-sensitive');
+  assert.equal(candidate.customerCreated, true);
+  assert.equal(candidate.status, 'complete');
+  assert.equal(candidate.email, 'customer@example.com');
+  assert.equal(candidate.phone, '+16125550123');
+  assert.equal(candidate.consentStatus, 'GRANTED');
+  assert.equal(candidate.disclosureVersion, '2026-07-10');
+  assert.equal(candidate.acquisition.paidEvidence, true);
+  assert.equal('conversionValue' in candidate, false);
+});
+
+test('opaque references are deterministic and never contain the source identifier', () => {
+  const first = opaqueRef('job-sensitive-id');
+  const second = opaqueRef('job-sensitive-id');
+  assert.equal(first, second);
+  assert.match(first, /^[a-f0-9]{24}$/);
+  assert.equal(first.includes('job-sensitive-id'), false);
+});
