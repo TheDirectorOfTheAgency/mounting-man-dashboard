@@ -162,6 +162,34 @@ test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
   assert.equal(seeds[1]['soundbar-mounting'], undefined);
 });
 
+test('Frame / Gallery soundbar bracket does not classify a standard TV as Samsung Frame', () => {
+  const seeds = buildInstallPostSeeds({
+    customer: {
+      address: {
+        address_line_1: '450 Ford Road',
+        locality: 'Minneapolis',
+        administrative_district_level_1: 'Minnesota',
+        postal_code: '55426',
+      },
+    },
+    payment: { id: 'payment-soundbar-frame-bracket', order_id: 'order-soundbar-frame-bracket' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '75"', 22500),
+      line('TV Mount / Bracket', 'Standard Tilt', 2500),
+      line('Soundbar Mounting', 'Yes', 10000),
+      line('Soundbar Bracket (Frame / Gallery)', 'Yes - Premium Bracket', 4800),
+      line('Cord Concealing', 'In-Wall w/ Power Bridge (Drywall)', 35000),
+    ],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['tv-size'], '75"');
+  assert.equal(seeds[0]['tv-brand'], undefined);
+  assert.equal(seeds[0]['gallery-style'], false);
+  assert.equal(seeds[0]['soundbar-mounting'], true);
+});
+
 test('formatted Discord copy exposes multiple copyable seed blocks', () => {
   const blocks = formatInstallSeedBlocks([
     { 'tv-size': '50"', 'wall-surface': 'Wood Slats', price: '$200' },
@@ -258,6 +286,24 @@ test('frame gallery multi-TV job assigns concealment by index and excludes exten
   assert.deepEqual(seeds.map((seed) => seed.price), ['$400', '$400', '$300']);
   assert.ok(seeds.every((seed) => !seed['job-notes'].includes('Extension Cord')));
   assert.ok(seeds.every((seed) => seed.price !== '$1155.22'));
+});
+
+test('mixed gallery and standard TV lines keep gallery classification on only the gallery TV', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-mixed-gallery', order_id: 'order-mixed-gallery' },
+    order: {},
+    lineItems: [
+      line('Frame / Gallery TV Installation', '55"', 25000),
+      line('TV Installation', '75"', 22500),
+    ],
+  });
+
+  assert.equal(seeds.length, 2);
+  assert.equal(seeds[0]['tv-brand'], 'Samsung Frame');
+  assert.equal(seeds[0]['gallery-style'], true);
+  assert.equal(seeds[1]['tv-brand'], undefined);
+  assert.equal(seeds[1]['gallery-style'], false);
 });
 
 test('gallery seed uses Square line amount over fallback catalog price', () => {
