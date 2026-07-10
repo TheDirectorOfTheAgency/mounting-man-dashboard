@@ -24,6 +24,7 @@ import crypto from 'crypto';
 import {
   buildInstallFacts as buildInstallSeedFacts,
   buildInstallPostSeeds,
+  formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../../../lib/install-post-seeds.mjs';
 
@@ -644,7 +645,6 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     payment,
     order,
     customer,
-    amountCents,
     orderId,
     paymentId: payment?.id || '',
     invoiceId: invoice?.id || '',
@@ -654,6 +654,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     teamMemberMap: TEAM_MEMBER_MAP,
   });
   const draftSeed = draftSeeds[0] || {};
+  const installSubtotal = formatInstallPostSubtotal({ seeds: draftSeeds, order });
 
   const factLines = [
     facts.performedBy ? `Technician: ${facts.performedBy}` : '',
@@ -676,7 +677,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     facts.performedBy ? `Technician: ${facts.performedBy}.` : '',
     facts.city ? `City: ${facts.city}.` : '',
     facts.streetName ? `Street seed: ${facts.streetName}.` : '',
-    `Amount: $${amount}.`,
+    installSubtotal ? `Installation subtotal (no tip): ${installSubtotal}.` : '',
     `Square webhook: succeeded.`,
     `Trigger event: ${triggerEvent}.`,
     orderId ? `Order ID: ${orderId}.` : '',
@@ -695,7 +696,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     `**Client**: ${fullName}`,
     `**Address**: ${addressLine}`,
     `**Job**:\n${jobParts.length > 0 ? jobParts.map(p => `  • ${p}`).join('\n') : '  • ' + jobSummary}`,
-    `**Amount**: $${amount}`,
+    installSubtotal ? `**Installation subtotal (no tip)**: ${installSubtotal}` : '',
     `**Square webhook**: succeeded`,
     `**Trigger event**: ${triggerEvent}`,
     factLines.length > 0 ? `**Draft facts**:\n${factLines.map(line => `  • ${line}`).join('\n')}` : '',
@@ -714,6 +715,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     orderId: orderId || '',
     paymentId: payment?.id || '',
     invoiceId: invoice?.id || '',
+    installSubtotal,
     threadId: DISCORD_INSTALL_THREAD,
     seed: draftSeed,
     seeds: draftSeeds,

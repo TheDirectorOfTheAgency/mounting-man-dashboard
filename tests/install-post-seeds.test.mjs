@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildInstallPostSeeds,
+  formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../lib/install-post-seeds.mjs';
 
@@ -375,4 +376,96 @@ test('mantelmount seed preserves model, category flag, and Square line amount', 
   assert.equal(seeds[0]['mount-type'], 'MantelMount MM700');
   assert.match(seeds[0]['job-notes'], /75" — MantelMount MM700 Installation/);
   assert.equal(seeds[0].price, '$800');
+});
+
+test('fallback seed uses verified order subtotal before tax and tip when line items are unavailable', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: {
+      id: 'payment-tip-fallback',
+      order_id: 'order-tip-fallback',
+      amount_money: { amount: 47250, currency: 'USD' },
+      total_money: { amount: 57250, currency: 'USD' },
+      tip_money: { amount: 10000, currency: 'USD' },
+    },
+    order: {
+      total_money: { amount: 57250, currency: 'USD' },
+      total_tax_money: { amount: 2250, currency: 'USD' },
+      total_tip_money: { amount: 10000, currency: 'USD' },
+    },
+    amountCents: 47250,
+    orderId: 'order-tip-fallback',
+    paymentId: 'payment-tip-fallback',
+    lineItems: [],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].price, '$450');
+  assert.notEqual(seeds[0].price, '$472.50');
+  assert.notEqual(seeds[0].price, '$572.50');
+});
+
+test('fallback seed omits public price when no pre-tax order subtotal can be verified', () => {
+  const [seed] = buildInstallPostSeeds({
+    customer,
+    payment: {
+      id: 'payment-unverified-fallback',
+      amount_money: { amount: 47250, currency: 'USD' },
+      total_money: { amount: 57250, currency: 'USD' },
+      tip_money: { amount: 10000, currency: 'USD' },
+    },
+    order: {},
+    amountCents: 47250,
+    lineItems: [],
+  });
+
+  assert.equal(seed.price, undefined);
+});
+
+test('Viking Drive-style payment publishes $150 line-item subtotal, not tax or tip', () => {
+  const order = {
+    total_money: { amount: 17077, currency: 'USD' },
+    total_tax_money: { amount: 525, currency: 'USD' },
+    total_tip_money: { amount: 1552, currency: 'USD' },
+  };
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: {
+      id: 'payment-viking',
+      order_id: 'order-viking',
+      amount_money: { amount: 15525, currency: 'USD' },
+      total_money: { amount: 17077, currency: 'USD' },
+      tip_money: { amount: 1552, currency: 'USD' },
+    },
+    order,
+    amountCents: 15525,
+    orderId: 'order-viking',
+    paymentId: 'payment-viking',
+    lineItems: [{
+      name: 'TV Installation',
+      variation_name: '55"',
+      quantity: '1',
+      base_price_money: { amount: 15000, currency: 'USD' },
+      gross_sales_money: { amount: 15000, currency: 'USD' },
+      total_tax_money: { amount: 525, currency: 'USD' },
+      total_money: { amount: 15525, currency: 'USD' },
+    }],
+  });
+
+  assert.equal(seeds[0].price, '$150');
+  assert.equal(formatInstallPostSubtotal({ seeds, order }), '$150');
+});
+
+test('install post subtotal display sums seed prices instead of Square charged total', () => {
+  const subtotal = formatInstallPostSubtotal({
+    seeds: [{ price: '$400' }, { price: '$300' }],
+    order: {
+      total_money: { amount: 85000, currency: 'USD' },
+      total_tax_money: { amount: 0, currency: 'USD' },
+      total_tip_money: { amount: 15000, currency: 'USD' },
+    },
+  });
+
+  assert.equal(subtotal, '$700');
+  assert.notEqual(subtotal, '$850');
 });

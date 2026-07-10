@@ -2,6 +2,7 @@ import axios from 'axios';
 import {
   buildInstallFacts as buildInstallSeedFacts,
   buildInstallPostSeeds,
+  formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../../../lib/install-post-seeds.mjs';
 
@@ -302,8 +303,6 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     return { skipped: 'missing_discord_token' };
   }
 
-  const amountCents = payment.amount_money?.amount || payment.total_money?.amount || 0;
-  const amount = (amountCents / 100).toFixed(2);
   const installDedupKey = `square:install-post:${payment.order_id || payment.id || 'unknown'}`;
   if (await kvExists(installDedupKey)) {
     return { skipped: 'duplicate', key: installDedupKey };
@@ -334,7 +333,6 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     payment,
     order,
     customer,
-    amountCents,
     orderId: payment.order_id || '',
     paymentId: payment.id || '',
     invoiceId: '',
@@ -344,6 +342,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     teamMemberMap: TEAM_MEMBER_MAP,
   });
   const draftSeed = draftSeeds[0] || {};
+  const installSubtotal = formatInstallPostSubtotal({ seeds: draftSeeds, order });
 
   const factLines = [
     facts.performedBy ? `Technician: ${facts.performedBy}` : '',
@@ -364,7 +363,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     facts.performedBy ? `Technician: ${facts.performedBy}.` : '',
     facts.city ? `City: ${facts.city}.` : '',
     facts.streetName ? `Street seed: ${facts.streetName}.` : '',
-    `Amount: $${amount}.`,
+    installSubtotal ? `Installation subtotal (no tip): ${installSubtotal}.` : '',
     `Square webhook: failed.`,
     `Fallback trigger: Vercel cron succeeded.`,
     `Trigger event: ${triggerEvent}.`,
@@ -385,7 +384,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     `**Client**: ${fullName}`,
     `**Address**: ${addressLine}`,
     `**Job**:\n${jobParts.length > 0 ? jobParts.map((p) => `  • ${p}`).join('\n') : `  • ${jobSummary}`}`,
-    `**Amount**: $${amount}`,
+    installSubtotal ? `**Installation subtotal (no tip)**: ${installSubtotal}` : '',
     `**Square webhook**: failed`,
     `**Fallback trigger**: Vercel cron succeeded`,
     `**Trigger event**: ${triggerEvent}`,
@@ -404,6 +403,7 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     timestamp: new Date().toISOString(),
     orderId: payment.order_id || '',
     paymentId: payment.id || '',
+    installSubtotal,
     threadId: DISCORD_INSTALL_THREAD,
     seed: draftSeed,
     seeds: draftSeeds,
