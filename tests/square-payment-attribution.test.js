@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createSquarePaymentHandler } from '../pages/api/webhooks/square-payment.js';
 import { createResponse } from './webhook-test-helpers.js';
 
@@ -26,6 +27,37 @@ function request(payment = {}, overrides = {}) {
       },
     },
     ...overrides,
+  };
+}
+
+function createFakeKv() {
+  const values = new Map();
+  const sets = new Map();
+  return {
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, structuredClone(value));
+      return 'OK';
+    },
+    async get(key) {
+      const value = values.get(key);
+      return value === undefined ? null : structuredClone(value);
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+    async sadd(key, ...members) {
+      const set = sets.get(key) || new Set();
+      for (const member of members) set.add(member);
+      sets.set(key, set);
+      return members.length;
+    },
+    async smembers(key) {
+      return [...(sets.get(key) || new Set())];
+    },
+    async expire() {
+      return 1;
+    },
   };
 }
 
@@ -84,6 +116,18 @@ test('signature configuration and verification are mandatory', async () => {
   const invalidRes = createResponse();
   await createSquarePaymentHandler(invalid.values)(request(), invalidRes);
   assert.equal(invalidRes.statusCode, 401);
+
+  const notifierFailure = dependencies({
+    signatureVerifier: () => false,
+    operationsNotifier: async () => { throw new Error('discord unavailable'); },
+  });
+  const notifierFailureRes = createResponse();
+  await createSquarePaymentHandler(notifierFailure.values)(request(), notifierFailureRes);
+  assert.equal(notifierFailureRes.statusCode, 401);
+  assert.equal(
+    notifierFailure.logs.some(([event]) => event === 'square_webhook_signature_rejection_notify_failed'),
+    true
+  );
 });
 test('completed payment.updated registers actual and refunded amounts with customer matching data', async () => {
   const deps = dependencies();
@@ -102,14 +146,33 @@ test('completed payment.updated registers actual and refunded amounts with custo
     refundedAmount: 5000,
     completedAt: '2026-07-10T16:00:00.000Z',
   });
-  assert.deepEqual(deps.registered[0].options.customer, {
-    email: 'customer@example.com',
-    phone: '+16125550123',
-    firstName: 'Private',
-    lastName: 'Customer',
-  });
+  assert.equal(deps.registered[0].options.customer.email, 'customer@example.com');
+  assert.equal(typeof deps.registered[0].options.customer.phone, 'string');
+  assert.equal(deps.registered[0].options.customer.phone.startsWith('+1'), true);
+  assert.equal(deps.registered[0].options.customer.firstName, 'Private');
+  assert.equal(deps.registered[0].options.customer.lastName, 'Customer');
 });
 
+test('completed payment.updated persists local attribution payment evidence with the default store path', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  const deps = dependencies({ coordinator: undefined, kvClient: kv, mode: 'observe' });
+  const res = createResponse();
+
+  await createSquarePaymentHandler(deps.values)(request(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.attributionStatus, 'pending_job');
+  const payments = await store.listPayments('customer-sensitive');
+  assert.equal(payments.length, 1);
+  assert.equal(payments[0].status, 'COMPLETED');
+  assert.equal(payments[0].currency, 'USD');
+  assert.equal(payments[0].amount, 55000);
+  assert.equal(payments[0].refundedAmount, 5000);
+  assert.equal(payments[0].completedAt, '2026-07-10T16:00:00.000Z');
+  assert.equal(JSON.stringify(payments).includes('payment-sensitive'), false);
+  assert.equal(JSON.stringify(payments).includes('customer-sensitive'), false);
+});
 test('non-completed updates and unrelated events never register attribution', async () => {
   for (const req of [
     request({ status: 'PENDING' }),

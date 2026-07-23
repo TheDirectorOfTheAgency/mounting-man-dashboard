@@ -9,7 +9,8 @@
     "lint": "next lint",
     "test": "node --import tsx --test tests/*.test.js tests/*.test.mjs",
     "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs tests/zenbooker-square-invoice.test.mjs",
-    "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs"
+    "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs",
+    "audit:offline-conversion-candidates": "node scripts/audit-offline-conversion-candidates.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",

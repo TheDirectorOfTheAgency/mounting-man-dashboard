@@ -1,0 +1,149 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { createAttributionStore } from '../lib/offline-conversion-store.js';
+import { auditCandidateAttributionStore } from '../scripts/audit-offline-conversion-candidates.mjs';
+
+function createFakeKv() {
+  const values = new Map();
+  const sets = new Map();
+  return {
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, structuredClone(value));
+      return 'OK';
+    },
+    async get(key) {
+      const value = values.get(key);
+      return value === undefined ? null : structuredClone(value);
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+    async sadd(key, ...members) {
+      const set = sets.get(key) || new Set();
+      for (const member of members) set.add(member);
+      sets.set(key, set);
+      return members.length;
+    },
+    async smembers(key) {
+      return [...(sets.get(key) || new Set())];
+    },
+    async expire() {
+      return 1;
+    },
+  };
+}
+
+test('candidate audit marks a locally evidenced paid completion ready for validate mode only', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    squareBookingId: 'square-booking-sensitive',
+  });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'GRANTED',
+    disclosureVersion: '2026-07-10',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const audit = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: { id: 'square-payment-sensitive' },
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+
+  assert.equal(audit.status, 'ready_for_validate');
+  assert.equal(audit.mappingPresent, true);
+  assert.equal(audit.pendingJobPresent, true);
+  assert.equal(audit.storedPaymentPresent, true);
+  assert.equal(audit.paidEvidencePresent, true);
+  assert.equal(audit.successAlreadyRecorded, false);
+  assert.deepEqual(audit.evidence, ['job_mapping', 'pending_job', 'stored_payment', 'paid_gclid']);
+  assert.equal(JSON.stringify(audit).includes('sensitive'), false);
+});
+
+test('candidate audit blocks when local paid acquisition evidence is missing', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+  });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'UNKNOWN',
+    acquisition: { paidEvidence: false },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const audit = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: { id: 'square-payment-sensitive' },
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+
+  assert.equal(audit.status, 'blocked');
+  assert.equal(audit.paidEvidencePresent, false);
+  assert.equal(audit.blocker, 'No local paid-acquisition evidence found for the job.');
+});
+
+test('candidate audit treats success records as a hard dedupe stop', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  await store.saveJobMapping({ jobId: 'zen-job-sensitive', squareCustomerId: 'square-customer-sensitive' });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'GRANTED',
+    acquisition: { paidEvidence: true, paidMarker: 'gbraid', hasGbraid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+  await store.markSuccess('zen-job-sensitive', { googleRequestId: 'request-sensitive' });
+
+  const audit = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: { id: 'square-payment-sensitive' },
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+
+  assert.equal(audit.status, 'already_uploaded');
+  assert.equal(audit.successAlreadyRecorded, true);
+  assert.equal(audit.blocker, 'Success record already exists; do not upload again.');
+});

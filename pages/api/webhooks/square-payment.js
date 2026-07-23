@@ -136,7 +136,13 @@ export function createSquarePaymentHandler({
     const signature = req.headers?.['x-square-hmacsha256-signature'];
     if (!signatureVerifier(rawBody, signature, webhookUrl, activeSignatureKey)) {
       logger.warn('square_webhook_signature_rejected', {});
-      await operationsNotifier('Square webhook signature verification failed.');
+      try {
+        await operationsNotifier('Square webhook signature verification failed.');
+      } catch (error) {
+        logger.warn('square_webhook_signature_rejection_notify_failed', {
+          errorCode: error?.code || error?.name || 'NOTIFY_FAILED',
+        });
+      }
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
