@@ -70,7 +70,7 @@ export function createZenbookerWebhookHandler({
     }
 
     const receivedEvent = eventType(req);
-    if (receivedEvent !== 'job.completed') {
+    if (receivedEvent && receivedEvent !== 'job.completed') {
       logger.info('offline_conversion_event_skipped', { eventType: receivedEvent });
       return res.status(200).json({ skipped: true, reason: 'UNSUPPORTED_EVENT' });
     }

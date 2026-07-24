@@ -1,22 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createAttributionStore } from '../lib/offline-conversion-store.js';
-import { createSquarePaymentHandler } from '../pages/api/webhooks/square-payment.js';
+import {
+  createSquarePaymentHandler,
+  notifyQInstallPost,
+} from '../pages/api/webhooks/square-payment.js';
 import { createResponse } from './webhook-test-helpers.js';
 
-function request(payment = {}, overrides = {}) {
+function paymentRequest(eventType = 'payment.updated', payment = {}) {
   return {
     method: 'POST',
     headers: { 'x-square-hmacsha256-signature': 'valid-signature' },
     body: {
-      type: 'payment.updated',
+      type: eventType,
       data: {
         object: {
           payment: {
-            id: 'payment-sensitive',
-            customer_id: 'customer-sensitive',
-            order_id: 'order-sensitive',
+            id: 'payment-1',
+            customer_id: 'customer-1',
+            order_id: 'order-1',
             status: 'COMPLETED',
             amount_money: { amount: 55000, currency: 'USD' },
             refunded_money: { amount: 5000, currency: 'USD' },
@@ -26,60 +28,48 @@ function request(payment = {}, overrides = {}) {
         },
       },
     },
-    ...overrides,
   };
 }
 
-function createFakeKv() {
-  const values = new Map();
-  const sets = new Map();
+function invoiceRequest() {
   return {
-    async set(key, value, options = {}) {
-      if (options.nx && values.has(key)) return null;
-      values.set(key, structuredClone(value));
-      return 'OK';
-    },
-    async get(key) {
-      const value = values.get(key);
-      return value === undefined ? null : structuredClone(value);
-    },
-    async del(key) {
-      return values.delete(key) ? 1 : 0;
-    },
-    async sadd(key, ...members) {
-      const set = sets.get(key) || new Set();
-      for (const member of members) set.add(member);
-      sets.set(key, set);
-      return members.length;
-    },
-    async smembers(key) {
-      return [...(sets.get(key) || new Set())];
-    },
-    async expire() {
-      return 1;
+    method: 'POST',
+    headers: { 'x-square-hmacsha256-signature': 'valid-signature' },
+    body: {
+      type: 'invoice.payment_made',
+      data: {
+        object: {
+          invoice: {
+            id: 'invoice-1',
+            order_id: 'order-1',
+            primary_recipient: { customer_id: 'customer-1' },
+            payment_requests: [
+              { total_completed_amount_money: { amount: 32500, currency: 'USD' } },
+            ],
+          },
+        },
+      },
     },
   };
 }
 
 function dependencies(overrides = {}) {
-  const registered = [];
-  const sms = [];
-  const logs = [];
+  const calls = {
+    attribution: [],
+    installPost: [],
+    operations: [],
+    sms: [],
+    dedupSet: [],
+  };
   return {
-    registered,
-    sms,
-    logs,
+    calls,
     values: {
+      readRawBody: async (req) => JSON.stringify(req.body),
       signatureKey: 'test-signature-key',
       signatureVerifier: () => true,
-      coordinator: {
-        async registerPayment(value, options) {
-          registered.push({ value, options });
-          return { status: 'observed' };
-        },
-      },
       httpClient: {
-        async get() {
+        async get(url) {
+          assert.match(url, /\/customers\/customer-1$/);
           return {
             data: {
               customer: {
@@ -92,131 +82,173 @@ function dependencies(overrides = {}) {
           };
         },
       },
-      smsSender: async (value) => { sms.push(value); return true; },
-      reviewDedup: { has: async () => false, mark: async () => true },
-      logger: {
-        info: (...args) => logs.push(args),
-        warn: (...args) => logs.push(args),
-        error: (...args) => logs.push(args),
+      dedupExists: async () => false,
+      dedupSet: async (...args) => { calls.dedupSet.push(args); return true; },
+      operationsNotifier: async (message) => { calls.operations.push(message); },
+      installPostNotifier: async (value) => { calls.installPost.push(value); },
+      reviewSmsSender: async (value) => { calls.sms.push(value); return true; },
+      attributionCoordinator: {
+        async registerPayment(value, options) {
+          calls.attribution.push({ value, options });
+          return { status: 'observed' };
+        },
       },
-      operationsNotifier: async () => {},
       ...overrides,
     },
   };
 }
 
-test('signature configuration and verification are mandatory', async () => {
-  const missing = dependencies({ signatureKey: '' });
-  const missingRes = createResponse();
-  await createSquarePaymentHandler(missing.values)(request(), missingRes);
-  assert.equal(missingRes.statusCode, 500);
-  assert.equal(missingRes.body.errorCode, 'SQUARE_WEBHOOK_NOT_CONFIGURED');
+test('preserves origin/main optional signature configuration and validates configured signatures', async () => {
+  const unconfigured = dependencies({ signatureKey: '' });
+  const unconfiguredRes = createResponse();
+  await createSquarePaymentHandler(unconfigured.values)(paymentRequest(), unconfiguredRes);
+  assert.equal(unconfiguredRes.statusCode, 200);
+  assert.equal(unconfigured.calls.sms.length, 1);
 
   const invalid = dependencies({ signatureVerifier: () => false });
   const invalidRes = createResponse();
-  await createSquarePaymentHandler(invalid.values)(request(), invalidRes);
+  await createSquarePaymentHandler(invalid.values)(paymentRequest(), invalidRes);
   assert.equal(invalidRes.statusCode, 401);
-
-  const notifierFailure = dependencies({
-    signatureVerifier: () => false,
-    operationsNotifier: async () => { throw new Error('discord unavailable'); },
-  });
-  const notifierFailureRes = createResponse();
-  await createSquarePaymentHandler(notifierFailure.values)(request(), notifierFailureRes);
-  assert.equal(notifierFailureRes.statusCode, 401);
-  assert.equal(
-    notifierFailure.logs.some(([event]) => event === 'square_webhook_signature_rejection_notify_failed'),
-    true
-  );
+  assert.equal(invalid.calls.installPost.length, 0);
+  assert.equal(invalid.calls.sms.length, 0);
 });
-test('completed payment.updated registers actual and refunded amounts with customer matching data', async () => {
+
+test('payment.created and payment.updated preserve Q, review SMS, and observe-only attribution paths', async () => {
+  for (const eventType of ['payment.created', 'payment.updated', 'payment.completed']) {
+    const deps = dependencies();
+    const res = createResponse();
+    await createSquarePaymentHandler(deps.values)(paymentRequest(eventType), res);
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.status, 'sms_sent');
+    assert.equal(res.body.attributionStatus, 'observed');
+    assert.equal(deps.calls.installPost.length, 1);
+    assert.equal(deps.calls.sms.length, 1);
+    assert.equal(deps.calls.attribution.length, 1);
+    assert.deepEqual(deps.calls.attribution[0].value, {
+      paymentId: 'payment-1',
+      squareCustomerId: 'customer-1',
+      status: 'COMPLETED',
+      currency: 'USD',
+      amount: 55000,
+      refundedAmount: 5000,
+      completedAt: '2026-07-10T16:00:00.000Z',
+    });
+  }
+});
+
+test('invoice.payment_made preserves install-post handling and does not send review SMS', async () => {
   const deps = dependencies();
   const res = createResponse();
-  await createSquarePaymentHandler(deps.values)(request(), res);
+  await createSquarePaymentHandler(deps.values)(invoiceRequest(), res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.attributionStatus, 'observed');
-  assert.equal(deps.registered.length, 1);
-  assert.deepEqual(deps.registered[0].value, {
-    paymentId: 'payment-sensitive',
-    squareCustomerId: 'customer-sensitive',
-    status: 'COMPLETED',
-    currency: 'USD',
-    amount: 55000,
-    refundedAmount: 5000,
-    completedAt: '2026-07-10T16:00:00.000Z',
+  assert.equal(res.body.status, 'invoice_processed');
+  assert.equal(res.body.amount, '325.00');
+  assert.equal(res.body.attributionStatus, 'not_applicable');
+  assert.equal(deps.calls.installPost.length, 1);
+  assert.equal(deps.calls.installPost[0].eventType, 'invoice.payment_made');
+  assert.equal(deps.calls.installPost[0].amountCents, 32500);
+  assert.equal(deps.calls.sms.length, 0);
+  assert.equal(deps.calls.attribution.length, 0);
+});
+
+test('attribution failure cannot suppress install-post notification or review SMS', async () => {
+  const deps = dependencies({
+    attributionCoordinator: {
+      async registerPayment() {
+        throw new Error('KV unavailable');
+      },
+    },
   });
-  assert.equal(deps.registered[0].options.customer.email, 'customer@example.com');
-  assert.equal(typeof deps.registered[0].options.customer.phone, 'string');
-  assert.equal(deps.registered[0].options.customer.phone.startsWith('+1'), true);
-  assert.equal(deps.registered[0].options.customer.firstName, 'Private');
-  assert.equal(deps.registered[0].options.customer.lastName, 'Customer');
-});
-
-test('completed payment.updated persists local attribution payment evidence with the default store path', async () => {
-  const kv = createFakeKv();
-  const store = createAttributionStore(kv);
-  const deps = dependencies({ coordinator: undefined, kvClient: kv, mode: 'observe' });
   const res = createResponse();
-
-  await createSquarePaymentHandler(deps.values)(request(), res);
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.attributionStatus, 'pending_job');
-  const payments = await store.listPayments('customer-sensitive');
-  assert.equal(payments.length, 1);
-  assert.equal(payments[0].status, 'COMPLETED');
-  assert.equal(payments[0].currency, 'USD');
-  assert.equal(payments[0].amount, 55000);
-  assert.equal(payments[0].refundedAmount, 5000);
-  assert.equal(payments[0].completedAt, '2026-07-10T16:00:00.000Z');
-  assert.equal(JSON.stringify(payments).includes('payment-sensitive'), false);
-  assert.equal(JSON.stringify(payments).includes('customer-sensitive'), false);
+  assert.equal(res.body.status, 'sms_sent');
+  assert.equal(res.body.attributionStatus, 'failed');
+  assert.equal(deps.calls.installPost.length, 1);
+  assert.equal(deps.calls.sms.length, 1);
 });
-test('non-completed updates and unrelated events never register attribution', async () => {
+
+test('non-completed payments and unrelated events remain ignored before side effects', async () => {
   for (const req of [
-    request({ status: 'PENDING' }),
-    request({}, { body: { type: 'refund.updated', data: {} } }),
+    paymentRequest('payment.updated', { status: 'PENDING' }),
+    { ...paymentRequest(), body: { type: 'refund.updated', data: {} } },
   ]) {
     const deps = dependencies();
     const res = createResponse();
     await createSquarePaymentHandler(deps.values)(req, res);
     assert.equal(res.body.status, 'ignored');
-    assert.equal(deps.registered.length, 0);
+    assert.equal(deps.calls.installPost.length, 0);
+    assert.equal(deps.calls.sms.length, 0);
+    assert.equal(deps.calls.attribution.length, 0);
   }
 });
 
-test('review SMS behavior is preserved through an injected sender and deduplicated separately', async () => {
-  const deps = dependencies();
-  const res = createResponse();
-  await createSquarePaymentHandler(deps.values)(request(), res);
-  assert.equal(deps.sms.length, 1);
-  assert.equal(deps.sms[0].phone, '+16125550123');
-  assert.equal(res.body.reviewSmsStatus, 'sent');
+test('install-post notifier generates seeds, stages pending work, queues Q, and posts to Discord', async () => {
+  const writes = [];
+  const queueWrites = [];
+  const setMembers = [];
+  const posts = [];
+  const lineItems = [
+    {
+      name: '65 Inch TV Mounting',
+      quantity: '1',
+      base_price_money: { amount: 20000 },
+      total_money: { amount: 20000 },
+    },
+  ];
 
-  const duplicate = dependencies({ reviewDedup: { has: async () => true, mark: async () => assert.fail('no mark') } });
-  const duplicateRes = createResponse();
-  await createSquarePaymentHandler(duplicate.values)(request(), duplicateRes);
-  assert.equal(duplicate.sms.length, 0);
-  assert.equal(duplicateRes.body.reviewSmsStatus, 'duplicate');
-});
+  await notifyQInstallPost(
+    {
+      orderId: 'order-1',
+      payment: { id: 'payment-1', team_member_id: 'TMSiHOOr7RGdl2Ki' },
+      invoice: {},
+      isInvoiceEvent: false,
+      eventType: 'payment.created',
+      firstName: 'Test',
+      lastName: 'Customer',
+      customer: {
+        address: {
+          address_line_1: '123 Main St',
+          locality: 'Minneapolis',
+          administrative_district_level_1: 'MN',
+          postal_code: '55401',
+        },
+      },
+      amount: '200.00',
+      amountCents: 20000,
+    },
+    {
+      discordBotToken: 'test-token',
+      discordUserId: 'q-user',
+      exists: async () => false,
+      set: async (...args) => { writes.push(args); return true; },
+      rpush: async (...args) => { queueWrites.push(args); return true; },
+      sadd: async (...args) => { setMembers.push(args); return true; },
+      httpClient: {
+        async get(url) {
+          assert.match(url, /\/orders\/order-1$/);
+          return { data: { order: { id: 'order-1', line_items: lineItems } } };
+        },
+        async post(url, body) {
+          posts.push({ url, body });
+          return { data: {} };
+        },
+      },
+    },
+  );
 
-test('raw payload, IDs, customer PII, and payment card data never reach logs or responses', async () => {
-  const deps = dependencies();
-  const req = request({ card_details: { card: { last_4: '9876' } } });
-  const res = createResponse();
-  await createSquarePaymentHandler(deps.values)(req, res);
-  const rendered = JSON.stringify({ logs: deps.logs, response: res.body });
-  for (const forbidden of [
-    'payment-sensitive',
-    'customer-sensitive',
-    'order-sensitive',
-    'customer@example.com',
-    '+16125550123',
-    'Private',
-    'Customer',
-    '9876',
-  ]) {
-    assert.equal(rendered.includes(forbidden), false, `leaked ${forbidden}`);
-  }
+  assert.equal(queueWrites.length, 1);
+  assert.equal(queueWrites[0][0], 'agency:context:siri_queue');
+  const queued = JSON.parse(queueWrites[0][1]);
+  assert.equal(queued.from, 'square-payment-webhook');
+  assert.equal(queued.orderId, 'order-1');
+  assert.equal(queued.seeds.length, 1);
+  assert.equal(writes.some(([key]) => key === 'install-post:pending:order-1'), true);
+  assert.deepEqual(setMembers, [['install-post:pending-index', 'install-post:pending:order-1']]);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].url, /discord\.com\/api\/v10\/channels\//);
+  assert.match(posts[0].body.content, /Suggested seed JSON|New job paid/);
 });

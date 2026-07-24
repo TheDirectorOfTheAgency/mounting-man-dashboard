@@ -122,6 +122,35 @@ test('candidate extraction accepts common ZenBooker job shapes without invoice v
   assert.equal('conversionValue' in candidate, false);
 });
 
+test('candidate extraction preserves sibling customer, tracking, and created_at fields for nested jobs', () => {
+  const candidate = extractJobCandidate(
+    {
+      event: 'job.completed',
+      created_at: '2026-07-10T15:30:00.000Z',
+      data: {
+        job: {
+          id: 'job-sensitive-id',
+          status: 'completed',
+          created_by: 'customer',
+        },
+        customer: {
+          id: 'zen-customer-sensitive',
+          email: 'customer@example.com',
+        },
+        tracking: { utm_medium: 'cpc' },
+      },
+    },
+    { disclosureVersion: '2026-07-10' },
+  );
+
+  assert.equal(candidate.jobId, 'job-sensitive-id');
+  assert.equal(candidate.zenCustomerId, 'zen-customer-sensitive');
+  assert.equal(candidate.email, 'customer@example.com');
+  assert.equal(candidate.completedAt, '2026-07-10T15:30:00.000Z');
+  assert.equal(candidate.acquisition.paidEvidence, true);
+  assert.deepEqual(evaluateJob(candidate), { eligible: true, reason: null });
+});
+
 test('opaque references are deterministic and never contain the source identifier', () => {
   const first = opaqueRef('job-sensitive-id');
   const second = opaqueRef('job-sensitive-id');

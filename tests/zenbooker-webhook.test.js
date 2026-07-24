@@ -228,3 +228,72 @@ test('authentication and event filtering remain enforced', async (t) => {
   await handler(createRequest(completedPayload(), { headers: { event: 'job.created' } }), ignored);
   assert.equal(ignored.body.reason, 'UNSUPPORTED_EVENT');
 });
+
+test('missing event type preserves origin compatibility for an otherwise valid completion', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  const calls = [];
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: mappedStore(),
+    coordinator: {
+      registerJob: async (value) => {
+        calls.push(value);
+        return { status: 'observed' };
+      },
+    },
+    disclosureVersion: '2026-07-10',
+    logger: quietLogger(),
+  });
+  const req = createRequest(completedPayload(), { headers: {} });
+  delete req.body.event;
+  const res = createResponse();
+  await handler(req, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.status, 'observed');
+  assert.equal(calls.length, 1);
+});
+
+test('default mode is observe and never calls Google when matching payment evidence exists', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  delete process.env.OFFLINE_CONVERSION_MODE;
+  let pendingJob = null;
+  let uploadCalls = 0;
+  const store = {
+    getBookingAttribution: async () => null,
+    getJobMapping: async () => ({ squareCustomerId: 'square-customer-1' }),
+    savePendingJob: async (value) => { pendingJob = value; },
+    listPendingJobs: async () => pendingJob ? [{
+      jobRef: 'job-ref-1',
+      completedAt: pendingJob.completedAt,
+      consentStatus: pendingJob.consentStatus,
+      acquisition: pendingJob.acquisition,
+    }] : [],
+    listPayments: async () => [{
+      paymentRef: 'payment-ref-1',
+      status: 'COMPLETED',
+      currency: 'USD',
+      amount: 49950,
+      refundedAmount: 0,
+      completedAt: '2026-07-09T18:35:00-05:00',
+    }],
+    hasSuccess: async () => false,
+  };
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: store,
+    uploadConversion: async () => {
+      uploadCalls += 1;
+      return { success: true };
+    },
+    disclosureVersion: '2026-07-10',
+    logger: quietLogger(),
+  });
+
+  const res = createResponse();
+  await handler(createRequest(completedPayload()), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.status, 'observed');
+  assert.equal(uploadCalls, 0);
+});
