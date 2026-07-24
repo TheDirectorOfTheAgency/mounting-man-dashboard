@@ -473,6 +473,7 @@ export function createSquarePaymentHandler({
   reviewSmsSender = sendReviewSms,
   attributionCoordinator,
   attributionMode,
+  logger = console,
 } = {}) {
   return async function handler(req, res) {
     // Only accept POST
@@ -495,7 +496,13 @@ export function createSquarePaymentHandler({
 
       if (signatureKey && !signatureVerifier(rawBody, sig, webhookUrl, signatureKey)) {
         console.error('[square-webhook] Signature verification FAILED');
-        await operationsNotifier('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
+        try {
+          await operationsNotifier('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
+        } catch (notifyError) {
+          logger.warn('square_webhook_signature_rejection_notify_failed', {
+            errorType: notifyError?.name || 'Error',
+          });
+        }
         return res.status(401).json({ error: 'Invalid signature' });
       }
 
@@ -619,6 +626,10 @@ export function createSquarePaymentHandler({
     // ---- No phone? Log and bail on SMS only ----
     if (!hasPhone) {
       await operationsNotifier(`⚠️ **No phone number** for customer ${firstName} ${lastName} (ID: ${customerId}) — skipped review SMS. Email: ${email || 'N/A'} | Job total: $${amount}`);
+      logger.info('square_payment_processed', {
+        attributionStatus,
+        reviewSmsStatus: 'skipped_no_phone',
+      });
       return res.status(200).json({ status: 'no_phone', paymentId, invoiceId, customerId, firstName, lastName, attributionStatus });
     }
 
@@ -648,6 +659,11 @@ export function createSquarePaymentHandler({
     if (smsSent) {
       await operationsNotifier(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
     }
+
+    logger.info('square_payment_processed', {
+      attributionStatus,
+      reviewSmsStatus: smsSent ? 'sent' : 'failed',
+    });
 
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);

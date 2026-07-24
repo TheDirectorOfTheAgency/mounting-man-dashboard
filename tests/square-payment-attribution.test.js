@@ -57,6 +57,7 @@ function dependencies(overrides = {}) {
   const calls = {
     attribution: [],
     installPost: [],
+    logs: [],
     operations: [],
     sms: [],
     dedupSet: [],
@@ -93,6 +94,10 @@ function dependencies(overrides = {}) {
           return { status: 'observed' };
         },
       },
+      logger: {
+        info: (...args) => { calls.logs.push(args); },
+        warn: (...args) => { calls.logs.push(args); },
+      },
       ...overrides,
     },
   };
@@ -111,6 +116,18 @@ test('preserves origin/main optional signature configuration and validates confi
   assert.equal(invalidRes.statusCode, 401);
   assert.equal(invalid.calls.installPost.length, 0);
   assert.equal(invalid.calls.sms.length, 0);
+
+  const notifierFailure = dependencies({
+    signatureVerifier: () => false,
+    operationsNotifier: async () => { throw new Error('notifier unavailable'); },
+  });
+  const notifierFailureRes = createResponse();
+  await createSquarePaymentHandler(notifierFailure.values)(paymentRequest(), notifierFailureRes);
+  assert.equal(notifierFailureRes.statusCode, 401);
+  assert.equal(
+    notifierFailure.calls.logs.some(([event]) => event === 'square_webhook_signature_rejection_notify_failed'),
+    true,
+  );
 });
 
 test('payment.created and payment.updated preserve Q, review SMS, and observe-only attribution paths', async () => {
@@ -125,6 +142,10 @@ test('payment.created and payment.updated preserve Q, review SMS, and observe-on
     assert.equal(deps.calls.installPost.length, 1);
     assert.equal(deps.calls.sms.length, 1);
     assert.equal(deps.calls.attribution.length, 1);
+    assert.deepEqual(
+      deps.calls.logs.find(([event]) => event === 'square_payment_processed'),
+      ['square_payment_processed', { attributionStatus: 'observed', reviewSmsStatus: 'sent' }],
+    );
     assert.deepEqual(deps.calls.attribution[0].value, {
       paymentId: 'payment-1',
       squareCustomerId: 'customer-1',
