@@ -18,6 +18,8 @@ import {
   buildSquareOrderRequest,
   buildZenbookerInvoiceModel,
 } from '../../../lib/zenbooker-square-invoice.mjs';
+import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
 // ============================================================================
 // SQUARE CONFIG
@@ -50,6 +52,40 @@ async function getKV() {
     _kv = false;
     return false;
   }
+}
+
+export async function persistAttributionMapping({
+  attributionStore,
+  jobId,
+  squareCustomerId,
+  squareBookingId = null,
+  logger = console,
+}) {
+  if (!jobId || !squareCustomerId) {
+    return { saved: false, reason: 'MISSING_MAPPING_IDENTIFIER' };
+  }
+  if (!attributionStore) {
+    return { saved: false, reason: 'ATTRIBUTION_STORE_UNAVAILABLE' };
+  }
+
+  const jobRef = opaqueRef(jobId).slice(0, 12);
+  try {
+    await attributionStore.saveJobMapping({ jobId, squareCustomerId, squareBookingId });
+    logger.info('attribution_mapping_saved', {
+      jobRef,
+      hasSquareCustomer: true,
+      hasSquareBooking: Boolean(squareBookingId),
+    });
+    return { saved: true, jobRef };
+  } catch {
+    logger.error('attribution_mapping_failed', { jobRef });
+    return { saved: false, reason: 'ATTRIBUTION_MAPPING_WRITE_FAILED', jobRef };
+  }
+}
+
+async function getDefaultAttributionStore() {
+  const kv = await getKV();
+  return kv ? createAttributionStore(kv) : null;
 }
 
 async function writeBookingAudit(jobId, audit) {
@@ -1271,8 +1307,38 @@ function formatAddressLine({ street, line2, city, state, zip }) {
 // HANDLER
 // ============================================================================
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+export function createZenbookerToSquareHandler({
+  findCustomer = findSquareCustomer,
+  createCustomer = createSquareCustomer,
+  createOrder = createSquareOrder,
+  createInvoice = createSquareInvoice,
+  readAudit = readBookingAudit,
+  writeAudit = writeBookingAudit,
+  operationsNotifier = logDiscord,
+  attributionStore,
+  loadAttributionStore = getDefaultAttributionStore,
+  saveAttributionMapping = persistAttributionMapping,
+} = {}) {
+  async function persistRouteMapping(jobId, squareCustomerId) {
+    try {
+      const activeAttributionStore = attributionStore === undefined
+        ? await loadAttributionStore()
+        : attributionStore;
+      return await saveAttributionMapping({
+        attributionStore: activeAttributionStore,
+        jobId,
+        squareCustomerId,
+      });
+    } catch {
+      console.error('attribution_mapping_failed', {
+        jobRef: jobId ? opaqueRef(jobId).slice(0, 12) : null,
+      });
+      return { saved: false, reason: 'ATTRIBUTION_MAPPING_WRITE_FAILED' };
+    }
+  }
+
+  return async function handler(req, res) {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const secret = req.query.secret || req.headers['x-webhook-secret'];
   if (!process.env.ZENBOOKER_WEBHOOK_SECRET) {
@@ -1399,9 +1465,10 @@ export default async function handler(req, res) {
     const dryRun = req.query.dryRun === '1'
       || req.query.dry_run === '1'
       || process.env.ZENBOOKER_SQUARE_INVOICE_DRY_RUN === '1';
-    const existingAudit = await readBookingAudit(jobId);
+    const existingAudit = await readAudit(jobId);
     if (!dryRun && existingAudit?.squareInvoiceId) {
       console.log(`Square invoice already recorded for ZenBooker job ${jobId}: ${existingAudit.squareInvoiceId}`);
+      await persistRouteMapping(jobId, existingAudit.squareCustomerId);
       return res.status(200).json({
         processed: true,
         skipped: true,
@@ -1415,7 +1482,7 @@ export default async function handler(req, res) {
     }
 
     // ── STEP 1: Find or create Square customer ────────────────────────────────
-    let existingCustomer = await findSquareCustomer({ email, phone });
+    let existingCustomer = await findCustomer({ email, phone });
     let customer = existingCustomer;
     if (customer) {
       console.log(`Square customer found: ${customer.id}`);
@@ -1428,7 +1495,7 @@ export default async function handler(req, res) {
         jobId        ? `Job: ${jobId}`             : null,
         resolvedProviderName ? `Tech: ${resolvedProviderName}` : null,
       ].filter(Boolean).join(' | ');
-      customer = await createSquareCustomer({ firstName, lastName, email, phone, note, address: { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip } });
+      customer = await createCustomer({ firstName, lastName, email, phone, note, address: { street: jobStreet, line2: jobLine2, city: jobCity, state: jobState, zip: jobZip } });
       console.log(customer ? `Square customer created: ${customer.id}` : 'Customer creation FAILED');
     }
 
@@ -1497,7 +1564,7 @@ export default async function handler(req, res) {
     } else if (dryRun) {
       console.log('Dry-run: Square order/invoice would be created');
     } else {
-      const orderResult = await createSquareOrder(orderRequest);
+      const orderResult = await createOrder(orderRequest);
       order = orderResult.order;
       orderError = orderResult.error;
 
@@ -1515,7 +1582,7 @@ export default async function handler(req, res) {
           addressLine,
           sellerNote: appointmentModel.note || notes || '',
         });
-        const invoiceResult = await createSquareInvoice(invoiceRequest);
+        const invoiceResult = await createInvoice(invoiceRequest);
         invoice = invoiceResult.invoice;
         invoiceError = invoiceResult.error;
         if (!invoice?.id) {
@@ -1559,11 +1626,12 @@ export default async function handler(req, res) {
     };
 
     if (!dryRun) {
-      await writeBookingAudit(jobId, audit);
+      await writeAudit(jobId, audit);
+      await persistRouteMapping(jobId, customer?.id);
     }
 
     if (invoiceSkipReason || orderError || invoiceError || mappingWarnings.length > 0) {
-      await logDiscord([
+      await operationsNotifier([
         'ZenBooker to Square invoice needs review',
         jobNumber ? `Job #: ${jobNumber}` : null,
         jobId ? `Job ID: ${jobId}` : null,
@@ -1607,5 +1675,8 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('ZenBooker→Square error:', err.message, err.stack);
     return res.status(200).json({ processed: false, error: err.message });
-  }
+    }
+  };
 }
+
+export default createZenbookerToSquareHandler();

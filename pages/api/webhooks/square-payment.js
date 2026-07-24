@@ -27,6 +27,9 @@ import {
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../../../lib/install-post-seeds.mjs';
+import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
+import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 
 // ============================================================================
 // CONFIG
@@ -60,6 +63,19 @@ const SQUARE_WEBHOOK_SIG_KEY = (process.env.SQUARE_WEBHOOK_SIGNATURE_KEY || '').
 
 // Dedup — prevent processing the same payment twice
 const DEDUP_TTL = 86400; // 24 hours
+
+let cachedAttributionStore;
+
+async function getDefaultAttributionStore() {
+  if (cachedAttributionStore !== undefined) return cachedAttributionStore;
+  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+    cachedAttributionStore = null;
+    return cachedAttributionStore;
+  }
+  const { kv } = await import('@vercel/kv');
+  cachedAttributionStore = createAttributionStore(kv);
+  return cachedAttributionStore;
+}
 
 const TEAM_MEMBER_MAP = {
   TMSiHOOr7RGdl2Ki: 'Michael',
@@ -366,12 +382,54 @@ function sumInvoiceCompletedAmount(invoice) {
   return total;
 }
 
+async function registerPaymentAttribution({
+  attributionCoordinator,
+  payment,
+  customer,
+  mode,
+}) {
+  if (!payment?.id || !payment?.customer_id) {
+    return { status: 'not_applicable' };
+  }
+
+  let coordinator = attributionCoordinator;
+  if (!coordinator) {
+    const store = await getDefaultAttributionStore();
+    if (!store) return { status: 'store_unavailable' };
+    coordinator = createOfflineConversionCoordinator({
+      store,
+      uploadConversion: uploadOfflineConversion,
+      mode: mode ?? process.env.OFFLINE_CONVERSION_MODE ?? 'observe',
+    });
+  }
+
+  return coordinator.registerPayment(
+    {
+      paymentId: payment.id,
+      squareCustomerId: payment.customer_id,
+      status: payment.status || 'COMPLETED',
+      currency: payment.amount_money?.currency || payment.total_money?.currency || null,
+      amount: Number(payment.amount_money?.amount ?? payment.total_money?.amount ?? 0),
+      refundedAmount: Number(payment.refunded_money?.amount ?? 0),
+      completedAt: payment.updated_at || payment.created_at || null,
+    },
+    {
+      customer: {
+        email: customer.email_address || null,
+        phone: cleanPhone(customer.phone_number || ''),
+        firstName: customer.given_name || null,
+        lastName: customer.family_name || null,
+      },
+    },
+  );
+}
+
 /** Validate Square webhook signature (HMAC-SHA256) */
-function verifySquareSignature(body, signatureHeader, url) {
-  if (!SQUARE_WEBHOOK_SIG_KEY) return true; // Skip if not configured
+function verifySquareSignature(body, signatureHeader, url, signatureKey = SQUARE_WEBHOOK_SIG_KEY) {
+  if (!signatureKey) return true; // Preserve origin/main behavior when not configured
   if (!signatureHeader) return false;
 
-  const hmac = crypto.createHmac('sha256', SQUARE_WEBHOOK_SIG_KEY);
+  const hmac = crypto.createHmac('sha256', signatureKey);
   hmac.update(url + body);
   const expected = hmac.digest('base64');
   const expectedBuf = Buffer.from(expected);
@@ -403,34 +461,54 @@ function getRawBody(req, limit = 1048576) {
 // HANDLER
 // ============================================================================
 
-export default async function handler(req, res) {
-  // Only accept POST
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  const startTime = Date.now();
-
-  try {
-    // ---- Parse body (raw bytes required for HMAC signature verification) ----
-    const rawBody = await getRawBody(req);
-    const body = JSON.parse(rawBody);
-
-    console.log('[square-webhook] Received:', rawBody.substring(0, 500));
-
-    // ---- Signature validation ----
-    const sig = req.headers['x-square-hmacsha256-signature'];
-    const webhookUrl = `https://mounting-man-dashboard.vercel.app/api/webhooks/square-payment`;
-
-    if (SQUARE_WEBHOOK_SIG_KEY && !verifySquareSignature(rawBody, sig, webhookUrl)) {
-      console.error('[square-webhook] Signature verification FAILED');
-      await logDiscord('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
-      return res.status(401).json({ error: 'Invalid signature' });
+export function createSquarePaymentHandler({
+  readRawBody = getRawBody,
+  signatureKey = SQUARE_WEBHOOK_SIG_KEY,
+  signatureVerifier = verifySquareSignature,
+  httpClient = axios,
+  dedupExists = kvExists,
+  dedupSet = kvSet,
+  operationsNotifier = logDiscord,
+  installPostNotifier = notifyQInstallPost,
+  reviewSmsSender = sendReviewSms,
+  attributionCoordinator,
+  attributionMode,
+  logger = console,
+} = {}) {
+  return async function handler(req, res) {
+    // Only accept POST
+    if (req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
     }
 
-    if (!SQUARE_WEBHOOK_SIG_KEY && sig) {
-      console.warn('[square-webhook] Signature present but no key configured — skipping validation');
-    }
+    const startTime = Date.now();
+
+    try {
+      // ---- Parse body (raw bytes required for HMAC signature verification) ----
+      const rawBody = await readRawBody(req);
+      const body = JSON.parse(rawBody);
+
+      console.log('[square-webhook] Webhook received');
+
+      // ---- Signature validation ----
+      const sig = req.headers['x-square-hmacsha256-signature'];
+      const webhookUrl = `https://mounting-man-dashboard.vercel.app/api/webhooks/square-payment`;
+
+      if (signatureKey && !signatureVerifier(rawBody, sig, webhookUrl, signatureKey)) {
+        console.error('[square-webhook] Signature verification FAILED');
+        try {
+          await operationsNotifier('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
+        } catch (notifyError) {
+          logger.warn('square_webhook_signature_rejection_notify_failed', {
+            errorType: notifyError?.name || 'Error',
+          });
+        }
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+
+      if (!signatureKey && sig) {
+        console.warn('[square-webhook] Signature present but no key configured — skipping validation');
+      }
 
     // ---- Extract event type ----
     const eventType = body?.type || body?.event_type || '';
@@ -479,30 +557,30 @@ export default async function handler(req, res) {
 
     // ---- Dedup check ----
     const dedupKey = isInvoiceEvent ? `square:invoice:${invoiceId}` : `square:payment:${paymentId}`;
-    if (await kvExists(dedupKey)) {
+    if (await dedupExists(dedupKey)) {
       console.log(`[square-webhook] Duplicate ${isInvoiceEvent ? 'invoice' : 'payment'} event ${isInvoiceEvent ? invoiceId : paymentId} — skipping`);
       return res.status(200).json({ status: 'duplicate', paymentId, invoiceId });
     }
-    await kvSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+    await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
 
     // ---- No customer ID? Log and bail ----
     if (!customerId) {
       console.warn(`[square-webhook] ${isInvoiceEvent ? 'Invoice' : 'Payment'} ${isInvoiceEvent ? invoiceId : paymentId} has no customer_id`);
-      await logDiscord(`⚠️ **Square ${isInvoiceEvent ? 'invoice payment' : 'payment'}** $${amount} (${isInvoiceEvent ? invoiceId : paymentId}) — no customer ID attached, skipped downstream follow-up`);
+      await operationsNotifier(`⚠️ **Square ${isInvoiceEvent ? 'invoice payment' : 'payment'}** $${amount} (${isInvoiceEvent ? invoiceId : paymentId}) — no customer ID attached, skipped downstream follow-up`);
       return res.status(200).json({ status: 'no_customer', paymentId, invoiceId });
     }
 
     // ---- Fetch customer from Square ----
     let customer = {};
     try {
-      const custRes = await axios.get(`${SQUARE_BASE}/customers/${customerId}`, {
+      const custRes = await httpClient.get(`${SQUARE_BASE}/customers/${customerId}`, {
         headers: squareHeaders(),
       });
       customer = custRes.data?.customer || {};
     } catch (err) {
       const status = err.response?.status;
       console.error(`[square-webhook] Failed to fetch customer ${customerId}: ${status}`, err.response?.data || err.message);
-      await logDiscord(`⚠️ **Square ${isInvoiceEvent ? 'invoice payment' : 'payment'}** $${amount} — failed to fetch customer ${customerId} (HTTP ${status})`);
+      await operationsNotifier(`⚠️ **Square ${isInvoiceEvent ? 'invoice payment' : 'payment'}** $${amount} — failed to fetch customer ${customerId} (HTTP ${status})`);
       return res.status(200).json({ status: 'customer_fetch_failed', paymentId, invoiceId, customerId });
     }
 
@@ -513,10 +591,26 @@ export default async function handler(req, res) {
     const phone = cleanPhone(customer.phone_number || '');
     const hasPhone = phone.length >= 12; // +1XXXXXXXXXX = 12 chars
 
-    console.log(`[square-webhook] Customer: ${firstName} ${lastName}, phone=${phone || 'N/A'}, email=${email || 'N/A'}`);
+    console.log(`[square-webhook] Customer loaded: phone=${hasPhone ? 'present' : 'missing'}, email=${email ? 'present' : 'missing'}`);
+
+    let attributionStatus = isInvoiceEvent ? 'not_applicable' : 'not_attempted';
+    if (!isInvoiceEvent) {
+      try {
+        const attributionResult = await registerPaymentAttribution({
+          attributionCoordinator,
+          payment,
+          customer,
+          mode: attributionMode,
+        });
+        attributionStatus = attributionResult.status;
+      } catch (attributionError) {
+        attributionStatus = 'failed';
+        console.error('[square-webhook] Attribution registration failed:', attributionError.message);
+      }
+    }
 
     // ---- Notify Q in Installation Posts thread as soon as customer data is available ----
-    await notifyQInstallPost({
+    await installPostNotifier({
       orderId,
       payment,
       invoice,
@@ -531,8 +625,12 @@ export default async function handler(req, res) {
 
     // ---- No phone? Log and bail on SMS only ----
     if (!hasPhone) {
-      await logDiscord(`⚠️ **No phone number** for customer ${firstName} ${lastName} (ID: ${customerId}) — skipped review SMS. Email: ${email || 'N/A'} | Job total: $${amount}`);
-      return res.status(200).json({ status: 'no_phone', paymentId, invoiceId, customerId, firstName, lastName });
+      await operationsNotifier(`⚠️ **No phone number** for customer ${firstName} ${lastName} (ID: ${customerId}) — skipped review SMS. Email: ${email || 'N/A'} | Job total: $${amount}`);
+      logger.info('square_payment_processed', {
+        attributionStatus,
+        reviewSmsStatus: 'skipped_no_phone',
+      });
+      return res.status(200).json({ status: 'no_phone', paymentId, invoiceId, customerId, firstName, lastName, attributionStatus });
     }
 
     if (isInvoiceEvent) {
@@ -545,6 +643,7 @@ export default async function handler(req, res) {
         firstName,
         lastName,
         amount,
+        attributionStatus,
         elapsed,
       });
     }
@@ -555,11 +654,16 @@ export default async function handler(req, res) {
     // texting while the tech is still at the door. The API call chain
     // (Square webhook → Vercel → Square customer fetch → Twilio) adds
     // enough time that the customer has already left.
-    const smsSent = await sendReviewSms({ paymentId, firstName, phone, amount });
+    const smsSent = await reviewSmsSender({ paymentId, firstName, phone, amount });
 
     if (smsSent) {
-      await logDiscord(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
+      await operationsNotifier(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
     }
+
+    logger.info('square_payment_processed', {
+      attributionStatus,
+      reviewSmsStatus: smsSent ? 'sent' : 'failed',
+    });
 
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
@@ -572,15 +676,19 @@ export default async function handler(req, res) {
       lastName,
       phone,
       amount,
+      attributionStatus,
       elapsed,
     });
 
   } catch (err) {
     console.error('[square-webhook] Unhandled error:', err);
-    await logDiscord(`🚨 **Square webhook error**: ${err.message}`);
+    await operationsNotifier(`🚨 **Square webhook error**: ${err.message}`);
     return res.status(500).json({ error: 'Internal server error' });
-  }
+    }
+  };
 }
+
+export default createSquarePaymentHandler();
 
 // ============================================================================
 // SMS SENDER
@@ -590,18 +698,29 @@ export default async function handler(req, res) {
 // Q INSTALL POST NOTIFICATION
 // ============================================================================
 
-async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, eventType, firstName, lastName, customer, amount, amountCents }) {
-  if (!DISCORD_BOT_TOKEN) {
+export async function notifyQInstallPost(
+  { orderId, payment, invoice, isInvoiceEvent, eventType, firstName, lastName, customer, amount, amountCents },
+  {
+    discordBotToken = DISCORD_BOT_TOKEN,
+    discordUserId = DISCORD_Q_USER_ID,
+    httpClient = axios,
+    exists = kvExists,
+    set = kvSet,
+    rpush = kvRpush,
+    sadd = kvSadd,
+  } = {},
+) {
+  if (!discordBotToken) {
     console.warn('[q-notify] No DISCORD_BOT_TOKEN — skipping Q notification');
     return;
   }
 
   const installDedupKey = `square:install-post:${orderId || payment?.id || invoice?.id || 'unknown'}`;
-  if (await kvExists(installDedupKey)) {
+  if (await exists(installDedupKey)) {
     console.log(`[q-notify] Duplicate install-post notification for ${installDedupKey} — skipping`);
     return;
   }
-  await kvSet(installDedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+  await set(installDedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
 
   // ---- Fetch order line items from Square ----
   let lineItems = [];
@@ -610,7 +729,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     if (!orderId) {
       throw new Error('No order_id on payment');
     }
-    const orderRes = await axios.get(`${SQUARE_BASE}/orders/${orderId}`, {
+    const orderRes = await httpClient.get(`${SQUARE_BASE}/orders/${orderId}`, {
       headers: squareHeaders(),
     });
     order = orderRes.data?.order || {};
@@ -670,7 +789,7 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
 
   // ---- Build message ----
   const fullName = [firstName, lastName].filter(s => s && s !== 'there').join(' ') || firstName;
-  const qMention = DISCORD_Q_USER_ID ? `<@${DISCORD_Q_USER_ID}> ` : '';
+  const qMention = discordUserId ? `<@${discordUserId}> ` : '';
   const qTask = [
     'Installation post seed ready.',
     `Client: ${fullName}.`,
@@ -720,12 +839,12 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     seed: draftSeed,
     seeds: draftSeeds,
   };
-  const queuedForQ = await kvRpush(Q_QUEUE_KEY, JSON.stringify(queuePayload));
+  const queuedForQ = await rpush(Q_QUEUE_KEY, JSON.stringify(queuePayload));
 
   // ---- Stage seed in dedicated Redis key for Q's photo handler ----
   const pendingId = orderId || payment?.id || `unknown-${Date.now()}`;
   const pendingKey = `install-post:pending:${pendingId}`;
-  await kvSet(pendingKey, JSON.stringify({
+  await set(pendingKey, JSON.stringify({
     seed: draftSeed,
     orderId: orderId || '',
     paymentId: payment?.id || '',
@@ -737,18 +856,18 @@ async function notifyQInstallPost({ orderId, payment, invoice, isInvoiceEvent, e
     seeds: draftSeeds,
     seedCount: draftSeeds.length,
   }), 172800); // 48h TTL
-  await kvSadd('install-post:pending-index', pendingKey);
+  await sadd('install-post:pending-index', pendingKey);
   console.log(`[q-notify] Staged seed in Redis: ${pendingKey}`);
 
   // ---- Post to Installation Posts thread ----
   try {
-    await axios.post(
+    await httpClient.post(
       `https://discord.com/api/v10/channels/${DISCORD_INSTALL_THREAD}/messages`,
       {
         content: message,
-        allowed_mentions: DISCORD_Q_USER_ID ? { users: [DISCORD_Q_USER_ID] } : undefined,
+        allowed_mentions: discordUserId ? { users: [discordUserId] } : undefined,
       },
-      { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bot ${discordBotToken}`, 'Content-Type': 'application/json' } }
     );
     console.log(`[q-notify] Posted to Installation Posts thread for ${fullName}`);
   } catch (err) {
