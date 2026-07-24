@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAttributionStore } from '../lib/offline-conversion-store.js';
-import { auditCandidateAttributionStore } from '../scripts/audit-offline-conversion-candidates.mjs';
+import {
+  auditCandidateAttributionStore,
+  fetchZenBookerJobs,
+} from '../scripts/audit-offline-conversion-candidates.mjs';
 
 function createFakeKv() {
   const values = new Map();
@@ -34,6 +37,28 @@ function createFakeKv() {
     },
   };
 }
+
+test('ZenBooker job reads are constrained to the audit window', async () => {
+  const urls = [];
+  const beginTime = new Date('2026-06-24T00:00:00.000Z');
+  const endTime = new Date('2026-07-24T00:00:00.000Z');
+
+  await fetchZenBookerJobs({
+    apiKey: 'test-key',
+    beginTime,
+    endTime,
+    fetcher: async (url) => {
+      urls.push(new URL(url));
+      return { results: [], has_more: false };
+    },
+  });
+
+  assert.equal(urls.length, 1);
+  assert.equal(urls[0].searchParams.get('start_date_min'), beginTime.toISOString());
+  assert.equal(urls[0].searchParams.get('start_date_max'), endTime.toISOString());
+  assert.equal(urls[0].searchParams.get('sort_by'), 'start_time');
+  assert.equal(urls[0].searchParams.get('sort_order'), 'ascending');
+});
 
 test('candidate audit marks a locally evidenced paid completion ready for validate mode only', async () => {
   const kv = createFakeKv();
