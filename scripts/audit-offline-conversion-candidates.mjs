@@ -98,14 +98,26 @@ async function fetchJson(url, { token, square = false, method = 'GET', body = nu
   return parsed;
 }
 
-async function fetchZenBookerJobs({ apiKey, maxPages = 200 }) {
+export async function fetchZenBookerJobs({
+  apiKey,
+  beginTime,
+  endTime,
+  maxPages = 200,
+  fetcher = fetchJson,
+}) {
   const all = [];
   let cursor = null;
   for (let page = 1; page <= maxPages; page += 1) {
-    const params = new URLSearchParams({ limit: '100' });
+    const params = new URLSearchParams({
+      limit: '100',
+      sort_by: 'start_time',
+      sort_order: 'ascending',
+    });
+    if (beginTime) params.set('start_date_min', beginTime.toISOString());
+    if (endTime) params.set('start_date_max', endTime.toISOString());
     if (cursor) params.set('cursor', cursor);
     const url = `${ZENBOOKER_BASE_URL.replace(/\/$/, '')}/jobs?${params}`;
-    const data = await fetchJson(url, { token: apiKey });
+    const data = await fetcher(url, { token: apiKey });
     const jobs = data.results || [];
     all.push(...jobs);
     if (!data.has_more || !data.next_cursor) break;
@@ -318,16 +330,16 @@ export async function main() {
   loadLocalEnv();
   const days = Number(argValue('--days', '14'));
   const jsonOutput = flag('--json');
-  const zenbookerKey = process.env.ZENBOOKER_API_KEY;
+  const zbKey = process.env.ZENBOOKER_API_KEY;
   const squareToken = process.env.SQUARE_ACCESS_TOKEN || process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
   const squareLocationId = process.env.SQUARE_LOCATION_ID || process.env.NEXT_PUBLIC_SQUARE_LOCATION_ID;
-  if (!zenbookerKey) throw new Error('ZENBOOKER_API_KEY is required');
+  if (!zbKey) throw new Error('ZENBOOKER_API_KEY is required');
   if (!squareToken) throw new Error('SQUARE_ACCESS_TOKEN is required');
 
   const endTime = new Date();
   const beginTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
   const [jobs, payments] = await Promise.all([
-    fetchZenBookerJobs({ apiKey: zenbookerKey }),
+    fetchZenBookerJobs({ apiKey: zbKey, beginTime, endTime }),
     fetchSquarePayments({ token: squareToken, beginTime, endTime, locationId: squareLocationId }),
   ]);
 
