@@ -194,9 +194,18 @@ function createKvAuditClientFromEnv() {
   return createUpstashKvClient({ url, token });
 }
 
+function normalizeKvRecord(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 async function safeKvGet(kv, key) {
   try {
-    return await kv.get(key);
+    return normalizeKvRecord(await kv.get(key));
   } catch {
     return null;
   }
