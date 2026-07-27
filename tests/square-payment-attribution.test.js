@@ -42,6 +42,7 @@ function invoiceRequest() {
           invoice: {
             id: 'invoice-1',
             order_id: 'order-1',
+            updated_at: '2026-07-10T17:00:00.000Z',
             primary_recipient: { customer_id: 'customer-1' },
             payment_requests: [
               { total_completed_amount_money: { amount: 32500, currency: 'USD' } },
@@ -158,7 +159,7 @@ test('payment.created and payment.updated preserve Q, review SMS, and observe-on
   }
 });
 
-test('invoice.payment_made preserves install-post handling and does not send review SMS', async () => {
+test('invoice.payment_made preserves install-post handling and records completed-payment attribution evidence', async () => {
   const deps = dependencies();
   const res = createResponse();
   await createSquarePaymentHandler(deps.values)(invoiceRequest(), res);
@@ -166,12 +167,21 @@ test('invoice.payment_made preserves install-post handling and does not send rev
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.status, 'invoice_processed');
   assert.equal(res.body.amount, '325.00');
-  assert.equal(res.body.attributionStatus, 'not_applicable');
+  assert.equal(res.body.attributionStatus, 'observed');
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.installPost[0].eventType, 'invoice.payment_made');
   assert.equal(deps.calls.installPost[0].amountCents, 32500);
   assert.equal(deps.calls.sms.length, 0);
-  assert.equal(deps.calls.attribution.length, 0);
+  assert.equal(deps.calls.attribution.length, 1);
+  assert.deepEqual(deps.calls.attribution[0].value, {
+    paymentId: 'invoice:invoice-1',
+    squareCustomerId: 'customer-1',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 32500,
+    refundedAmount: 0,
+    completedAt: '2026-07-10T17:00:00.000Z',
+  });
 });
 
 test('attribution failure cannot suppress install-post notification or review SMS', async () => {
