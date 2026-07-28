@@ -139,6 +139,46 @@ test('candidate audit blocks when local paid acquisition evidence is missing', a
   assert.equal(audit.blocker, 'No local paid-acquisition evidence found for the job.');
 });
 
+test('candidate audit reads JSON-string KV records written through REST backfills', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  await store.saveJobMapping({ jobId: 'zen-job-sensitive', squareCustomerId: 'square-customer-sensitive' });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'GRANTED',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const stringReturningKv = {
+    get: async (key) => {
+      const value = await kv.get(key);
+      return value && typeof value === 'object' ? JSON.stringify(value) : value;
+    },
+    smembers: kv.smembers,
+  };
+  const audit = await auditCandidateAttributionStore({
+    kv: stringReturningKv,
+    job: { id: 'zen-job-sensitive' },
+    payment: { id: 'square-payment-sensitive' },
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+
+  assert.equal(audit.mappingPresent, true);
+  assert.equal(audit.storedPaymentPresent, true);
+  assert.equal(audit.status, 'ready_for_validate');
+});
+
 test('candidate audit treats success records as a hard dedupe stop', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);

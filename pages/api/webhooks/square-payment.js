@@ -557,11 +557,14 @@ export function createSquarePaymentHandler({
 
     // ---- Dedup check ----
     const dedupKey = isInvoiceEvent ? `square:invoice:${invoiceId}` : `square:payment:${paymentId}`;
-    if (await dedupExists(dedupKey)) {
+    const duplicateFollowUp = await dedupExists(dedupKey);
+    if (duplicateFollowUp && isInvoiceEvent) {
       console.log(`[square-webhook] Duplicate ${isInvoiceEvent ? 'invoice' : 'payment'} event ${isInvoiceEvent ? invoiceId : paymentId} — skipping`);
       return res.status(200).json({ status: 'duplicate', paymentId, invoiceId });
     }
-    await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+    if (!duplicateFollowUp) {
+      await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+    }
 
     // ---- No customer ID? Log and bail ----
     if (!customerId) {
@@ -607,6 +610,15 @@ export function createSquarePaymentHandler({
         attributionStatus = 'failed';
         console.error('[square-webhook] Attribution registration failed:', attributionError.message);
       }
+    }
+
+    if (duplicateFollowUp) {
+      console.log(`[square-webhook] Duplicate payment event ${paymentId} — follow-up skipped`);
+      return res.status(200).json({
+        status: 'duplicate',
+        paymentId,
+        attributionStatus,
+      });
     }
 
     // ---- Notify Q in Installation Posts thread as soon as customer data is available ----
