@@ -62,6 +62,7 @@ async function seedCandidate(store, {
     squareCustomerId: customerId,
     completedAt,
     consentStatus: 'GRANTED',
+    consentCapturedAt: '2026-07-10T12:00:00.000Z',
     disclosureVersion: '2026-07-10',
     acquisition: {
       paidEvidence: true,
@@ -77,6 +78,8 @@ async function seedCandidate(store, {
     amount,
     refundedAmount,
     completedAt: paidAt,
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
   });
   return {
     jobRef: opaqueRef(jobId),
@@ -260,6 +263,39 @@ test('apply uploads only explicitly selected approved refs and records success o
   assert.equal(uploads[0].validateOnly, false);
   assert.equal(await store.hasSuccess(approved.jobRef), true);
   assert.equal(await store.hasSuccess(unselected.jobRef), false);
+});
+
+test('apply fails closed without complete granted consent metadata while validate allows unknown', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  const selection = await seedCandidate(store);
+  const mapping = await store.getJobMapping(selection.jobRef);
+  await store.savePendingJob({
+    jobId: selection.jobRef,
+    squareCustomerId: mapping.squareCustomerId,
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'UNKNOWN',
+    consentCapturedAt: null,
+    disclosureVersion: '2026-07-10',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  let uploadCalls = 0;
+  const common = {
+    selections: [selection],
+    store,
+    fetchCustomer: async () => squareCustomer(),
+    uploadConversion: async () => {
+      uploadCalls += 1;
+      return { success: true };
+    },
+  };
+
+  const validation = await runSelectedReplay({ ...common, mode: 'validate' });
+  assert.equal(validation.results[0].status, 'validated');
+  const apply = await runSelectedReplay({ ...common, mode: 'apply' });
+  assert.equal(apply.results[0].status, 'consent_not_granted');
+  assert.equal(uploadCalls, 1);
+  assert.equal(await store.hasSuccess(selection.jobRef), false);
 });
 
 test('operator results exclude raw PII, click ids, and returned hash-like values', async () => {

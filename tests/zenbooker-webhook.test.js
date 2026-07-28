@@ -55,6 +55,42 @@ test('mapped eligible completion delegates to the coordinator without using invo
   assert.equal('conversionValue' in calls[0], false);
 });
 
+test('configured ZenBooker consent field reaches the coordinator as safe consent metadata', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  const calls = [];
+  const label = 'Measurement consent';
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: mappedStore(),
+    coordinator: {
+      async registerJob(value) {
+        calls.push(value);
+        return { status: 'observed' };
+      },
+    },
+    consentFieldLabel: label,
+    disclosureVersion: '2026-07-10',
+    mode: 'observe',
+    logger: quietLogger(),
+  });
+  const res = createResponse();
+  await handler(createRequest(completedPayload({
+    service_fields: [{
+      name: label,
+      selected_options: [{
+        display_label: 'I agree',
+        answered_at: '2026-07-10T12:00:00.000Z',
+      }],
+    }],
+  })), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls[0].consentStatus, 'GRANTED');
+  assert.equal(calls[0].consentCapturedAt, '2026-07-10T12:00:00.000Z');
+  assert.equal(calls[0].disclosureVersion, '2026-07-10');
+  assert.equal(JSON.stringify(res.body).includes('I agree'), false);
+});
+
 test('staff and test jobs are rejected before mapping or coordinator work', async (t) => {
   const restoreEnv = installTestEnvironment();
   t.after(restoreEnv);

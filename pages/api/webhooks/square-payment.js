@@ -129,6 +129,22 @@ async function kvSet(key, value, ttl) {
   }
 }
 
+/** Atomically claim one customer follow-up for a Square event. */
+async function kvClaimFollowUp(key, value, ttl) {
+  if (!KV_URL || !KV_TOKEN) return 'unavailable';
+  const encodedValue = encodeURIComponent(JSON.stringify(value));
+  try {
+    const res = await axios.get(
+      `${KV_URL}/set/${encodeURIComponent(key)}/${encodedValue}/NX/EX/${ttl}`,
+      { headers: { Authorization: `Bearer ${KV_TOKEN}` } },
+    );
+    return res.data?.result === 'OK' ? 'claimed' : 'duplicate';
+  } catch (err) {
+    console.error('[kv-claim-error]', err.response?.data || err.message);
+    return 'unavailable';
+  }
+}
+
 /** Push a value onto a Redis list */
 async function kvRpush(key, value) {
   if (!KV_URL || !KV_TOKEN) {
@@ -387,6 +403,11 @@ async function registerPaymentAttribution({
   payment,
   customer,
   mode,
+  webhookSignatureKeyConfigured,
+  webhookSignatureVerified,
+  storeLoader = getDefaultAttributionStore,
+  coordinatorFactory = createOfflineConversionCoordinator,
+  attributionUploader = uploadOfflineConversion,
 }) {
   if (!payment?.id || !payment?.customer_id) {
     return { status: 'not_applicable' };
@@ -394,12 +415,14 @@ async function registerPaymentAttribution({
 
   let coordinator = attributionCoordinator;
   if (!coordinator) {
-    const store = await getDefaultAttributionStore();
+    const store = await storeLoader();
     if (!store) return { status: 'store_unavailable' };
-    coordinator = createOfflineConversionCoordinator({
+    coordinator = coordinatorFactory({
       store,
-      uploadConversion: uploadOfflineConversion,
-      mode: mode ?? process.env.OFFLINE_CONVERSION_MODE ?? 'observe',
+      uploadConversion: attributionUploader,
+      mode: webhookSignatureVerified
+        ? mode ?? process.env.OFFLINE_CONVERSION_MODE ?? 'observe'
+        : 'observe',
     });
   }
 
@@ -412,6 +435,8 @@ async function registerPaymentAttribution({
       amount: Number(payment.amount_money?.amount ?? payment.total_money?.amount ?? 0),
       refundedAmount: Number(payment.refunded_money?.amount ?? 0),
       completedAt: payment.updated_at || payment.created_at || null,
+      webhookSignatureKeyConfigured: Boolean(webhookSignatureKeyConfigured),
+      webhookSignatureVerified: Boolean(webhookSignatureVerified),
     },
     {
       customer: {
@@ -466,13 +491,15 @@ export function createSquarePaymentHandler({
   signatureKey = SQUARE_WEBHOOK_SIG_KEY,
   signatureVerifier = verifySquareSignature,
   httpClient = axios,
-  dedupExists = kvExists,
-  dedupSet = kvSet,
   operationsNotifier = logDiscord,
   installPostNotifier = notifyQInstallPost,
   reviewSmsSender = sendReviewSms,
   attributionCoordinator,
   attributionMode,
+  attributionStoreLoader = getDefaultAttributionStore,
+  attributionCoordinatorFactory = createOfflineConversionCoordinator,
+  attributionUploader = uploadOfflineConversion,
+  followUpClaim = kvClaimFollowUp,
   logger = console,
 } = {}) {
   return async function handler(req, res) {
@@ -494,16 +521,20 @@ export function createSquarePaymentHandler({
       const sig = req.headers['x-square-hmacsha256-signature'];
       const webhookUrl = `https://mounting-man-dashboard.vercel.app/api/webhooks/square-payment`;
 
-      if (signatureKey && !signatureVerifier(rawBody, sig, webhookUrl, signatureKey)) {
-        console.error('[square-webhook] Signature verification FAILED');
-        try {
-          await operationsNotifier('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
-        } catch (notifyError) {
-          logger.warn('square_webhook_signature_rejection_notify_failed', {
-            errorType: notifyError?.name || 'Error',
-          });
+      let webhookSignatureVerified = false;
+      if (signatureKey) {
+        if (!signatureVerifier(rawBody, sig, webhookUrl, signatureKey)) {
+          console.error('[square-webhook] Signature verification FAILED');
+          try {
+            await operationsNotifier('🚨 **Square webhook signature verification failed** — possible spoofing attempt');
+          } catch (notifyError) {
+            logger.warn('square_webhook_signature_rejection_notify_failed', {
+              errorType: notifyError?.name || 'Error',
+            });
+          }
+          return res.status(401).json({ error: 'Invalid signature' });
         }
-        return res.status(401).json({ error: 'Invalid signature' });
+        webhookSignatureVerified = true;
       }
 
       if (!signatureKey && sig) {
@@ -555,16 +586,7 @@ export function createSquarePaymentHandler({
       `[square-webhook] ${isInvoiceEvent ? 'Invoice' : 'Payment'} ${isInvoiceEvent ? invoiceId : paymentId}: customer=${customerId}, order=${orderId || 'N/A'}, amount=$${amount}, status=${paymentStatus || 'unknown'}`
     );
 
-    // ---- Dedup check ----
     const dedupKey = isInvoiceEvent ? `square:invoice:${invoiceId}` : `square:payment:${paymentId}`;
-    const duplicateFollowUp = await dedupExists(dedupKey);
-    if (duplicateFollowUp && isInvoiceEvent) {
-      console.log(`[square-webhook] Duplicate ${isInvoiceEvent ? 'invoice' : 'payment'} event ${isInvoiceEvent ? invoiceId : paymentId} — skipping`);
-      return res.status(200).json({ status: 'duplicate', paymentId, invoiceId });
-    }
-    if (!duplicateFollowUp) {
-      await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
-    }
 
     // ---- No customer ID? Log and bail ----
     if (!customerId) {
@@ -597,6 +619,8 @@ export function createSquarePaymentHandler({
     console.log(`[square-webhook] Customer loaded: phone=${hasPhone ? 'present' : 'missing'}, email=${email ? 'present' : 'missing'}`);
 
     let attributionStatus = isInvoiceEvent ? 'not_applicable' : 'not_attempted';
+    let attributionRetryable = false;
+    let attributionErrorCode = null;
     if (!isInvoiceEvent) {
       try {
         const attributionResult = await registerPaymentAttribution({
@@ -604,20 +628,61 @@ export function createSquarePaymentHandler({
           payment,
           customer,
           mode: attributionMode,
+          webhookSignatureKeyConfigured: Boolean(signatureKey),
+          webhookSignatureVerified,
+          storeLoader: attributionStoreLoader,
+          coordinatorFactory: attributionCoordinatorFactory,
+          attributionUploader,
         });
         attributionStatus = attributionResult.status;
+        attributionRetryable = Boolean(attributionResult.retryable);
+        attributionErrorCode = attributionResult.errorCode || null;
       } catch (attributionError) {
         attributionStatus = 'failed';
+        attributionRetryable = true;
+        attributionErrorCode = 'ATTRIBUTION_PROCESSING_FAILED';
         console.error('[square-webhook] Attribution registration failed:', attributionError.message);
       }
     }
 
+    let followUpClaimStatus = 'unavailable';
+    try {
+      followUpClaimStatus = await followUpClaim(
+        dedupKey,
+        { processed: new Date().toISOString() },
+        DEDUP_TTL,
+      );
+    } catch (claimError) {
+      logger.warn('square_follow_up_claim_failed', {
+        errorType: claimError?.name || 'Error',
+      });
+    }
+    if (!['claimed', 'duplicate'].includes(followUpClaimStatus)) {
+      followUpClaimStatus = 'unavailable';
+    }
+    if (followUpClaimStatus === 'unavailable') {
+      return res.status(503).json({
+        status: 'follow_up_claim_unavailable',
+        paymentId,
+        invoiceId,
+        attributionStatus,
+        retryable: true,
+        errorCode: attributionErrorCode || 'FOLLOW_UP_CLAIM_UNAVAILABLE',
+      });
+    }
+    const duplicateFollowUp = followUpClaimStatus === 'duplicate';
     if (duplicateFollowUp) {
-      console.log(`[square-webhook] Duplicate payment event ${paymentId} — follow-up skipped`);
-      return res.status(200).json({
+      console.log(
+        `[square-webhook] Duplicate ${isInvoiceEvent ? 'invoice' : 'payment'} event `
+        + `${isInvoiceEvent ? invoiceId : paymentId} — follow-up skipped`
+      );
+      return res.status(attributionRetryable ? 503 : 200).json({
         status: 'duplicate',
         paymentId,
+        invoiceId,
         attributionStatus,
+        retryable: attributionRetryable,
+        errorCode: attributionErrorCode,
       });
     }
 
@@ -642,7 +707,17 @@ export function createSquarePaymentHandler({
         attributionStatus,
         reviewSmsStatus: 'skipped_no_phone',
       });
-      return res.status(200).json({ status: 'no_phone', paymentId, invoiceId, customerId, firstName, lastName, attributionStatus });
+      return res.status(attributionRetryable ? 503 : 200).json({
+        status: 'no_phone',
+        paymentId,
+        invoiceId,
+        customerId,
+        firstName,
+        lastName,
+        attributionStatus,
+        retryable: attributionRetryable,
+        errorCode: attributionErrorCode,
+      });
     }
 
     if (isInvoiceEvent) {
@@ -680,7 +755,7 @@ export function createSquarePaymentHandler({
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
 
-    return res.status(200).json({
+    return res.status(attributionRetryable ? 503 : 200).json({
       status: smsSent ? 'sms_sent' : 'sms_failed',
       paymentId,
       customerId,
@@ -689,6 +764,8 @@ export function createSquarePaymentHandler({
       phone,
       amount,
       attributionStatus,
+      retryable: attributionRetryable,
+      errorCode: attributionErrorCode,
       elapsed,
     });
 

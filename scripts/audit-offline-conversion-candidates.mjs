@@ -228,14 +228,16 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
   const jobRef = opaqueRef(job.id);
   const paymentRef = opaqueRef(payment.id);
   const customerRef = opaqueRef(squareCustomer.id);
-  const [mapping, pendingJobRecord, paymentRecord, successRecord, pendingIndexHasJob, paymentIndexHasPayment] = await Promise.all([
+  const [mapping, pendingJobRecord, trustedPaymentRecord, legacyPaymentRecord, successRecord, pendingIndexHasJob, paymentIndexHasPayment] = await Promise.all([
     safeKvGet(kv, `attrib:job-map:${jobRef}`),
     safeKvGet(kv, `attrib:pending-job:${customerRef}:${jobRef}`),
+    safeKvGet(kv, `attrib:trusted-payment:${customerRef}:${paymentRef}`),
     safeKvGet(kv, `attrib:payment:${customerRef}:${paymentRef}`),
     safeKvGet(kv, `conv:success:${jobRef}`),
     safeKvSetHas(kv, `attrib:pending-jobs:${customerRef}`, jobRef),
     safeKvSetHas(kv, `attrib:payments:${customerRef}`, paymentRef),
   ]);
+  const paymentRecord = trustedPaymentRecord || legacyPaymentRecord;
 
   const pendingJobPresent = Boolean(pendingJobRecord) && pendingIndexHasJob;
   const storedPaymentPresent = Boolean(paymentRecord) && paymentIndexHasPayment;
@@ -274,12 +276,19 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
     && !Number.isNaN(Date.parse(pendingJobRecord.completedAt))
     && Math.abs(Date.parse(paymentRecord.completedAt) - Date.parse(pendingJobRecord.completedAt)) <= MATCH_WINDOW_MS
   );
+  const storedPaymentTrusted = Boolean(
+    storedPaymentPresent
+    && paymentRecord.trustedWebhook === true
+    && paymentRecord.webhookSignatureKeyConfigured === true
+    && paymentRecord.webhookSignatureVerified === true
+  );
   const successAlreadyRecorded = Boolean(successRecord);
   const consentStatus = pendingJobRecord?.consentStatus || null;
   const evidence = [];
   if (mappingMatchesCustomer) evidence.push('job_mapping');
   if (pendingJobPresent) evidence.push('pending_job');
   if (storedPaymentCompleted) evidence.push('stored_payment');
+  if (storedPaymentTrusted) evidence.push('verified_square_webhook');
   if (paidEvidencePresent) evidence.push(`paid_${pendingJobRecord.acquisition?.paidMarker || 'evidence'}`);
   if (successAlreadyRecorded) evidence.push('already_uploaded');
 
@@ -293,12 +302,13 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
   else if (!livePaymentCompleted) blocker = 'Live Square payment is not a completed positive USD payment.';
   else if (!storedPaymentMatchesLive) blocker = 'Stored payment evidence does not exactly match the live Square payment.';
   else if (!storedPaymentCompleted) blocker = 'Stored payment evidence is not within the completed job window.';
-  else if (!pendingJobRecord?.disclosureVersion) blocker = 'Stored job privacy disclosure evidence is missing.';
-  else if (String(consentStatus).toUpperCase() === 'DENIED') blocker = 'Customer consent is denied.';
   else if (successAlreadyRecorded) {
     status = 'already_uploaded';
     blocker = 'Success record already exists; do not upload again.';
-  } else {
+  } else if (!storedPaymentTrusted) blocker = 'Stored payment lacks verified Square webhook provenance.';
+  else if (!pendingJobRecord?.disclosureVersion) blocker = 'Stored job privacy disclosure evidence is missing.';
+  else if (String(consentStatus).toUpperCase() === 'DENIED') blocker = 'Customer consent is denied.';
+  else {
     status = 'ready_for_validate';
   }
 
@@ -314,6 +324,7 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
     livePaymentCompleted,
     storedPaymentMatchesLive,
     storedPaymentCompleted,
+    storedPaymentTrusted,
     paidEvidencePresent,
     paidMarker: pendingJobRecord?.acquisition?.paidMarker || null,
     consentStatus,

@@ -58,11 +58,11 @@ function invoiceRequest(invoice = {}) {
 function dependencies(overrides = {}) {
   const calls = {
     attribution: [],
+    followUpClaims: [],
     installPost: [],
     logs: [],
     operations: [],
     sms: [],
-    dedupSet: [],
   };
   return {
     calls,
@@ -85,8 +85,10 @@ function dependencies(overrides = {}) {
           };
         },
       },
-      dedupExists: async () => false,
-      dedupSet: async (...args) => { calls.dedupSet.push(args); return true; },
+      followUpClaim: async (...args) => {
+        calls.followUpClaims.push(args);
+        return 'claimed';
+      },
       operationsNotifier: async (message) => { calls.operations.push(message); },
       installPostNotifier: async (value) => { calls.installPost.push(value); },
       reviewSmsSender: async (value) => { calls.sms.push(value); return true; },
@@ -156,8 +158,45 @@ test('payment.created and payment.updated preserve Q, review SMS, and observe-on
       amount: 55000,
       refundedAmount: 5000,
       completedAt: '2026-07-10T16:00:00.000Z',
+      webhookSignatureKeyConfigured: true,
+      webhookSignatureVerified: true,
     });
   }
+});
+
+test('no-key compatibility records payment attribution as observe-only untrusted provenance', async () => {
+  const deps = dependencies({ signatureKey: '', attributionMode: 'observe' });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.calls.attribution.length, 1);
+  assert.equal(deps.calls.attribution[0].value.webhookSignatureKeyConfigured, false);
+  assert.equal(deps.calls.attribution[0].value.webhookSignatureVerified, false);
+});
+
+test('no-key compatibility forces the default attribution coordinator to observe mode', async () => {
+  let constructedMode = null;
+  const deps = dependencies({
+    signatureKey: '',
+    attributionCoordinator: undefined,
+    attributionMode: 'active',
+    attributionStoreLoader: async () => ({ safe: true }),
+    attributionCoordinatorFactory: ({ mode }) => {
+      constructedMode = mode;
+      return {
+        async registerPayment() {
+          return { status: 'observed' };
+        },
+      };
+    },
+  });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(constructedMode, 'observe');
+  assert.equal(res.body.attributionStatus, 'observed');
 });
 
 test('partially paid invoice preserves install-post handling without synthesizing payment attribution', async () => {
@@ -214,7 +253,8 @@ test('attribution failure cannot suppress install-post notification or review SM
   const res = createResponse();
   await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
 
-  assert.equal(res.statusCode, 200);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.retryable, true);
   assert.equal(res.body.status, 'sms_sent');
   assert.equal(res.body.attributionStatus, 'failed');
   assert.equal(deps.calls.installPost.length, 1);
@@ -222,19 +262,25 @@ test('attribution failure cannot suppress install-post notification or review SM
 });
 
 test('duplicate payment retries transient attribution failure without repeating follow-up', async () => {
-  let followUpProcessed = false;
+  let followUpClaimed = false;
   let attributionAttempts = 0;
   const deps = dependencies({
-    dedupExists: async () => followUpProcessed,
-    dedupSet: async (...args) => {
-      deps.calls.dedupSet.push(args);
-      followUpProcessed = true;
-      return true;
+    followUpClaim: async (...args) => {
+      deps.calls.followUpClaims.push(args);
+      if (followUpClaimed) return 'duplicate';
+      followUpClaimed = true;
+      return 'claimed';
     },
     attributionCoordinator: {
       async registerPayment() {
         attributionAttempts += 1;
-        if (attributionAttempts === 1) throw new Error('KV unavailable');
+        if (attributionAttempts === 1) {
+          return {
+            status: 'upload_failed',
+            retryable: true,
+            errorCode: 'GOOGLE_TRANSIENT_FAILURE',
+          };
+        }
         return { status: 'observed' };
       },
     },
@@ -246,13 +292,66 @@ test('duplicate payment retries transient attribution failure without repeating 
   await handler(paymentRequest(), firstRes);
   await handler(paymentRequest(), duplicateRes);
 
-  assert.equal(firstRes.body.attributionStatus, 'failed');
+  assert.equal(firstRes.statusCode, 503);
+  assert.equal(firstRes.body.retryable, true);
+  assert.equal(firstRes.body.attributionStatus, 'upload_failed');
+  assert.equal(duplicateRes.statusCode, 200);
   assert.equal(duplicateRes.body.status, 'duplicate');
   assert.equal(duplicateRes.body.attributionStatus, 'observed');
   assert.equal(attributionAttempts, 2);
-  assert.equal(deps.calls.dedupSet.length, 1);
+  assert.equal(deps.calls.followUpClaims.length, 2);
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.sms.length, 1);
+});
+
+test('unavailable follow-up claim returns retryable without sending customer follow-up', async () => {
+  const deps = dependencies({
+    followUpClaim: async () => 'unavailable',
+    attributionCoordinator: {
+      async registerPayment() {
+        return {
+          status: 'upload_failed',
+          retryable: true,
+          errorCode: 'GOOGLE_TRANSIENT_FAILURE',
+        };
+      },
+    },
+  });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.status, 'follow_up_claim_unavailable');
+  assert.equal(res.body.retryable, true);
+  assert.equal(deps.calls.installPost.length, 0);
+  assert.equal(deps.calls.sms.length, 0);
+});
+
+test('concurrent duplicate deliveries permit exactly one customer follow-up', async () => {
+  let claimed = false;
+  const deps = dependencies({
+    followUpClaim: async (...args) => {
+      deps.calls.followUpClaims.push(args);
+      if (claimed) return 'duplicate';
+      claimed = true;
+      return 'claimed';
+    },
+  });
+  const handler = createSquarePaymentHandler(deps.values);
+  const firstRes = createResponse();
+  const secondRes = createResponse();
+
+  await Promise.all([
+    handler(paymentRequest(), firstRes),
+    handler(paymentRequest(), secondRes),
+  ]);
+
+  assert.equal(deps.calls.installPost.length, 1);
+  assert.equal(deps.calls.sms.length, 1);
+  assert.deepEqual(
+    [firstRes.body.status, secondRes.body.status].sort(),
+    ['duplicate', 'sms_sent'],
+  );
 });
 
 test('non-completed payments and unrelated events remain ignored before side effects', async () => {

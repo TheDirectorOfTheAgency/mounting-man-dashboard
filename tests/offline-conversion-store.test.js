@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAttributionStore } from '../lib/offline-conversion-store.js';
+import { opaqueRef } from '../lib/offline-conversion-eligibility.js';
 
 function createFakeKv() {
   const values = new Map();
@@ -103,6 +104,7 @@ test('pending jobs retain only coordinator metadata and never raw PII or click i
     squareCustomerId: 'sq-customer-1',
     completedAt: '2026-07-10T15:30:00.000Z',
     consentStatus: 'GRANTED',
+    consentCapturedAt: '2026-07-10T12:00:00.000Z',
     disclosureVersion: '2026-07-10',
     acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
     email: 'customer@example.com',
@@ -110,11 +112,15 @@ test('pending jobs retain only coordinator metadata and never raw PII or click i
     firstName: 'Private',
     lastName: 'Customer',
     gclid: 'raw-click-id',
+    rawConsentAnswer: 'raw-consent-answer',
   });
 
   const jobs = await store.listPendingJobs('sq-customer-1');
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].completedAt, '2026-07-10T15:30:00.000Z');
+  assert.equal(jobs[0].consentStatus, 'GRANTED');
+  assert.equal(jobs[0].consentCapturedAt, '2026-07-10T12:00:00.000Z');
+  assert.equal(jobs[0].disclosureVersion, '2026-07-10');
   assert.equal(jobs[0].acquisition.paidMarker, 'gclid');
 
   const serialized = JSON.stringify(kv.writes);
@@ -125,9 +131,27 @@ test('pending jobs retain only coordinator metadata and never raw PII or click i
     'Private',
     'Customer',
     'raw-click-id',
+    'raw-consent-answer',
   ]) {
     assert.equal(serialized.includes(forbidden), false, `stored forbidden value ${forbidden}`);
   }
+});
+
+test('pending job consent storage whitelists status and validates capture timestamps', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await store.savePendingJob({
+    jobId: 'job-sensitive',
+    squareCustomerId: 'sq-customer-1',
+    consentStatus: 'I agree',
+    consentCapturedAt: 'raw-field-answer',
+    disclosureVersion: '2026-07-10',
+  });
+
+  const [stored] = await store.listPendingJobs('sq-customer-1');
+  assert.equal(stored.consentStatus, 'UNKNOWN');
+  assert.equal(stored.consentCapturedAt, null);
+  assert.equal(JSON.stringify(stored).includes('I agree'), false);
+  assert.equal(JSON.stringify(stored).includes('raw-field-answer'), false);
 });
 
 test('completed payment storage is customer-scoped and strips unknown fields', async () => {
@@ -142,6 +166,8 @@ test('completed payment storage is customer-scoped and strips unknown fields', a
     amount: 55000,
     refundedAmount: 5000,
     completedAt: '2026-07-10T16:00:00.000Z',
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
     cardDetails: { card: { last4: '1234' } },
   });
 
@@ -161,8 +187,93 @@ test('completed payment storage is customer-scoped and strips unknown fields', a
       amount: 55000,
       refundedAmount: 5000,
       completedAt: '2026-07-10T16:00:00.000Z',
+      trustedWebhook: true,
+      webhookSignatureKeyConfigured: true,
+      webhookSignatureVerified: true,
     }
   );
+});
+
+test('payment trust fails closed unless a configured Square signature was verified', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  for (const [paymentId, provenance] of [
+    ['no-key', { webhookSignatureKeyConfigured: false, webhookSignatureVerified: false }],
+    ['not-verified', { webhookSignatureKeyConfigured: true, webhookSignatureVerified: false }],
+  ]) {
+    await store.savePayment({
+      squareCustomerId: 'sq-customer-1',
+      paymentId,
+      status: 'COMPLETED',
+      currency: 'USD',
+      amount: 55000,
+      completedAt: '2026-07-10T16:00:00.000Z',
+      ...provenance,
+    });
+  }
+
+  const payments = await store.listPayments('sq-customer-1');
+  assert.equal(payments.length, 2);
+  assert.equal(payments.every((item) => item.trustedWebhook === false), true);
+});
+
+test('unverified duplicates cannot overwrite trusted payment evidence in either arrival order', async () => {
+  const store = createAttributionStore(createFakeKv());
+  const trusted = {
+    squareCustomerId: 'sq-customer-1',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 50000,
+    refundedAmount: 0,
+    completedAt: '2026-07-10T16:00:00.000Z',
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
+  };
+  const untrustedTamper = {
+    squareCustomerId: 'sq-customer-1',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 999999,
+    refundedAmount: 100,
+    completedAt: '2026-07-20T16:00:00.000Z',
+    webhookSignatureKeyConfigured: false,
+    webhookSignatureVerified: false,
+  };
+
+  await store.savePayment({ ...trusted, paymentId: 'trusted-first' });
+  await store.savePayment({ ...untrustedTamper, paymentId: 'trusted-first' });
+  await store.savePayment({ ...untrustedTamper, paymentId: 'untrusted-first' });
+  await store.savePayment({ ...trusted, paymentId: 'untrusted-first' });
+
+  const trustedFirst = await store.getPayment('sq-customer-1', 'trusted-first');
+  const untrustedFirst = await store.getPayment('sq-customer-1', 'untrusted-first');
+  for (const stored of [trustedFirst, untrustedFirst]) {
+    assert.equal(stored.trustedWebhook, true);
+    assert.equal(stored.amount, 50000);
+    assert.equal(stored.refundedAmount, 0);
+    assert.equal(stored.completedAt, '2026-07-10T16:00:00.000Z');
+  }
+});
+
+test('payment-to-job binding is atomic, permanent, idempotent, and contains no raw IDs', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  assert.equal(await store.bindPaymentToJob('payment-sensitive', 'job-sensitive-1'), true);
+  assert.equal(await store.bindPaymentToJob('payment-sensitive', 'job-sensitive-1'), true);
+  assert.equal(await store.bindPaymentToJob('payment-sensitive', 'job-sensitive-2'), false);
+  assert.equal(
+    await store.getPaymentBinding('payment-sensitive'),
+    opaqueRef('job-sensitive-1'),
+  );
+
+  const serialized = JSON.stringify(kv.writes);
+  assert.equal(serialized.includes('payment-sensitive'), false);
+  assert.equal(serialized.includes('job-sensitive-1'), false);
+  assert.equal(serialized.includes('job-sensitive-2'), false);
+  const bindingWrite = kv.writes.find((write) => write.key.startsWith('attrib:payment-binding:'));
+  assert.deepEqual(bindingWrite.options, { nx: true });
 });
 
 test('the one-shot claim is atomic and may be released only by its owner', async () => {
