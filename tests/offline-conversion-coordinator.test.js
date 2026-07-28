@@ -42,6 +42,7 @@ function job(overrides = {}) {
     squareCustomerId: 'customer-1',
     completedAt: '2026-07-10T15:30:00.000Z',
     consentStatus: 'GRANTED',
+    consentCapturedAt: '2026-07-10T12:00:00.000Z',
     disclosureVersion: '2026-07-10',
     acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
     email: 'customer@example.com',
@@ -61,6 +62,8 @@ function payment(overrides = {}) {
     amount: 55000,
     refundedAmount: 5000,
     completedAt: '2026-07-10T16:00:00.000Z',
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
     ...overrides,
   };
 }
@@ -78,13 +81,27 @@ function setup({ mode = 'one_shot', uploadResults = [{ success: true, googleRequ
   return { store, coordinator, calls };
 }
 
-test('payment-before-job cannot write later without a fresh exact payment assertion', async () => {
+test('trusted payment-before-job binds and uploads when the completed job later arrives in continuous or active mode', async () => {
+  for (const mode of ['continuous', 'active']) {
+    const { coordinator, calls, store } = setup({ mode });
+    assert.equal((await coordinator.registerPayment(payment())).status, 'pending_job');
+
+    const result = await coordinator.registerJob(job());
+
+    assert.equal(result.status, 'uploaded');
+    assert.equal(result.paymentRef, opaqueRef('payment-1'));
+    assert.equal(calls.length, 1);
+    assert.equal(
+      await store.getPaymentBinding('payment-1'),
+      opaqueRef('job-1'),
+    );
+  }
+});
+
+test('one-shot payment-before-job still requires a fresh exact payment assertion', async () => {
   const { coordinator, calls } = setup();
   assert.equal((await coordinator.registerPayment(payment())).status, 'pending_job');
-
-  const result = await coordinator.registerJob(job());
-
-  assert.equal(result.status, 'payment_assertion_required');
+  assert.equal((await coordinator.registerJob(job())).status, 'payment_assertion_required');
   assert.equal(calls.length, 0);
 });
 test('job-before-payment remains pending until the completed payment arrives', async () => {
@@ -162,6 +179,109 @@ test('validate mode calls Google with validateOnly and never records success', a
   assert.equal(result.status, 'validated');
   assert.equal(calls[0].validateOnly, true);
   assert.equal(await store.hasSuccess(result.jobRef), false);
+});
+
+test('observe and validate may report or validate unknown consent but write modes fail closed', async () => {
+  for (const mode of ['observe', 'validate']) {
+    const { coordinator, calls, store } = setup({ mode });
+    await coordinator.registerJob(job({
+      consentStatus: 'UNKNOWN',
+      consentCapturedAt: null,
+    }));
+    const result = await coordinator.registerPayment(payment(), { customer: job() });
+    assert.equal(result.status, mode === 'observe' ? 'observed' : 'validated');
+    assert.equal(calls.length, mode === 'observe' ? 0 : 1);
+    assert.equal(await store.hasSuccess(result.jobRef), false);
+  }
+
+  for (const mode of ['one_shot', 'continuous', 'active']) {
+    for (const [changed, expectedStatus] of [
+      [{ consentStatus: 'UNKNOWN', consentCapturedAt: null }, 'consent_not_granted'],
+      [{ consentStatus: 'DENIED' }, 'consent_denied'],
+      [{ consentCapturedAt: null }, 'missing_consent_capture_time'],
+      [{ disclosureVersion: null }, 'missing_privacy_disclosure'],
+      [{ consentCapturedAt: '2026-07-09T12:00:00.000Z' }, 'consent_predates_disclosure'],
+    ]) {
+      const { coordinator, calls } = setup({ mode });
+      await coordinator.registerJob(job(changed));
+      const result = await coordinator.registerPayment(payment(), { customer: job() });
+      assert.equal(result.status, expectedStatus);
+      assert.equal(calls.length, 0);
+    }
+  }
+});
+
+test('real modes reject untrusted payment evidence while observe remains compatible', async () => {
+  const untrusted = payment({
+    webhookSignatureKeyConfigured: false,
+    webhookSignatureVerified: false,
+  });
+  const observed = setup({ mode: 'observe' });
+  await observed.coordinator.registerPayment(untrusted);
+  assert.equal((await observed.coordinator.registerJob(job())).status, 'observed');
+
+  for (const mode of ['one_shot', 'continuous', 'active']) {
+    const { coordinator, calls } = setup({ mode });
+    await coordinator.registerJob(job());
+    const result = await coordinator.registerPayment(untrusted, { customer: job() });
+    assert.equal(result.status, 'untrusted_payment');
+    assert.equal(calls.length, 0);
+  }
+});
+
+test('payment-before-job fails closed on zero, multiple, or untrusted qualifying payments', async () => {
+  const none = setup({ mode: 'continuous' });
+  assert.equal((await none.coordinator.registerJob(job())).status, 'pending_payment');
+
+  const multiple = setup({ mode: 'continuous' });
+  await multiple.coordinator.registerPayment(payment({ paymentId: 'payment-1' }));
+  await multiple.coordinator.registerPayment(payment({
+    paymentId: 'payment-2',
+    completedAt: '2026-07-10T17:00:00.000Z',
+  }));
+  assert.equal((await multiple.coordinator.registerJob(job())).status, 'ambiguous_payment');
+  assert.equal(multiple.calls.length, 0);
+
+  const untrusted = setup({ mode: 'continuous' });
+  await untrusted.coordinator.registerPayment(payment({
+    webhookSignatureKeyConfigured: false,
+    webhookSignatureVerified: false,
+  }));
+  assert.equal((await untrusted.coordinator.registerJob(job())).status, 'untrusted_payment');
+  assert.equal(untrusted.calls.length, 0);
+});
+
+test('a permanently bound payment cannot support a different completed job', async () => {
+  const { coordinator, calls, store } = setup({ mode: 'continuous' });
+  await store.saveJobMapping({ jobId: 'job-2', squareCustomerId: 'customer-1' });
+  await coordinator.registerPayment(payment());
+  assert.equal((await coordinator.registerJob(job())).status, 'uploaded');
+
+  const reused = await coordinator.registerJob(job({
+    jobId: 'job-2',
+    completedAt: '2026-07-10T15:45:00.000Z',
+  }));
+  assert.equal(reused.status, 'payment_already_bound');
+  assert.equal(calls.length, 1);
+});
+
+test('a retry reuses the same permanent payment binding without a second upload success record', async () => {
+  const { coordinator, calls, store } = setup({
+    mode: 'continuous',
+    uploadResults: [
+      { success: false, retryable: true, errorCode: 'GOOGLE_TRANSIENT_FAILURE' },
+      { success: true, googleRequestId: 'request-2' },
+    ],
+  });
+  await coordinator.registerPayment(payment());
+  const first = await coordinator.registerJob(job());
+  const second = await coordinator.registerJob(job());
+
+  assert.equal(first.status, 'upload_failed');
+  assert.equal(first.retryable, true);
+  assert.equal(second.status, 'uploaded');
+  assert.equal(calls.length, 2);
+  assert.equal(await store.getPaymentBinding('payment-1'), opaqueRef('job-1'));
 });
 
 test('failed one-shot upload releases its claim for a later retry', async () => {

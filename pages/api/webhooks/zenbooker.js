@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
 import {
+  DEFAULT_CONSENT_FIELD_LABEL,
   evaluateJob,
   extractJobCandidate,
   opaqueRef,
@@ -53,6 +54,7 @@ export function createZenbookerWebhookHandler({
   uploadConversion = uploadOfflineConversion,
   mode,
   disclosureVersion,
+  consentFieldLabel,
   logger = defaultLogger(),
 } = {}) {
   return async function handler(req, res) {
@@ -76,7 +78,14 @@ export function createZenbookerWebhookHandler({
     }
 
     const activeDisclosure = disclosureVersion ?? process.env.PRIVACY_DISCLOSURE_VERSION ?? null;
-    let candidate = extractJobCandidate(req.body, { disclosureVersion: activeDisclosure });
+    const activeConsentFieldLabel =
+      consentFieldLabel
+      ?? process.env.ZENBOOKER_CONSENT_FIELD_LABEL
+      ?? DEFAULT_CONSENT_FIELD_LABEL;
+    let candidate = extractJobCandidate(req.body, {
+      disclosureVersion: activeDisclosure,
+      consentFieldLabel: activeConsentFieldLabel,
+    });
     const jobRef = candidate.jobId ? opaqueRef(candidate.jobId).slice(0, 12) : null;
     const eligibility = evaluateJob(candidate);
     if (!eligibility.eligible) {

@@ -5,7 +5,11 @@ export default function handler(req, res) {
 
   return res.status(200).json({
     status: 'ok',
-    gitCommit: (process.env.VERCEL_GIT_COMMIT_SHA || 'unknown').slice(0, 12),
+    gitCommit: (
+      process.env.VERCEL_GIT_COMMIT_SHA
+      || process.env.DEPLOYMENT_COMMIT_SHA
+      || 'unknown'
+    ).slice(0, 12),
     environment: process.env.VERCEL_ENV || 'local',
     offlineConversionMode: process.env.OFFLINE_CONVERSION_MODE || 'observe',
   });

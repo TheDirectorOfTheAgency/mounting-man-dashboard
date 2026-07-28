@@ -21,10 +21,12 @@ function response() {
 test('health endpoint reports only safe deployment identity and pipeline mode', () => {
   const previous = {
     commit: process.env.VERCEL_GIT_COMMIT_SHA,
+    fallbackCommit: process.env.DEPLOYMENT_COMMIT_SHA,
     environment: process.env.VERCEL_ENV,
     mode: process.env.OFFLINE_CONVERSION_MODE,
   };
   process.env.VERCEL_GIT_COMMIT_SHA = '988ac2366196cf0e7634eb90f8605017618f3746';
+  process.env.DEPLOYMENT_COMMIT_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   process.env.VERCEL_ENV = 'production';
   process.env.OFFLINE_CONVERSION_MODE = 'observe';
   try {
@@ -46,6 +48,7 @@ test('health endpoint reports only safe deployment identity and pipeline mode', 
   } finally {
     for (const [key, value] of Object.entries({
       VERCEL_GIT_COMMIT_SHA: previous.commit,
+      DEPLOYMENT_COMMIT_SHA: previous.fallbackCommit,
       VERCEL_ENV: previous.environment,
       OFFLINE_CONVERSION_MODE: previous.mode,
     })) {
@@ -58,10 +61,12 @@ test('health endpoint reports only safe deployment identity and pipeline mode', 
 test('health endpoint defaults safely and rejects non-GET methods', () => {
   const previous = {
     commit: process.env.VERCEL_GIT_COMMIT_SHA,
+    fallbackCommit: process.env.DEPLOYMENT_COMMIT_SHA,
     environment: process.env.VERCEL_ENV,
     mode: process.env.OFFLINE_CONVERSION_MODE,
   };
   delete process.env.VERCEL_GIT_COMMIT_SHA;
+  delete process.env.DEPLOYMENT_COMMIT_SHA;
   delete process.env.VERCEL_ENV;
   delete process.env.OFFLINE_CONVERSION_MODE;
   try {
@@ -81,8 +86,31 @@ test('health endpoint defaults safely and rejects non-GET methods', () => {
   } finally {
     for (const [key, value] of Object.entries({
       VERCEL_GIT_COMMIT_SHA: previous.commit,
+      DEPLOYMENT_COMMIT_SHA: previous.fallbackCommit,
       VERCEL_ENV: previous.environment,
       OFFLINE_CONVERSION_MODE: previous.mode,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('health endpoint uses the safe manual deployment commit fallback', () => {
+  const previous = {
+    commit: process.env.VERCEL_GIT_COMMIT_SHA,
+    fallbackCommit: process.env.DEPLOYMENT_COMMIT_SHA,
+  };
+  delete process.env.VERCEL_GIT_COMMIT_SHA;
+  process.env.DEPLOYMENT_COMMIT_SHA = 'b35f5601234567890abcdef1234567890abcdef1';
+  try {
+    const res = response();
+    handler({ method: 'GET' }, res);
+    assert.equal(res.body.gitCommit, 'b35f56012345');
+  } finally {
+    for (const [key, value] of Object.entries({
+      VERCEL_GIT_COMMIT_SHA: previous.commit,
+      DEPLOYMENT_COMMIT_SHA: previous.fallbackCommit,
     })) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;

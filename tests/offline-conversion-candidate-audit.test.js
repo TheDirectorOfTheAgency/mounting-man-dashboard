@@ -94,6 +94,8 @@ test('candidate audit marks a locally evidenced paid completion ready for valida
     currency: 'USD',
     amount: 55000,
     completedAt: '2026-07-10T16:00:00.000Z',
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
   });
 
   const audit = await auditCandidateAttributionStore({
@@ -110,7 +112,13 @@ test('candidate audit marks a locally evidenced paid completion ready for valida
   assert.equal(audit.storedPaymentMatchesLive, true);
   assert.equal(audit.paidEvidencePresent, true);
   assert.equal(audit.successAlreadyRecorded, false);
-  assert.deepEqual(audit.evidence, ['job_mapping', 'pending_job', 'stored_payment', 'paid_gclid']);
+  assert.deepEqual(audit.evidence, [
+    'job_mapping',
+    'pending_job',
+    'stored_payment',
+    'verified_square_webhook',
+    'paid_gclid',
+  ]);
   assert.equal(JSON.stringify(audit).includes('sensitive'), false);
 });
 
@@ -150,6 +158,42 @@ test('candidate audit blocks when local paid acquisition evidence is missing', a
   assert.equal(audit.blocker, 'No local paid-acquisition evidence found for the job.');
 });
 
+test('candidate audit blocks validation when payment lacks verified Square webhook provenance', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+  });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'UNKNOWN',
+    disclosureVersion: '2026-07-10',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const audit = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment(),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+
+  assert.equal(audit.status, 'blocked');
+  assert.equal(audit.storedPaymentTrusted, false);
+  assert.match(audit.blocker, /verified Square webhook provenance/);
+});
+
 test('candidate audit reads JSON-string KV records written through REST backfills', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);
@@ -170,6 +214,8 @@ test('candidate audit reads JSON-string KV records written through REST backfill
     currency: 'USD',
     amount: 55000,
     completedAt: '2026-07-10T16:00:00.000Z',
+    webhookSignatureKeyConfigured: true,
+    webhookSignatureVerified: true,
   });
 
   const stringReturningKv = {
