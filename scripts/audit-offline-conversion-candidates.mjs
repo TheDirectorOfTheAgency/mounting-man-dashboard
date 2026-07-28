@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { hasPaidClickEvidence } from '../lib/offline-conversion-eligibility.js';
+
 const ZENBOOKER_BASE_URL = process.env.ZENBOOKER_BASE_URL || 'https://api.zenbooker.com/v1/';
 const SQUARE_BASE_URL = 'https://connect.squareup.com';
 const SQUARE_VERSION = process.env.SQUARE_VERSION || '2024-01-18';
@@ -235,24 +237,63 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
     safeKvSetHas(kv, `attrib:payments:${customerRef}`, paymentRef),
   ]);
 
-  const pendingJobPresent = Boolean(pendingJobRecord) || pendingIndexHasJob;
-  const storedPaymentPresent = Boolean(paymentRecord) || paymentIndexHasPayment;
-  const paidEvidencePresent = Boolean(pendingJobRecord?.acquisition?.paidEvidence);
+  const pendingJobPresent = Boolean(pendingJobRecord) && pendingIndexHasJob;
+  const storedPaymentPresent = Boolean(paymentRecord) && paymentIndexHasPayment;
+  const mappingMatchesCustomer =
+    Boolean(mapping?.squareCustomerId)
+    && String(mapping.squareCustomerId) === String(squareCustomer.id);
+  const paidEvidencePresent = hasPaidClickEvidence(pendingJobRecord?.acquisition);
+  const livePaymentStatus = String(payment.status || '').toUpperCase();
+  const livePaymentCurrency = String(
+    payment.amount_money?.currency || payment.total_money?.currency || ''
+  ).toUpperCase();
+  const livePaymentAmount = centsFromMoney(payment.amount_money || payment.total_money);
+  const livePaymentRefundedAmount = centsFromMoney(payment.refunded_money);
+  const livePaymentCompleted = Boolean(
+    livePaymentStatus === 'COMPLETED'
+    && livePaymentCurrency === 'USD'
+    && livePaymentAmount - livePaymentRefundedAmount > 0
+  );
+  const storedPaymentMatchesLive = Boolean(
+    storedPaymentPresent
+    && paymentRecord.paymentRef === paymentRef
+    && String(paymentRecord.status || '').toUpperCase() === livePaymentStatus
+    && String(paymentRecord.currency || '').toUpperCase() === livePaymentCurrency
+    && Number(paymentRecord.amount) === livePaymentAmount
+    && Number(paymentRecord.refundedAmount) === livePaymentRefundedAmount
+  );
+  const storedPaymentCompleted = Boolean(
+    storedPaymentMatchesLive
+    && livePaymentCompleted
+    && String(paymentRecord.status).toUpperCase() === 'COMPLETED'
+    && String(paymentRecord.currency).toUpperCase() === 'USD'
+    && Number(paymentRecord.amount || 0) - Number(paymentRecord.refundedAmount || 0) > 0
+    && paymentRecord.completedAt
+    && pendingJobRecord?.completedAt
+    && !Number.isNaN(Date.parse(paymentRecord.completedAt))
+    && !Number.isNaN(Date.parse(pendingJobRecord.completedAt))
+    && Math.abs(Date.parse(paymentRecord.completedAt) - Date.parse(pendingJobRecord.completedAt)) <= MATCH_WINDOW_MS
+  );
   const successAlreadyRecorded = Boolean(successRecord);
   const consentStatus = pendingJobRecord?.consentStatus || null;
   const evidence = [];
-  if (mapping?.squareCustomerId) evidence.push('job_mapping');
+  if (mappingMatchesCustomer) evidence.push('job_mapping');
   if (pendingJobPresent) evidence.push('pending_job');
-  if (storedPaymentPresent) evidence.push('stored_payment');
+  if (storedPaymentCompleted) evidence.push('stored_payment');
   if (paidEvidencePresent) evidence.push(`paid_${pendingJobRecord.acquisition?.paidMarker || 'evidence'}`);
   if (successAlreadyRecorded) evidence.push('already_uploaded');
 
   let status = 'blocked';
   let blocker = null;
   if (!mapping?.squareCustomerId) blocker = 'No local ZenBooker→Square mapping record found.';
+  else if (!mappingMatchesCustomer) blocker = 'Local job mapping does not match the candidate Square customer.';
   else if (!pendingJobPresent) blocker = 'No local pending completed-job record found.';
   else if (!paidEvidencePresent) blocker = 'No local paid-acquisition evidence found for the job.';
   else if (!storedPaymentPresent) blocker = 'No local completed-payment record found for the mapped Square customer.';
+  else if (!livePaymentCompleted) blocker = 'Live Square payment is not a completed positive USD payment.';
+  else if (!storedPaymentMatchesLive) blocker = 'Stored payment evidence does not exactly match the live Square payment.';
+  else if (!storedPaymentCompleted) blocker = 'Stored payment evidence is not within the completed job window.';
+  else if (!pendingJobRecord?.disclosureVersion) blocker = 'Stored job privacy disclosure evidence is missing.';
   else if (String(consentStatus).toUpperCase() === 'DENIED') blocker = 'Customer consent is denied.';
   else if (successAlreadyRecorded) {
     status = 'already_uploaded';
@@ -266,9 +307,13 @@ export async function auditCandidateAttributionStore({ kv, job, payment, squareC
     status,
     blocker,
     evidence,
-    mappingPresent: Boolean(mapping?.squareCustomerId),
+    paymentRef,
+    mappingPresent: mappingMatchesCustomer,
     pendingJobPresent,
     storedPaymentPresent,
+    livePaymentCompleted,
+    storedPaymentMatchesLive,
+    storedPaymentCompleted,
     paidEvidencePresent,
     paidMarker: pendingJobRecord?.acquisition?.paidMarker || null,
     consentStatus,
@@ -313,9 +358,9 @@ function summarizeCandidate(job, payment, squareCustomer, evidence, attributionA
   const amount = centsFromMoney(payment.total_money || payment.amount_money) - centsFromMoney(payment.refunded_money);
   const readyForValidate = attributionAudit.status === 'ready_for_validate';
   return {
-    jobRef: hashRef(job.id),
+    jobRef: opaqueRef(job.id),
     jobNumber: job.job_number || null,
-    paymentRef: hashRef(payment.id),
+    paymentRef: opaqueRef(payment.id),
     squareCustomerRef: squareCustomer?.id ? hashRef(squareCustomer.id) : null,
     serviceName: job.service_name || null,
     jobStatus: job.status || null,
@@ -330,7 +375,7 @@ function summarizeCandidate(job, payment, squareCustomer, evidence, attributionA
     safeForUpload: false,
     readyForValidate,
     uploadBlocker: readyForValidate
-      ? 'Local evidence supports validate-mode dry run only; one-shot upload still requires explicit approval and Google Ads validation proof.'
+      ? 'Local evidence supports selected dry-run/validation only; apply still requires an explicitly approved job ref paired with this payment ref and expected live net value.'
       : attributionAudit.blocker || 'KV/log attribution evidence unavailable; candidate is only a Square↔ZenBooker paid-completion match.',
   };
 }
@@ -416,14 +461,14 @@ export async function main() {
     blocker: zenBookerLooksStale
       ? 'ZenBooker /v1/jobs read feed appears stale for this token/window; local KV audit is now available but cannot compensate for a stale job feed.'
       : candidatesReadyForValidate > 0
-        ? 'One or more candidates have local mapping, paid-acquisition, payment, and no-success evidence; run validate mode only after explicit approval.'
+        ? 'One or more candidates have local mapping, paid-click, completed-payment, and no-success evidence; use only selected replay operations.'
         : kvAuditClient
           ? 'Local KV audit ran, but no Square↔ZenBooker candidate has a complete attribution evidence chain yet.'
           : 'This audit cannot prove Google-click attribution because local KV/log access is unavailable.',
     nextMove: zenBookerLooksStale
       ? 'Repair ZenBooker read scope/feed access or use production webhook evidence, then rerun this audit with local KV enabled.'
       : candidatesReadyForValidate > 0
-        ? 'Review the ready_for_validate candidate(s), then request explicit approval for a Google Ads validate-only upload dry run.'
+        ? 'Dry-run selected jobRef/paymentRef/live-net tuples, then validate them; apply requires each same tuple to be explicitly approved.'
         : kvAuditClient
           ? 'Use the attributionAudit blocker on the top candidate(s) to repair missing mapping, paid-acquisition capture, or completed-payment persistence.'
           : 'Configure KV_REST_API_URL/KV_REST_API_TOKEN or UPSTASH_REDIS_URL/UPSTASH_REDIS_TOKEN locally, then rerun this audit.',

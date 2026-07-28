@@ -149,6 +149,10 @@ test('completed payment storage is customer-scoped and strips unknown fields', a
   assert.equal(payments.length, 1);
   assert.match(payments[0].paymentRef, /^[a-f0-9]{24}$/);
   assert.deepEqual(
+    await store.getPayment('sq-customer-1', payments[0].paymentRef),
+    payments[0]
+  );
+  assert.deepEqual(
     { ...payments[0], paymentRef: undefined },
     {
       paymentRef: undefined,
@@ -172,6 +176,18 @@ test('the one-shot claim is atomic and may be released only by its owner', async
   assert.equal(await store.claimOneShot('job-b'), true);
 });
 
+test('active upload claims are isolated per job and released for retry', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+
+  assert.equal(await store.claimActiveUpload('job-a', 'worker-a'), true);
+  assert.equal(await store.claimActiveUpload('job-a', 'worker-b'), false);
+  assert.equal(await store.claimActiveUpload('job-b', 'worker-b'), true);
+  assert.equal(await store.releaseActiveUpload('job-a', 'worker-b'), false);
+  assert.equal(await store.releaseActiveUpload('job-a', 'worker-a'), true);
+  assert.equal(await store.claimActiveUpload('job-a', 'worker-b'), true);
+});
+
 test('success records deduplicate by opaque job reference', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);
@@ -182,4 +198,6 @@ test('success records deduplicate by opaque job reference', async () => {
 
   const serialized = JSON.stringify(kv.writes);
   assert.equal(serialized.includes('job-sensitive'), false);
+  const successWrite = kv.writes.find((write) => write.key.startsWith('conv:success:'));
+  assert.deepEqual(successWrite.options, {});
 });

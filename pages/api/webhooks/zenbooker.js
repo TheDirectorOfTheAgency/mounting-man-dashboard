@@ -152,7 +152,7 @@ export function createZenbookerWebhookHandler({
         paidEvidence: Boolean(candidate.acquisition?.paidEvidence),
       });
 
-      const retryable = result.status === 'upload_failed' && Boolean(result.retryable);
+      const retryable = Boolean(result.retryable);
       return res.status(retryable ? 503 : 200).json({
         processed: true,
         status: result.status,
