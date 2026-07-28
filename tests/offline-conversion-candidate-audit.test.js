@@ -38,6 +38,16 @@ function createFakeKv() {
   };
 }
 
+function livePayment(overrides = {}) {
+  return {
+    id: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    amount_money: { amount: 55000, currency: 'USD' },
+    refunded_money: { amount: 0, currency: 'USD' },
+    ...overrides,
+  };
+}
+
 test('ZenBooker job reads are constrained to the audit window', async () => {
   const urls = [];
   const beginTime = new Date('2026-06-24T00:00:00.000Z');
@@ -89,7 +99,7 @@ test('candidate audit marks a locally evidenced paid completion ready for valida
   const audit = await auditCandidateAttributionStore({
     kv,
     job: { id: 'zen-job-sensitive' },
-    payment: { id: 'square-payment-sensitive' },
+    payment: livePayment(),
     squareCustomer: { id: 'square-customer-sensitive' },
   });
 
@@ -97,6 +107,7 @@ test('candidate audit marks a locally evidenced paid completion ready for valida
   assert.equal(audit.mappingPresent, true);
   assert.equal(audit.pendingJobPresent, true);
   assert.equal(audit.storedPaymentPresent, true);
+  assert.equal(audit.storedPaymentMatchesLive, true);
   assert.equal(audit.paidEvidencePresent, true);
   assert.equal(audit.successAlreadyRecorded, false);
   assert.deepEqual(audit.evidence, ['job_mapping', 'pending_job', 'stored_payment', 'paid_gclid']);
@@ -130,7 +141,7 @@ test('candidate audit blocks when local paid acquisition evidence is missing', a
   const audit = await auditCandidateAttributionStore({
     kv,
     job: { id: 'zen-job-sensitive' },
-    payment: { id: 'square-payment-sensitive' },
+    payment: livePayment(),
     squareCustomer: { id: 'square-customer-sensitive' },
   });
 
@@ -149,6 +160,7 @@ test('candidate audit reads JSON-string KV records written through REST backfill
     squareCustomerId: 'square-customer-sensitive',
     completedAt: '2026-07-10T15:30:00.000Z',
     consentStatus: 'GRANTED',
+    disclosureVersion: '2026-07-10',
     acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
   });
   await store.savePayment({
@@ -170,7 +182,7 @@ test('candidate audit reads JSON-string KV records written through REST backfill
   const audit = await auditCandidateAttributionStore({
     kv: stringReturningKv,
     job: { id: 'zen-job-sensitive' },
-    payment: { id: 'square-payment-sensitive' },
+    payment: livePayment(),
     squareCustomer: { id: 'square-customer-sensitive' },
   });
 
@@ -189,6 +201,7 @@ test('candidate audit treats success records as a hard dedupe stop', async () =>
     squareCustomerId: 'square-customer-sensitive',
     completedAt: '2026-07-10T15:30:00.000Z',
     consentStatus: 'GRANTED',
+    disclosureVersion: '2026-07-10',
     acquisition: { paidEvidence: true, paidMarker: 'gbraid', hasGbraid: true },
   });
   await store.savePayment({
@@ -204,11 +217,118 @@ test('candidate audit treats success records as a hard dedupe stop', async () =>
   const audit = await auditCandidateAttributionStore({
     kv,
     job: { id: 'zen-job-sensitive' },
-    payment: { id: 'square-payment-sensitive' },
+    payment: livePayment(),
     squareCustomer: { id: 'square-customer-sensitive' },
   });
 
   assert.equal(audit.status, 'already_uploaded');
   assert.equal(audit.successAlreadyRecorded, true);
   assert.equal(audit.blocker, 'Success record already exists; do not upload again.');
+});
+
+test('candidate audit fails closed on a mismatched mapping or incomplete stored payment', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'different-square-customer',
+  });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'GRANTED',
+    disclosureVersion: '2026-07-10',
+    acquisition: { paidEvidence: true, paidMarker: 'wbraid', hasWbraid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'PENDING',
+    currency: 'USD',
+    amount: 55000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const mismatch = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment(),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+  assert.equal(mismatch.status, 'blocked');
+  assert.equal(mismatch.mappingPresent, false);
+  assert.match(mismatch.blocker, /mapping does not match/);
+
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+  });
+  const incompletePayment = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment(),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+  assert.equal(incompletePayment.status, 'blocked');
+  assert.equal(incompletePayment.storedPaymentCompleted, false);
+  assert.match(incompletePayment.blocker, /does not exactly match/);
+});
+
+test('candidate audit rejects stale amount, wrong payment ref, and refund mismatch', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  await store.saveJobMapping({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+  });
+  await store.savePendingJob({
+    jobId: 'zen-job-sensitive',
+    squareCustomerId: 'square-customer-sensitive',
+    completedAt: '2026-07-10T15:30:00.000Z',
+    consentStatus: 'GRANTED',
+    disclosureVersion: '2026-07-10',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  await store.savePayment({
+    squareCustomerId: 'square-customer-sensitive',
+    paymentId: 'square-payment-sensitive',
+    status: 'COMPLETED',
+    currency: 'USD',
+    amount: 55000,
+    refundedAmount: 5000,
+    completedAt: '2026-07-10T16:00:00.000Z',
+  });
+
+  const staleAmount = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment({
+      amount_money: { amount: 40000, currency: 'USD' },
+      refunded_money: { amount: 5000, currency: 'USD' },
+    }),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+  assert.equal(staleAmount.status, 'blocked');
+  assert.equal(staleAmount.storedPaymentMatchesLive, false);
+
+  const wrongPayment = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment({ id: 'different-square-payment' }),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+  assert.equal(wrongPayment.status, 'blocked');
+  assert.equal(wrongPayment.storedPaymentPresent, false);
+
+  const refundMismatch = await auditCandidateAttributionStore({
+    kv,
+    job: { id: 'zen-job-sensitive' },
+    payment: livePayment({
+      refunded_money: { amount: 10000, currency: 'USD' },
+    }),
+    squareCustomer: { id: 'square-customer-sensitive' },
+  });
+  assert.equal(refundMismatch.status, 'blocked');
+  assert.equal(refundMismatch.storedPaymentMatchesLive, false);
 });

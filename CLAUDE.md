@@ -113,7 +113,7 @@ All set in **Vercel project settings** for production. Local dev uses `.env.loca
 
 ### Offline Conversion Pipeline (Zenbooker → Google Ads)
 - **Why**: Samsung Frame, MantelMount, and stone/tile customers call/text Marshall first. He books for them in Zenbooker. These jobs are invisible to Google Ads because GTM only fires on self-booked /thank-you page visits. This pipeline captures those offline conversions.
-- **Flow**: Zenbooker `job.completed` webhook → `POST /api/webhooks/zenbooker?secret=XXXXX` → hash PII (SHA-256) → upload to Google Ads Enhanced Conversions for Leads → dedup via Vercel KV
+- **Flow**: Zenbooker `job.completed` webhook → `POST /api/webhooks/zenbooker?secret=[REDACTED]` → hash PII (SHA-256) → upload to Google Ads Enhanced Conversions for Leads → dedup via Vercel KV
 - **Conversion Action**: "Offline Job Completed" (ID: `7509313857`), type: UPLOAD_CLICKS, category: PURCHASE, `primaryForGoal: false` (promote to primary after 2 weeks of validated data)
 - **Auth**: Uses shared `lib/google-ads-auth.js` module. WRITE operations OMIT `login-customer-id` header (direct owner access).
 - **PII Hashing**: `lib/hash-pii.js` normalizes then SHA-256 hashes email (Gmail dot/plus removal), phone (E.164), and name (lowercase)
@@ -121,7 +121,7 @@ All set in **Vercel project settings** for production. Local dev uses `.env.loca
 - **Field Mapping**: Zenbooker webhook payload field names are best-guess. The handler logs full raw payloads and uses a `FIELD_MAP` config at the top of `zenbooker.js` that tries multiple dot-notation paths per field. Adjust after inspecting first real webhook in Vercel logs.
 - **Default Value**: $300 if no invoice amount found in webhook payload
 - **Error Handling**: Always returns 200 to Zenbooker (even on upload failure) to prevent retry storms
-- **Webhook URL**: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=mountingman_webhook_2026`
+- **Webhook URL**: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=[REDACTED]`
 - **KV Status**: ✅ LIVE — Upstash Redis `mounting-man-kv` (Free plan, US East iad1) connected to mounting-man-dashboard with KV_ prefix. Env vars `KV_REST_API_URL` and `KV_REST_API_TOKEN` auto-set. Deduplication verified working 2026-02-21.
 
 ## Conventions
@@ -163,8 +163,8 @@ vercel logs --follow # Tail deployment logs
 - Cancelled account: `931-361-6976` (ignore)
 
 ### API Credentials (stored in Vercel env vars + 1Password)
-- Developer Token: `b7mhI-wsuUwSCkTdk-UGiA` (Basic Access, RESET 2026-02-21, registered under MCC #1)
-- Old Developer Token: `yIQ5GczkxvMT_d8JEXuPxw` (DEAD — was permanently paired to wrong GCP project)
+- Developer Token: `[REDACTED]` (Basic Access, RESET 2026-02-21, registered under MCC #1)
+- Old Developer Token: `[REDACTED]` (DEAD — was permanently paired to wrong GCP project)
 - OAuth Client Project: "The Agency" (gen-lang-client-0151509552) — OLD client credentials
   - Client ID: `155328431466-ms2ucl67h93ne8tcp3c965kdffi170nn.apps.googleusercontent.com`
   - Client Secret: in Vercel env `GOOGLE_ADS_CLIENT_SECRET`
@@ -234,7 +234,7 @@ Disabled duplicates (primaryForGoal=false):
 - [x] Extract shared Google Ads auth module — DONE 2026-02-21 (lib/google-ads-auth.js)
 - [x] Set up Vercel KV database — DONE 2026-02-21 (Upstash Redis `mounting-man-kv`, Free plan, US East iad1, connected with KV_ prefix)
 - [x] Set ZENBOOKER_WEBHOOK_SECRET and GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID in Vercel env — DONE 2026-02-21
-- [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=XXXXX`
+- [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=[REDACTED]`
 - [ ] **REQUIRED** Enable Enhanced Conversions for Leads in Google Ads UI (Settings → Measurement → Enhanced conversions → Turn on for leads) — cannot be done via Basic Access API, must be done in UI
 - [ ] Verify Zenbooker webhook field names match FIELD_MAP (check Vercel logs after first webhook)
 - [ ] After 2 weeks: promote "Offline Job Completed" to primaryForGoal=true
