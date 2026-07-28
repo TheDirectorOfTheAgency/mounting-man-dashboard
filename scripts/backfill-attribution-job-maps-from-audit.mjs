@@ -90,7 +90,8 @@ export function createUpstashKvMutationClient({ url, token }) {
       return command('GET', key);
     },
     async set(key, value, options = {}) {
-      const args = ['SET', key, value];
+      const serializedValue = typeof value === 'string' ? value : JSON.stringify(value);
+      const args = ['SET', key, serializedValue];
       if (options.nx) args.push('NX');
       if (options.ex) args.push('EX', String(options.ex));
       return command(...args);
@@ -154,9 +155,11 @@ export async function backfillJobMapsFromAuditEntries({ entries, store, apply = 
     wouldCreate: 0,
     created: 0,
     existing: 0,
+    conflicts: 0,
     skippedMissingIdentifiers: 0,
     failed: 0,
     candidates: [],
+    conflictDetails: [],
   };
 
   for (const entry of entries || []) {
@@ -169,7 +172,16 @@ export async function backfillJobMapsFromAuditEntries({ entries, store, apply = 
 
     const existing = await store.getJobMapping(mapping.jobId);
     if (existing?.squareCustomerId) {
-      result.existing += 1;
+      if (existing.squareCustomerId === mapping.squareCustomerId) {
+        result.existing += 1;
+      } else {
+        result.conflicts += 1;
+        result.conflictDetails.push({
+          jobRef: mapping.refs.jobRef,
+          existingSquareCustomerRef: safeOpaqueRef(existing.squareCustomerId),
+          proposedSquareCustomerRef: mapping.refs.squareCustomerRef,
+        });
+      }
       continue;
     }
 
@@ -193,6 +205,7 @@ export async function backfillJobMapsFromAuditEntries({ entries, store, apply = 
   }
 
   result.candidates = result.candidates.slice(0, 20).map(jsonClone);
+  result.conflictDetails = result.conflictDetails.slice(0, 20).map(jsonClone);
   return result;
 }
 
@@ -219,10 +232,12 @@ export async function backfillJobMapsFromJobNumberMatches({ entries, candidates,
     ambiguousJobNumberMatches: 0,
     noJobNumberMatch: 0,
     existing: 0,
+    conflicts: 0,
     wouldCreate: 0,
     created: 0,
     failed: 0,
     candidates: [],
+    conflictDetails: [],
   };
 
   for (const candidate of candidates || []) {
@@ -246,7 +261,16 @@ export async function backfillJobMapsFromJobNumberMatches({ entries, candidates,
     const auditMapping = auditMatches[0];
     const existing = await store.getJobMapping(currentJobId);
     if (existing?.squareCustomerId) {
-      result.existing += 1;
+      if (existing.squareCustomerId === auditMapping.squareCustomerId) {
+        result.existing += 1;
+      } else {
+        result.conflicts += 1;
+        result.conflictDetails.push({
+          jobRef: safeOpaqueRef(currentJobId),
+          existingSquareCustomerRef: safeOpaqueRef(existing.squareCustomerId),
+          proposedSquareCustomerRef: auditMapping.refs.squareCustomerRef,
+        });
+      }
       continue;
     }
     result.wouldCreate += 1;
@@ -268,6 +292,7 @@ export async function backfillJobMapsFromJobNumberMatches({ entries, candidates,
   }
 
   result.candidates = result.candidates.slice(0, 20).map(jsonClone);
+  result.conflictDetails = result.conflictDetails.slice(0, 20).map(jsonClone);
   return result;
 }
 
@@ -275,6 +300,10 @@ function createKvFromEnv() {
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_URL;
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_TOKEN;
   return createUpstashKvMutationClient({ url, token });
+}
+
+export function getBackfillExitCode(result = {}) {
+  return Number(result.conflicts || 0) > 0 || Number(result.failed || 0) > 0 ? 1 : 0;
 }
 
 export async function main() {
@@ -325,6 +354,7 @@ export async function main() {
     console.log(`No job-number match: ${result.noJobNumberMatch}`);
   }
   console.log(`Existing maps: ${result.existing}`);
+  console.log(`Conflicts: ${result.conflicts}`);
   if (!joinByJobNumber) console.log(`Missing identifiers: ${result.skippedMissingIdentifiers}`);
   console.log(`Would create: ${result.wouldCreate}`);
   console.log(`Created: ${result.created}`);
@@ -333,8 +363,12 @@ export async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error(`backfill-attribution-job-maps-from-audit failed: ${error.message}`);
-    process.exit(1);
-  });
+  main()
+    .then((result) => {
+      process.exitCode = getBackfillExitCode(result);
+    })
+    .catch((error) => {
+      console.error(`backfill-attribution-job-maps-from-audit failed: ${error.message}`);
+      process.exitCode = 1;
+    });
 }

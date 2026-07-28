@@ -31,7 +31,7 @@ function paymentRequest(eventType = 'payment.updated', payment = {}) {
   };
 }
 
-function invoiceRequest() {
+function invoiceRequest(invoice = {}) {
   return {
     method: 'POST',
     headers: { 'x-square-hmacsha256-signature': 'valid-signature' },
@@ -47,6 +47,7 @@ function invoiceRequest() {
             payment_requests: [
               { total_completed_amount_money: { amount: 32500, currency: 'USD' } },
             ],
+            ...invoice,
           },
         },
       },
@@ -159,29 +160,47 @@ test('payment.created and payment.updated preserve Q, review SMS, and observe-on
   }
 });
 
-test('invoice.payment_made preserves install-post handling and records completed-payment attribution evidence', async () => {
+test('partially paid invoice preserves install-post handling without synthesizing payment attribution', async () => {
   const deps = dependencies();
   const res = createResponse();
-  await createSquarePaymentHandler(deps.values)(invoiceRequest(), res);
+  await createSquarePaymentHandler(deps.values)(
+    invoiceRequest({
+      payment_requests: [
+        {
+          computed_amount_money: { amount: 55000, currency: 'USD' },
+          total_completed_amount_money: { amount: 10000, currency: 'USD' },
+        },
+      ],
+    }),
+    res,
+  );
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.status, 'invoice_processed');
-  assert.equal(res.body.amount, '325.00');
-  assert.equal(res.body.attributionStatus, 'observed');
+  assert.equal(res.body.amount, '100.00');
+  assert.equal(res.body.attributionStatus, 'not_applicable');
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.installPost[0].eventType, 'invoice.payment_made');
-  assert.equal(deps.calls.installPost[0].amountCents, 32500);
+  assert.equal(deps.calls.installPost[0].amountCents, 10000);
   assert.equal(deps.calls.sms.length, 0);
+  assert.equal(deps.calls.attribution.length, 0);
+});
+
+test('paired invoice and payment events record exactly one canonical payment attribution', async () => {
+  const deps = dependencies();
+  const handler = createSquarePaymentHandler(deps.values);
+  const invoiceRes = createResponse();
+  const paymentRes = createResponse();
+
+  await handler(invoiceRequest(), invoiceRes);
+  await handler(paymentRequest(), paymentRes);
+
+  assert.equal(invoiceRes.body.status, 'invoice_processed');
+  assert.equal(invoiceRes.body.attributionStatus, 'not_applicable');
+  assert.equal(paymentRes.body.status, 'sms_sent');
+  assert.equal(paymentRes.body.attributionStatus, 'observed');
   assert.equal(deps.calls.attribution.length, 1);
-  assert.deepEqual(deps.calls.attribution[0].value, {
-    paymentId: 'invoice:invoice-1',
-    squareCustomerId: 'customer-1',
-    status: 'COMPLETED',
-    currency: 'USD',
-    amount: 32500,
-    refundedAmount: 0,
-    completedAt: '2026-07-10T17:00:00.000Z',
-  });
+  assert.equal(deps.calls.attribution[0].value.paymentId, 'payment-1');
 });
 
 test('attribution failure cannot suppress install-post notification or review SMS', async () => {
@@ -198,6 +217,40 @@ test('attribution failure cannot suppress install-post notification or review SM
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.status, 'sms_sent');
   assert.equal(res.body.attributionStatus, 'failed');
+  assert.equal(deps.calls.installPost.length, 1);
+  assert.equal(deps.calls.sms.length, 1);
+});
+
+test('duplicate payment retries transient attribution failure without repeating follow-up', async () => {
+  let followUpProcessed = false;
+  let attributionAttempts = 0;
+  const deps = dependencies({
+    dedupExists: async () => followUpProcessed,
+    dedupSet: async (...args) => {
+      deps.calls.dedupSet.push(args);
+      followUpProcessed = true;
+      return true;
+    },
+    attributionCoordinator: {
+      async registerPayment() {
+        attributionAttempts += 1;
+        if (attributionAttempts === 1) throw new Error('KV unavailable');
+        return { status: 'observed' };
+      },
+    },
+  });
+  const handler = createSquarePaymentHandler(deps.values);
+  const firstRes = createResponse();
+  const duplicateRes = createResponse();
+
+  await handler(paymentRequest(), firstRes);
+  await handler(paymentRequest(), duplicateRes);
+
+  assert.equal(firstRes.body.attributionStatus, 'failed');
+  assert.equal(duplicateRes.body.status, 'duplicate');
+  assert.equal(duplicateRes.body.attributionStatus, 'observed');
+  assert.equal(attributionAttempts, 2);
+  assert.equal(deps.calls.dedupSet.length, 1);
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.sms.length, 1);
 });

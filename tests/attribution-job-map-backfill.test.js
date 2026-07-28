@@ -4,7 +4,45 @@ import test from 'node:test';
 import {
   backfillJobMapsFromAuditEntries,
   backfillJobMapsFromJobNumberMatches,
+  createUpstashKvMutationClient,
+  getBackfillExitCode,
 } from '../scripts/backfill-attribution-job-maps-from-audit.mjs';
+
+test('Upstash mutation client serializes non-string SET values once and reads them back', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const requests = [];
+  const stored = new Map();
+  globalThis.fetch = async (_url, options) => {
+    const command = JSON.parse(options.body);
+    requests.push(command);
+    if (command[0] === 'SET') {
+      stored.set(command[1], command[2]);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ result: 'OK' }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ result: stored.get(command[1]) ?? null }),
+    };
+  };
+  const client = createUpstashKvMutationClient({
+    url: 'https://example.invalid',
+    token: 'test-token',
+  });
+  const value = { squareCustomerId: 'opaque-test-value', nested: { enabled: true } };
+
+  await client.set('test-key', value, { ex: 90 });
+
+  assert.deepEqual(requests[0], ['SET', 'test-key', JSON.stringify(value), 'EX', '90']);
+  assert.deepEqual(await client.get('test-key'), value);
+});
 
 test('dry-run plans missing ZenBooker-to-Square audit mappings without raw identifiers', async () => {
   const saved = [];
@@ -140,4 +178,72 @@ test('job-number mode maps current ZenBooker API job IDs from unique existing Sq
   ]);
   assert.equal(JSON.stringify(result).includes('current-api-job-id-sensitive'), false);
   assert.equal(JSON.stringify(result).includes('square-customer-sensitive'), false);
+});
+
+test('audit mode counts conflicting existing mappings using opaque references', async () => {
+  const saved = [];
+  const result = await backfillJobMapsFromAuditEntries({
+    entries: [
+      {
+        key: 'zb2sq:conflicting-job-sensitive',
+        value: {
+          jobId: 'conflicting-job-sensitive',
+          squareCustomerId: 'proposed-square-customer-sensitive',
+        },
+      },
+    ],
+    store: {
+      getJobMapping: async () => ({ squareCustomerId: 'existing-square-customer-sensitive' }),
+      saveJobMapping: async (mapping) => saved.push(mapping),
+    },
+    apply: true,
+  });
+
+  assert.equal(result.existing, 0);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.conflictDetails.length, 1);
+  assert.equal(saved.length, 0);
+  const rendered = JSON.stringify(result);
+  assert.equal(rendered.includes('conflicting-job-sensitive'), false);
+  assert.equal(rendered.includes('proposed-square-customer-sensitive'), false);
+  assert.equal(rendered.includes('existing-square-customer-sensitive'), false);
+});
+
+test('job-number mode counts conflicting existing mappings using opaque references', async () => {
+  const saved = [];
+  const result = await backfillJobMapsFromJobNumberMatches({
+    entries: [
+      {
+        key: 'zb2sq:legacy-job-sensitive',
+        value: {
+          jobNumber: '123456',
+          squareCustomerId: 'proposed-square-customer-sensitive',
+        },
+      },
+    ],
+    candidates: [
+      { jobNumber: '123456', rawJobId: 'current-job-sensitive' },
+    ],
+    store: {
+      getJobMapping: async () => ({ squareCustomerId: 'existing-square-customer-sensitive' }),
+      saveJobMapping: async (mapping) => saved.push(mapping),
+    },
+    apply: true,
+  });
+
+  assert.equal(result.existing, 0);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.conflictDetails.length, 1);
+  assert.equal(saved.length, 0);
+  const rendered = JSON.stringify(result);
+  assert.equal(rendered.includes('current-job-sensitive'), false);
+  assert.equal(rendered.includes('proposed-square-customer-sensitive'), false);
+  assert.equal(rendered.includes('existing-square-customer-sensitive'), false);
+});
+
+test('CLI exits nonzero for conflicts or failed writes', () => {
+  assert.equal(getBackfillExitCode({ conflicts: 0, failed: 0 }), 0);
+  assert.equal(getBackfillExitCode({ conflicts: 1, failed: 0 }), 1);
+  assert.equal(getBackfillExitCode({ conflicts: 0, failed: 1 }), 1);
+  assert.equal(getBackfillExitCode({ conflicts: 1, failed: 1 }), 1);
 });

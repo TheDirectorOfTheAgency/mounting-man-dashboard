@@ -382,31 +382,6 @@ function sumInvoiceCompletedAmount(invoice) {
   return total;
 }
 
-function invoicePaymentCurrency(invoice) {
-  const requests = Array.isArray(invoice?.payment_requests) ? invoice.payment_requests : [];
-  for (const request of requests) {
-    const currency =
-      request?.total_completed_amount_money?.currency
-      ?? request?.computed_amount_money?.currency;
-    if (currency) return currency;
-  }
-  return invoice?.total_money?.currency || null;
-}
-
-function invoiceAttributionPayment({ invoice, invoiceId, customerId, amountCents }) {
-  return {
-    id: invoiceId ? `invoice:${invoiceId}` : '',
-    customer_id: customerId || '',
-    status: 'COMPLETED',
-    amount_money: {
-      amount: amountCents,
-      currency: invoicePaymentCurrency(invoice),
-    },
-    refunded_money: { amount: 0 },
-    updated_at: invoice?.updated_at || invoice?.created_at || null,
-  };
-}
-
 async function registerPaymentAttribution({
   attributionCoordinator,
   payment,
@@ -582,11 +557,14 @@ export function createSquarePaymentHandler({
 
     // ---- Dedup check ----
     const dedupKey = isInvoiceEvent ? `square:invoice:${invoiceId}` : `square:payment:${paymentId}`;
-    if (await dedupExists(dedupKey)) {
+    const duplicateFollowUp = await dedupExists(dedupKey);
+    if (duplicateFollowUp && isInvoiceEvent) {
       console.log(`[square-webhook] Duplicate ${isInvoiceEvent ? 'invoice' : 'payment'} event ${isInvoiceEvent ? invoiceId : paymentId} — skipping`);
       return res.status(200).json({ status: 'duplicate', paymentId, invoiceId });
     }
-    await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+    if (!duplicateFollowUp) {
+      await dedupSet(dedupKey, { processed: new Date().toISOString() }, DEDUP_TTL);
+    }
 
     // ---- No customer ID? Log and bail ----
     if (!customerId) {
@@ -618,21 +596,29 @@ export function createSquarePaymentHandler({
 
     console.log(`[square-webhook] Customer loaded: phone=${hasPhone ? 'present' : 'missing'}, email=${email ? 'present' : 'missing'}`);
 
-    let attributionStatus = 'not_attempted';
-    try {
-      const attributionPayment = isInvoiceEvent
-        ? invoiceAttributionPayment({ invoice, invoiceId, customerId, amountCents })
-        : payment;
-      const attributionResult = await registerPaymentAttribution({
-        attributionCoordinator,
-        payment: attributionPayment,
-        customer,
-        mode: attributionMode,
+    let attributionStatus = isInvoiceEvent ? 'not_applicable' : 'not_attempted';
+    if (!isInvoiceEvent) {
+      try {
+        const attributionResult = await registerPaymentAttribution({
+          attributionCoordinator,
+          payment,
+          customer,
+          mode: attributionMode,
+        });
+        attributionStatus = attributionResult.status;
+      } catch (attributionError) {
+        attributionStatus = 'failed';
+        console.error('[square-webhook] Attribution registration failed:', attributionError.message);
+      }
+    }
+
+    if (duplicateFollowUp) {
+      console.log(`[square-webhook] Duplicate payment event ${paymentId} — follow-up skipped`);
+      return res.status(200).json({
+        status: 'duplicate',
+        paymentId,
+        attributionStatus,
       });
-      attributionStatus = attributionResult.status;
-    } catch (attributionError) {
-      attributionStatus = 'failed';
-      console.error('[square-webhook] Attribution registration failed:', attributionError.message);
     }
 
     // ---- Notify Q in Installation Posts thread as soon as customer data is available ----
