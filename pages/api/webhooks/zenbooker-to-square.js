@@ -88,12 +88,63 @@ async function getDefaultAttributionStore() {
   return kv ? createAttributionStore(kv) : null;
 }
 
+export function classifyZenbookerSquareAudit(audit = {}) {
+  const mappingWarnings = Array.isArray(audit.mappingWarnings) ? audit.mappingWarnings : [];
+  const unknownOptions = Array.isArray(audit.unknownOptions) ? audit.unknownOptions : [];
+  const hasTerminalFailure = Boolean(
+    audit.processed === false
+    || audit.invoiceSkipReason
+    || audit.orderError
+    || audit.invoiceError
+    || (audit.orderCreated === false && audit.mode !== 'dry_run')
+    || (audit.invoiceCreated === false && audit.mode !== 'dry_run')
+  );
+  const needsReview = Boolean(hasTerminalFailure || mappingWarnings.length || unknownOptions.length);
+  return {
+    needsReview,
+    terminalFailure: hasTerminalFailure,
+    reasons: [
+      audit.processed === false ? 'processed_false' : null,
+      audit.invoiceSkipReason ? 'invoice_skipped' : null,
+      audit.orderError ? 'order_error' : null,
+      audit.invoiceError ? 'invoice_error' : null,
+      audit.orderCreated === false && audit.mode !== 'dry_run' ? 'order_not_created' : null,
+      audit.invoiceCreated === false && audit.mode !== 'dry_run' ? 'invoice_not_created' : null,
+      mappingWarnings.length ? 'mapping_warnings' : null,
+      unknownOptions.length ? 'unknown_options' : null,
+    ].filter(Boolean),
+  };
+}
+
+const ZB2SQ_AUDIT_TTL_SECONDS = 7776000;
+const ZB2SQ_REVIEW_INDEX = 'zb2sq:review-index';
+const ZB2SQ_FAILURE_INDEX = 'zb2sq:failure-index';
+
+export async function applyZenbookerSquareAuditIndexUpdates(kv, auditKey, classification) {
+  if (classification.needsReview) {
+    await kv.sadd(ZB2SQ_REVIEW_INDEX, auditKey);
+    await kv.expire(ZB2SQ_REVIEW_INDEX, ZB2SQ_AUDIT_TTL_SECONDS);
+  } else {
+    await kv.srem(ZB2SQ_REVIEW_INDEX, auditKey);
+  }
+
+  if (classification.terminalFailure) {
+    await kv.sadd(ZB2SQ_FAILURE_INDEX, auditKey);
+    await kv.expire(ZB2SQ_FAILURE_INDEX, ZB2SQ_AUDIT_TTL_SECONDS);
+  } else {
+    await kv.srem(ZB2SQ_FAILURE_INDEX, auditKey);
+  }
+}
+
 async function writeBookingAudit(jobId, audit) {
   if (!jobId) return;
   const kv = await getKV();
   if (!kv) return;
   try {
-    await kv.set(`zb2sq:${jobId}`, audit, { ex: 7776000 });
+    const auditKey = `zb2sq:${jobId}`;
+    await kv.set(auditKey, audit, { ex: ZB2SQ_AUDIT_TTL_SECONDS });
+    const classification = classifyZenbookerSquareAudit(audit);
+    await applyZenbookerSquareAuditIndexUpdates(kv, auditKey, classification);
   } catch (err) {
     console.warn('Failed to write ZenBooker Square audit:', err.message);
   }

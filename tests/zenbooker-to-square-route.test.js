@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createZenbookerToSquareHandler } from '../pages/api/webhooks/zenbooker-to-square.js';
+import {
+  applyZenbookerSquareAuditIndexUpdates,
+  classifyZenbookerSquareAudit,
+  createZenbookerToSquareHandler,
+} from '../pages/api/webhooks/zenbooker-to-square.js';
 import { createResponse } from './webhook-test-helpers.js';
 
 function payload(overrides = {}) {
@@ -64,6 +68,83 @@ function installSecret(t) {
     else process.env.ZENBOOKER_WEBHOOK_SECRET = previous;
   });
 }
+
+test('ZenBooker Square audit classification separates terminal failures from review-only warnings', () => {
+  assert.deepEqual(
+    classifyZenbookerSquareAudit({
+      mode: 'draft_invoice',
+      orderCreated: true,
+      invoiceCreated: true,
+      mappingWarnings: [],
+      unknownOptions: [],
+    }),
+    { needsReview: false, terminalFailure: false, reasons: [] },
+  );
+
+  assert.deepEqual(
+    classifyZenbookerSquareAudit({
+      mode: 'draft_invoice',
+      orderCreated: true,
+      invoiceCreated: true,
+      mappingWarnings: ['unknown field option'],
+    }),
+    { needsReview: true, terminalFailure: false, reasons: ['mapping_warnings'] },
+  );
+
+  assert.deepEqual(
+    classifyZenbookerSquareAudit({
+      mode: 'draft_invoice',
+      processed: false,
+      orderCreated: false,
+      invoiceCreated: false,
+      invoiceSkipReason: 'No Square customer ID',
+    }),
+    {
+      needsReview: true,
+      terminalFailure: true,
+      reasons: ['processed_false', 'invoice_skipped', 'order_not_created', 'invoice_not_created'],
+    },
+  );
+});
+
+test('ZenBooker Square audit index updates remove stale review/failure entries after clean recovery', async () => {
+  const calls = [];
+  const kv = {
+    sadd: async (...args) => { calls.push(['sadd', ...args]); },
+    srem: async (...args) => { calls.push(['srem', ...args]); },
+    expire: async (...args) => { calls.push(['expire', ...args]); },
+  };
+
+  await applyZenbookerSquareAuditIndexUpdates(kv, 'zb2sq:job-123', {
+    needsReview: false,
+    terminalFailure: false,
+  });
+
+  assert.deepEqual(calls, [
+    ['srem', 'zb2sq:review-index', 'zb2sq:job-123'],
+    ['srem', 'zb2sq:failure-index', 'zb2sq:job-123'],
+  ]);
+});
+
+test('ZenBooker Square audit index updates keep review but clear stale failure for review-only warnings', async () => {
+  const calls = [];
+  const kv = {
+    sadd: async (...args) => { calls.push(['sadd', ...args]); },
+    srem: async (...args) => { calls.push(['srem', ...args]); },
+    expire: async (...args) => { calls.push(['expire', ...args]); },
+  };
+
+  await applyZenbookerSquareAuditIndexUpdates(kv, 'zb2sq:job-123', {
+    needsReview: true,
+    terminalFailure: false,
+  });
+
+  assert.deepEqual(calls, [
+    ['sadd', 'zb2sq:review-index', 'zb2sq:job-123'],
+    ['expire', 'zb2sq:review-index', 7776000],
+    ['srem', 'zb2sq:failure-index', 'zb2sq:job-123'],
+  ]);
+});
 
 test('route preserves customer to order to draft SHARE_MANUALLY full-balance invoice flow', async (t) => {
   installSecret(t);

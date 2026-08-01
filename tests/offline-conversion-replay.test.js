@@ -222,11 +222,18 @@ test('selected validation calls validateOnly and never writes success or any KV 
     fetchCustomer: async () => squareCustomer(),
     uploadConversion: async (value) => {
       uploads.push(value);
-      return { success: true, validated: true, googleRequestId: 'validation-request' };
+      return {
+        success: true,
+        validated: true,
+        googleRequestId: 'validation-request',
+        googleJobId: 'validation-job',
+      };
     },
   });
 
   assert.equal(result.validated, 1);
+  assert.equal(result.results[0].googleRequestId, 'validation-request');
+  assert.equal(result.results[0].googleJobId, 'validation-job');
   assert.equal(uploads.length, 1);
   assert.equal(uploads[0].validateOnly, true);
   assert.equal(await store.hasSuccess(selection.jobRef), false);
