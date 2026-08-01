@@ -74,6 +74,11 @@ function centsFromMoney(value) {
   return value.amount;
 }
 
+export function paymentNetCents(payment = {}) {
+  return centsFromMoney(payment.amount_money || payment.total_money)
+    - centsFromMoney(payment.refunded_money);
+}
+
 function sanitizeZenBookerJson(text) {
   return text
     .replace(/"(?:lat|lng|latitude|longitude)"\s*:\s*,/g, (match) => match.replace(',', 'null,'))
@@ -366,7 +371,7 @@ function matchEvidence(job, payment, squareCustomer) {
 
 function summarizeCandidate(job, payment, squareCustomer, evidence, attributionAudit = KV_AUDIT_UNAVAILABLE) {
   const invoice = job.invoice || {};
-  const amount = centsFromMoney(payment.total_money || payment.amount_money) - centsFromMoney(payment.refunded_money);
+  const amount = paymentNetCents(payment);
   const readyForValidate = attributionAudit.status === 'ready_for_validate';
   return {
     jobRef: opaqueRef(job.id),

@@ -5,6 +5,7 @@ import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import {
   auditCandidateAttributionStore,
   fetchZenBookerJobs,
+  paymentNetCents,
 } from '../scripts/audit-offline-conversion-candidates.mjs';
 
 function createFakeKv() {
@@ -47,6 +48,17 @@ function livePayment(overrides = {}) {
     ...overrides,
   };
 }
+
+test('candidate net value uses the exact Square amount persisted for replay assertions', () => {
+  assert.equal(
+    paymentNetCents(livePayment({
+      amount_money: { amount: 20700, currency: 'USD' },
+      total_money: { amount: 24840, currency: 'USD' },
+      refunded_money: { amount: 500, currency: 'USD' },
+    })),
+    20200,
+  );
+});
 
 test('ZenBooker job reads are constrained to the audit window', async () => {
   const urls = [];

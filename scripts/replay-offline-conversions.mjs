@@ -196,6 +196,8 @@ export async function runSelectedReplay({
         status: result.status,
         retryable: Boolean(result.retryable),
         errorCode: result.errorCode || null,
+        googleRequestId: result.googleRequestId || null,
+        googleJobId: result.googleJobId || null,
         paidMarker: result.paidMarker || null,
         evidence: result.evidence || [],
       });
