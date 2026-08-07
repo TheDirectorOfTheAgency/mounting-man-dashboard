@@ -19,6 +19,18 @@ const PENDING_INDEX_KEY = 'install-post:pending-index';
 const PENDING_TTL = 172800;  // 48 hours
 const COMPLETED_TTL = 604800; // 7 days
 
+export function decodeKvValue(raw) {
+  let value = raw;
+  for (let depth = 0; depth < 4 && typeof value === 'string'; depth += 1) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      break;
+    }
+  }
+  return value;
+}
+
 // ============================================================================
 // REDIS HELPERS
 // ============================================================================
@@ -31,8 +43,7 @@ async function kvGet(key) {
     });
     const raw = res.data?.result;
     if (!raw) return null;
-    // Value may be double-encoded (kvSet stores JSON.stringify'd value)
-    try { return JSON.parse(raw); } catch { return raw; }
+    return decodeKvValue(raw);
   } catch {
     return null;
   }
