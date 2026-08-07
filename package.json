@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "node --import tsx --test tests/*.test.js tests/*.test.mjs",
+    "test:codex-install-post-relay": "node --test tests/codex-install-post-relay.test.mjs",
     "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs tests/zenbooker-square-invoice.test.mjs",
     "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs",
     "audit:offline-conversion-candidates": "node scripts/audit-offline-conversion-candidates.mjs",
