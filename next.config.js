@@ -3,7 +3,20 @@ const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
   async headers() {
+    // The installation-post surface is operator-only. The capability itself now
+    // rides in a URL fragment and is exchanged for an HttpOnly cookie, but the
+    // surface still must not be cached by a shared proxy, indexed, or allowed
+    // to name itself in a Referer to the third-party photo host or the
+    // outbound live link.
+    const capabilityHeaders = [
+      { key: 'Referrer-Policy', value: 'no-referrer' },
+      { key: 'X-Robots-Tag', value: 'noindex, nofollow, noarchive' },
+      { key: 'Cache-Control', value: 'no-store, max-age=0, must-revalidate' },
+    ];
+
     return [
+      { source: '/install-posts/:path*', headers: capabilityHeaders },
+      { source: '/api/install-post/:path*', headers: capabilityHeaders },
       {
         source: '/near-you',
         headers: [

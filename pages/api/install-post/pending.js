@@ -11,6 +11,8 @@
 
 import axios from 'axios';
 
+import { getInstallPostStore, importLegacyPendingRecord } from '../../../lib/install-post-store.mjs';
+
 const KV_URL = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 const CRON_SECRET = (process.env.CRON_SECRET || '').trim();
@@ -106,6 +108,38 @@ async function kvSrem(key, member) {
 }
 
 // ============================================================================
+// LEGACY → CLOUD MIGRATION
+// ============================================================================
+
+/**
+ * Import the existing `install-post:pending:*` queue into the cloud queue.
+ *
+ * Every imported job lands unapproved with no photo, so history can never
+ * auto-publish. Existing cloud jobs are left alone, which makes this safe to
+ * re-run and impossible to use as a way to reset in-progress work.
+ */
+export async function migratePendingToCloud({ store, listKeys, readKey }) {
+  const keys = await listKeys();
+  let imported = 0;
+  let skipped = 0;
+
+  for (const key of keys) {
+    const raw = await readKey(key);
+    if (!raw) continue;
+    for (const record of importLegacyPendingRecord(raw)) {
+      if (await store.loadRecord(record.jobId)) {
+        skipped += 1;
+        continue;
+      }
+      await store.saveRecord(record);
+      imported += 1;
+    }
+  }
+
+  return { imported, skipped };
+}
+
+// ============================================================================
 // HANDLER
 // ============================================================================
 
@@ -152,6 +186,19 @@ export default async function handler(req, res) {
   // ---- POST: mark seed as complete ----
   if (req.method === 'POST') {
     const { orderId, action } = req.body || {};
+
+    // ---- One-shot import of the legacy queue into the cloud queue ----
+    if (action === 'migrate-to-cloud') {
+      const store = await getInstallPostStore();
+      if (!store) return res.status(503).json({ error: 'store_unavailable' });
+      const result = await migratePendingToCloud({
+        store,
+        listKeys: () => kvSmembers(PENDING_INDEX_KEY),
+        readKey: (key) => kvGet(key),
+      });
+      console.log(`[install-post-pending] Migrated ${result.imported} job(s) to the cloud queue`);
+      return res.status(200).json({ ok: true, ...result });
+    }
 
     if (action !== 'complete' || !orderId) {
       return res.status(400).json({ error: 'Body must include { orderId, action: "complete" }' });
