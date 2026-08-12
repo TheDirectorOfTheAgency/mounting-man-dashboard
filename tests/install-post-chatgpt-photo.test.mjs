@@ -139,6 +139,29 @@ test('rejects an allowlisted hostname when DNS resolves to a private address', a
   }), /unsafe_download_host/);
 });
 
+test('rejects private IPv4 transition and multicast IPv6 DNS results before fetch', async () => {
+  for (const address of [
+    '::127.0.0.1',
+    '::10.0.0.1',
+    '64:ff9b::10.0.0.1',
+    '64:ff9b::192.168.1.1',
+    '64:ff9b:1::203.0.113.10',
+    'ff02::1',
+  ]) {
+    let fetched = false;
+    await assert.rejects(downloadChatGptPhoto({
+      download_url: 'https://files.openai.example/opaque',
+      file_id: 'file_private_v6',
+      mime_type: 'image/jpeg',
+    }, {
+      allowedHosts: ['files.openai.example'],
+      async lookupImpl() { return [{ address, family: 6 }]; },
+      async fetchImpl() { fetched = true; throw new Error('must not fetch'); },
+    }), /unsafe_download_host/);
+    assert.equal(fetched, false, `fetch must not run for ${address}`);
+  }
+});
+
 test('Webflow photo store keeps credentials server-side and uploads normalized bytes', async () => {
   const normalized = await normalizeInstallationPhoto({
     imageBase64: (await image('jpeg')).toString('base64'),

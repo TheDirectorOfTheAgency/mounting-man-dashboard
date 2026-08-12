@@ -77,7 +77,7 @@ No synthetic canary content was sent outside the process.
 
 ## Verification receipt
 
-- Dashboard Node suite: **324 passed, 0 failed** (`npm test`).
+- Dashboard Node suite: **326 passed, 0 failed** (`npm test`).
 - Next production build: **passed** (`npm run build`); only pre-existing lint and
   Browserslist warnings were emitted.
 - Runner suite: **56 passed, 0 failed**; one local LibreSSL/urllib3 warning.

@@ -271,6 +271,52 @@ test('retry requires a fresh destination-bound nonce and consumes it once', asyn
   assert.equal(calls.length, 1);
 });
 
+test('retry approval rejects a destination that became successful after the challenge', async () => {
+  const record = makeRecord('job_111111aaaaaa', { city: 'Austin' });
+  record.state = 'RETRYABLE_FAILURE';
+  record.chatgptPreview = {
+    manifestId: 'manifest_' + 'a'.repeat(64),
+    binding: {
+      destinationManifest: DESTINATION_DEFINITIONS.map((entry) => ({
+        id: entry.id, expected: !entry.conditional, required: !entry.conditional,
+      })),
+    },
+  };
+  record.result = {
+    destinations: DESTINATION_DEFINITIONS.map((entry) => ({
+      id: entry.id,
+      status: entry.id === 'linkedin' ? 'TRANSIENT_FAILURE'
+        : (entry.conditional ? 'SKIPPED' : 'POSTED'),
+    })),
+  };
+  const store = fakeStore([record]);
+  let retried = false;
+  const service = createChatGptInstallationService({
+    store,
+    audit: auditLog(),
+    publishEnabled: true,
+    now: () => NOW,
+    nonceFactory: () => 'race-bound-approval',
+    publisher: { async retry() { retried = true; } },
+  });
+  const request = {
+    jobId: record.jobId,
+    manifestId: record.chatgptPreview.manifestId,
+    destinationIds: ['linkedin'],
+    actor: ACTOR,
+  };
+  const challenge = await service.retryFailedDestinations(request);
+  const changed = store.map.get(record.jobId);
+  changed.result.destinations.find((entry) => entry.id === 'linkedin').status = 'POSTED';
+  store.map.set(record.jobId, structuredClone(changed));
+
+  await assert.rejects(service.retryFailedDestinations({
+    ...request,
+    approvalNonce: challenge.approvalNonce,
+  }), /destination_not_retryable/);
+  assert.equal(retried, false);
+});
+
 test('audit failure after a publish claim prevents external dispatch and consumes the nonce safely', async () => {
   const record = makeRecord('job_111111aaaaaa', { city: 'Austin' });
   record.image = {
