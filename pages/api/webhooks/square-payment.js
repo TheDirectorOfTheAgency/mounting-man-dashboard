@@ -27,6 +27,8 @@ import {
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../../../lib/install-post-seeds.mjs';
+import { formatOperatorLinkBlock } from '../../../lib/install-post-queue.mjs';
+import { getInstallPostStore, stageOperatorHandoff } from '../../../lib/install-post-store.mjs';
 import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
@@ -52,6 +54,11 @@ const DISCORD_BOT_TOKEN =
 const DISCORD_OPS_CHANNEL = '1472767806452924520'; // #operations
 const DISCORD_INSTALL_THREAD = '1485380804707090643'; // Installation Posts thread in Q's #general
 const DISCORD_Q_USER_ID = process.env.DISCORD_Q_USER_ID || '';
+
+// Cloud installation-post queue — phone-first handoff, no M1 dependency
+const INSTALL_POST_ACCESS_SECRET = (process.env.INSTALL_POST_ACCESS_SECRET || '').trim();
+const INSTALL_POST_BASE_URL =
+  (process.env.INSTALL_POST_BASE_URL || 'https://mounting-man-dashboard.vercel.app').trim();
 
 // Upstash Redis — for dedup only
 const KV_URL   = process.env.KV_REST_API_URL;
@@ -797,6 +804,9 @@ export async function notifyQInstallPost(
     set = kvSet,
     rpush = kvRpush,
     sadd = kvSadd,
+    installPostStore,
+    capabilitySecret = INSTALL_POST_ACCESS_SECRET,
+    queueBaseUrl = INSTALL_POST_BASE_URL,
   } = {},
 ) {
   if (!discordBotToken) {
@@ -899,6 +909,17 @@ export async function notifyQInstallPost(
   const seedIntro = draftSeeds.length > 1
     ? `**Suggested seed JSONs**: ${draftSeeds.length} TVs found. Copy the JSON block that matches the photo; each price is that TV setup's line-item subtotal.`
     : '';
+
+  // ---- Stage the phone-first cloud queue and mint one link per TV ----
+  const operatorLinks = await stageOperatorHandoff({
+    store: installPostStore !== undefined ? installPostStore : await getInstallPostStore(),
+    seeds: draftSeeds,
+    sourceRefs: { orderId, paymentId: payment?.id || '', invoiceId: invoice?.id || '' },
+    source: triggerSourceCode,
+    secret: capabilitySecret,
+    baseUrl: queueBaseUrl,
+  });
+
   const message = [
     `${qMention}📸 **New job paid — ready for installation post**`,
     `**Client**: ${fullName}`,
@@ -908,6 +929,8 @@ export async function notifyQInstallPost(
     `**Square webhook**: succeeded`,
     `**Trigger event**: ${triggerEvent}`,
     factLines.length > 0 ? `**Draft facts**:\n${factLines.map(line => `  • ${line}`).join('\n')}` : '',
+    ``,
+    formatOperatorLinkBlock(operatorLinks),
     ``,
     seedIntro,
     formatInstallSeedBlocks(draftSeeds),

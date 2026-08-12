@@ -11,3 +11,6 @@ build/
 .claude/
 .env.vercel-prod
 .env.vercel-pull
+.venv/
+__pycache__/
+.pytest_cache/

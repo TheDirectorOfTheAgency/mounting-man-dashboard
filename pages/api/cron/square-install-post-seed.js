@@ -5,6 +5,8 @@ import {
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../../../lib/install-post-seeds.mjs';
+import { formatOperatorLinkBlock } from '../../../lib/install-post-queue.mjs';
+import { getInstallPostStore, stageOperatorHandoff } from '../../../lib/install-post-store.mjs';
 
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
 const SQUARE_VER = '2024-01-18';
@@ -22,6 +24,11 @@ const KV_URL = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 const Q_QUEUE_KEY = 'agency:context:siri_queue';
 const DEDUP_TTL = 86400;
+
+// Cloud installation-post queue — same phone-first handoff as the webhook path
+const INSTALL_POST_ACCESS_SECRET = (process.env.INSTALL_POST_ACCESS_SECRET || '').trim();
+const INSTALL_POST_BASE_URL =
+  (process.env.INSTALL_POST_BASE_URL || 'https://mounting-man-dashboard.vercel.app').trim();
 
 const TEAM_MEMBER_MAP = {
   TMSiHOOr7RGdl2Ki: 'Michael',
@@ -379,6 +386,16 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     ? `**Suggested seed JSONs**: ${draftSeeds.length} TVs found. Copy the JSON block that matches the photo; each price is that TV setup's line-item subtotal.`
     : '';
 
+  // ---- Stage the phone-first cloud queue and mint one link per TV ----
+  const operatorLinks = await stageOperatorHandoff({
+    store: await getInstallPostStore(),
+    seeds: draftSeeds,
+    sourceRefs: { orderId: payment.order_id || '', paymentId: payment.id || '', invoiceId: '' },
+    source: triggerSourceCode,
+    secret: INSTALL_POST_ACCESS_SECRET,
+    baseUrl: INSTALL_POST_BASE_URL,
+  });
+
   const message = [
     `${qMention}📸 **New job paid — ready for installation post**`,
     `**Client**: ${fullName}`,
@@ -389,6 +406,8 @@ async function notifyInstallThread({ payment, customer, order, lineItems, eventT
     `**Fallback trigger**: Vercel cron succeeded`,
     `**Trigger event**: ${triggerEvent}`,
     factLines.length > 0 ? `**Draft facts**:\n${factLines.map((line) => `  • ${line}`).join('\n')}` : '',
+    '',
+    formatOperatorLinkBlock(operatorLinks),
     '',
     seedIntro,
     formatInstallSeedBlocks(draftSeeds),
