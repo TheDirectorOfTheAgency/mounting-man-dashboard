@@ -109,12 +109,13 @@ function toolResult(result) {
   };
 }
 
-function toolSecuritySchemes(definition) {
+function toolSecuritySchemes(definition, authentication = 'oauth') {
+  if (authentication === 'none') return [{ type: 'noauth' }];
   return [{ type: 'oauth2', scopes: [definition.requiredScope] }];
 }
 
-function advertisedTool(definition) {
-  const securitySchemes = toolSecuritySchemes(definition);
+function advertisedTool(definition, authentication) {
+  const securitySchemes = toolSecuritySchemes(definition, authentication);
   return {
     name: definition.name,
     title: definition.title,
@@ -127,9 +128,15 @@ function advertisedTool(definition) {
   };
 }
 
-export function createInstallationPostMcpServer({ backend, actor, resourceMetadataUrl }) {
+export function createInstallationPostMcpServer({
+  backend,
+  actor,
+  resourceMetadataUrl,
+  authentication = 'oauth',
+}) {
   if (!backend?.call) throw new Error('installation-post backend client is required');
   if (!actor?.sub) throw new Error('authenticated actor is required');
+  if (!['oauth', 'none'].includes(authentication)) throw new Error('unsupported MCP authentication mode');
   const scopes = new Set(actor.scopes || []);
   const server = new McpServer({
     name: 'mounting-man-installation-posts',
@@ -145,7 +152,7 @@ export function createInstallationPostMcpServer({ backend, actor, resourceMetada
       annotations: definition.annotations,
       _meta: {
         ...definition.meta,
-        securitySchemes: toolSecuritySchemes(definition),
+        securitySchemes: toolSecuritySchemes(definition, authentication),
       },
     }, async (args) => {
       if (!scopes.has(definition.requiredScope)) {
@@ -170,7 +177,7 @@ export function createInstallationPostMcpServer({ backend, actor, resourceMetada
   // so replace only tools/list with an explicit wire representation while
   // preserving the compatibility mirror and the SDK's validated call handler.
   server.server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: TOOL_DEFINITIONS.map(advertisedTool),
+    tools: TOOL_DEFINITIONS.map((definition) => advertisedTool(definition, authentication)),
   }));
   return server;
 }

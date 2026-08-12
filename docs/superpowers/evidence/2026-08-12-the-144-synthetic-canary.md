@@ -75,9 +75,32 @@ destination-bound retry approval, and partial/indeterminate status honesty.
 
 No synthetic canary content was sent outside the process.
 
+## Live private-tunnel evidence
+
+The production-disabled stdio shadow was connected through OpenAI Secure MCP
+Tunnel `tunnel_6a7cfb0f4e908191b480b37ce4320ae3` to the private ChatGPT plugin
+`Mounting Man — Installation Posts (Synthetic)` in Marshall Wayne's verified
+Apple-sign-in **Pro** account. The tunnel was associated with The Agency
+Platform organization and the target ChatGPT workspace. Its runtime key was
+project-scoped and restricted to Tunnels Read + Use; no key value was written
+to the worktree or logs.
+
+ChatGPT web discovered the exact eight tools and completed two real remote tool
+calls in one conversation:
+
+1. `list_pending_installations` returned exactly two privacy-safe synthetic
+   jobs and reported `mode: SYNTHETIC_SHADOW` and `production_effects: false`.
+2. `resolve_installation_reference` returned both Susan Drive candidates and
+   ChatGPT explicitly reported the reference as ambiguous rather than guessing.
+
+A requested publish safety canary was blocked by ChatGPT's safety layer before
+it reached the tunnel. The shadow backend's independent publish/retry hard block
+is covered by the focused MCP test and returns
+`SYNTHETIC_SHADOW_PRODUCTION_DISABLED` when invoked directly.
+
 ## Verification receipt
 
-- Dashboard Node suite: **326 passed, 0 failed** (`npm test`).
+- Dashboard Node suite: **328 passed, 0 failed** (`npm test`).
 - Next production build: **passed** (`npm run build`); only pre-existing lint and
   Browserslist warnings were emitted.
 - Runner suite: **56 passed, 0 failed**; one local LibreSSL/urllib3 warning.
@@ -119,17 +142,20 @@ THE-144 remains in progress. These gates are intentionally unresolved:
    omit GBP reconciliation from the central log, and represent Reddit partial
    success imprecisely. Those live files were not modified under this issue's
    protected boundary.
-3. **Private remote endpoint and OAuth:** no endpoint, OAuth issuer/client,
-   owner subject, secret, DNS, or workspace app was configured. The plugin URL
-   deliberately remains a reserved `.invalid` address.
-4. **Workspace entitlement/admin gate:** the current account plan could not be
-   verified. Workspace Agents is not installed in the callable account, and no
-   Workspace Agents tools are available. Full write-capable MCP/custom-app use
-   requires the appropriate workspace plan and admin enablement.
-5. **Real web/iPhone proof:** ChatGPT web and iPhone file transfer, camera/photo
-   picker behavior, persistent-conversation recovery, OAuth refresh, and
-   attachment survivability have not been exercised against a real remote MCP
-   endpoint.
+3. **Production OAuth endpoint:** the private Secure MCP Tunnel shadow is live
+   and verified, but it intentionally uses tunnel/workspace association plus a
+   no-auth synthetic tool surface. The production adapter still needs a public
+   HTTPS OAuth issuer/client/resource configuration and exact owner subject
+   before real queue access can be enabled.
+4. **Workspace Agents:** the target ChatGPT account is verified as Pro and can
+   create/connect the private tunnel plugin. Workspace Agents is still not
+   installed/callable and remains a separate managed-workspace gate if proactive
+   external triggers are pursued.
+5. **iPhone availability:** ChatGPT web remote-tool invocation is verified, but
+   OpenAI's current Developer Mode/MCP FAQ explicitly says custom MCP apps are
+   web-only and not available on mobile. The requested iPhone access therefore
+   cannot be canaried or enabled today; this is a product blocker, not an
+   unimplemented photo-ingestion path.
 6. **Photo-first unattached flow:** confirmed-job then photo works, including
    similar multi-TV reverse ordering. Photo-before-reference needs a separate
    authenticated, expiring unattached blob store and is not implemented.
@@ -146,13 +172,12 @@ THE-144 remains in progress. These gates are intentionally unresolved:
 
 ## Required next decision
 
-Mr. Wayne must verify or authorize a compatible ChatGPT workspace and have an
-admin enable private custom apps/Workspace Agents as needed. After that, the
-next safe phase is to provision a private HTTPS OAuth MCP endpoint with
-publishing still hard-disabled, connect the reserved plugin to it, and run only
-synthetic web and iPhone attachment/preview tests. A real customer pilot and any
-production cutover require separate explicit approval after complete-publisher
-and receipt-parity evidence.
+No owner action can currently satisfy the iPhone requirement because OpenAI
+documents custom MCP apps as web-only. Engineering's next safe phase is to
+complete the eight-lane cloud publisher and receipt parity, then provision the
+production OAuth endpoint with publishing still hard-disabled. A web-only real
+customer pilot and any production cutover require separate approval after those
+gates pass; iPhone access must wait for OpenAI mobile support.
 
 Official OpenAI references used for the gate include remote MCP authentication,
 secure MCP tunnels, private workspace plugin publication, file parameters, and
@@ -163,3 +188,4 @@ Workspace Agent trigger runs:
 - https://developers.openai.com/plugins/build/plugins#share-a-local-plugin-with-your-workspace
 - https://developers.openai.com/plugins/reference#define-file-inputs
 - https://developers.openai.com/workspace-agents/trigger-runs
+- https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt-beta
