@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mounting-man-installation-posts": {
+      "type": "http",
+      "url": "https://installation-post-mcp.invalid/mcp",
+      "oauth_resource": "https://installation-post-mcp.invalid/mcp"
+    }
+  }
+}

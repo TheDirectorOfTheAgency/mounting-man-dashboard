@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish Installation Post"
+  short_description: "Safely preview and publish installation posts"
+  default_prompt: "Use $publish-installation-post to list pending installations and prepare one for approval."

@@ -1,0 +1,22 @@
+{
+  "name": "mounting-man-installation-posts",
+  "version": "0.1.0",
+  "description": "Private, approval-gated Mounting Man installation-post operations",
+  "author": {
+    "name": "The Agency"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Mounting Man Installation Posts",
+    "shortDescription": "Safely preview installation posts before publishing.",
+    "longDescription": "Lists pending Square installation records, binds a sanitized photo to a confirmed job, previews every destination, and publishes only an approved immutable manifest.",
+    "developerName": "The Agency",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Show my pending installation posts.",
+      "Match this photo to my latest installation."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

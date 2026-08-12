@@ -9,6 +9,7 @@
     "lint": "next lint",
     "test": "node --import tsx --test tests/*.test.js tests/*.test.mjs",
     "test:codex-install-post-relay": "node --test tests/codex-install-post-relay.test.mjs",
+    "canary:install-post-chatgpt": "node --import tsx --test tests/install-post-chatgpt-canary.test.mjs",
     "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs tests/zenbooker-square-invoice.test.mjs",
     "check:zenbooker-square-catalog": "node scripts/check-zenbooker-square-catalog.mjs",
     "audit:offline-conversion-candidates": "node scripts/audit-offline-conversion-candidates.mjs",
@@ -17,16 +18,20 @@
   },
   "dependencies": {
     "@google/genai": "^1.44.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@vercel/kv": "^3.0.0",
     "autoprefixer": "^10.4.17",
     "axios": "^1.6.5",
+    "jose": "^6.2.8",
     "next": "^14.2.3",
     "postcss": "^8.4.33",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.10.3",
+    "sharp": "^0.35.3",
     "tailwindcss": "^3.4.1",
-    "vercel": "^50.22.0"
+    "vercel": "^50.22.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "eslint": "^8.57.0",

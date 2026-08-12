@@ -1,0 +1,28 @@
+{
+  "audited_at": "2026-08-12",
+  "status": "audit_only_unversioned_runtime",
+  "dispatch_enabled": false,
+  "source": {
+    "fast_install_post.py": {
+      "path": "/Users/thedirector/.hermes/skills/business-ops/mounting-man-installation-posts-hermes/scripts/fast_install_post.py",
+      "sha256": "82c310f51098161df35be3658f8e1131e012594c1e5d4e9811e5dd636b0fb7ab"
+    },
+    "content.py": {
+      "path": "/Users/thedirector/.hermes/skills/business-ops/mounting-man-installation-posts-hermes/scripts/content.py",
+      "sha256": "c678948f985dc650c71bc8f1703467733f1b409bbb2f2e85a94e25019461febe"
+    },
+    "clients.py": {
+      "path": "/Users/thedirector/.hermes/skills/business-ops/mounting-man-installation-posts-hermes/scripts/clients.py",
+      "sha256": "58ee0dc328899322a410b7bf96489a3ae7e42898b81ed7bb8b5740822c9a687d"
+    },
+    "gbp_worker.py": {
+      "path": "/Users/thedirector/.hermes/tmp/mounting-man-installation-posts/gbp_worker.py",
+      "sha256": "03f89c8b659643a9dfb6fe20115ec54ddd44c78d7749a63db4e70185b2c34086"
+    },
+    "reddit_worker.py": {
+      "path": "/Users/thedirector/.hermes/tmp/mounting-man-installation-posts/reddit_worker.py",
+      "sha256": "f07736e386d673b657c3de6186c76c917c43e56a797ac1c11dde1b529b2aa31e"
+    }
+  },
+  "blocker": "The complete canonical publisher and queue workers are active, unversioned local runtime sources. They must be packaged from one controlled baseline and pass destination-receipt parity before cloud dispatch can be enabled."
+}

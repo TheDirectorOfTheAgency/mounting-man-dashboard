@@ -274,6 +274,35 @@ test('lease claims fail closed when the store is unreachable', async () => {
   assert.equal(await store.claimPublishLease({ jobId: 'job_1', revision: 'rev1', dispatchId: 'd1' }), 'unavailable');
 });
 
+test('ChatGPT backend request IDs are claimed once and fail closed', async () => {
+  const store = createInstallPostStore(createFakeKv());
+  const requestId = '12345678-1234-4abc-8def-1234567890ab';
+  assert.equal(await store.claimChatgptBackendRequest(requestId), true);
+  assert.equal(await store.claimChatgptBackendRequest(requestId), false);
+  assert.equal(await store.claimChatgptBackendRequest('not-a-uuid'), false);
+
+  const unavailable = createInstallPostStore(createFakeKv({ failOn: new Set(['set']) }));
+  assert.equal(await unavailable.claimChatgptBackendRequest('abcdefab-1234-4abc-8def-1234567890ab'), false);
+});
+
+test('ChatGPT audit receipts persist only bounded privacy-safe fields', async () => {
+  const kv = createFakeKv();
+  const store = createInstallPostStore(kv);
+  const receipt = await store.saveChatgptAudit({
+    actorHash: 'a'.repeat(64),
+    tool: 'preview_installation_post',
+    jobId: 'job_abc123',
+    beforeRevision: 'b'.repeat(64),
+    afterRevision: 'c'.repeat(64),
+    result: 'previewed',
+    requestId: '12345678-1234-4abc-8def-1234567890ab',
+    at: '2026-08-12T18:00:00.000Z',
+    customerName: 'must not persist',
+  });
+  assert.equal(receipt.customerName, undefined);
+  assert.doesNotMatch(JSON.stringify([...kv.values.values()]), /must not persist/);
+});
+
 // ---------------------------------------------------------------------------
 // Serialized read-modify-write
 // ---------------------------------------------------------------------------
