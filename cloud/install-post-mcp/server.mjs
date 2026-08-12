@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { z } from 'zod/v4';
 
@@ -108,7 +109,25 @@ function toolResult(result) {
   };
 }
 
-export function createInstallationPostMcpServer({ backend, actor }) {
+function toolSecuritySchemes(definition) {
+  return [{ type: 'oauth2', scopes: [definition.requiredScope] }];
+}
+
+function advertisedTool(definition) {
+  const securitySchemes = toolSecuritySchemes(definition);
+  return {
+    name: definition.name,
+    title: definition.title,
+    description: definition.description,
+    inputSchema: z.toJSONSchema(definition.schema),
+    annotations: definition.annotations,
+    execution: { taskSupport: 'forbidden' },
+    securitySchemes,
+    _meta: { ...definition.meta, securitySchemes },
+  };
+}
+
+export function createInstallationPostMcpServer({ backend, actor, resourceMetadataUrl }) {
   if (!backend?.call) throw new Error('installation-post backend client is required');
   if (!actor?.sub) throw new Error('authenticated actor is required');
   const scopes = new Set(actor.scopes || []);
@@ -124,18 +143,35 @@ export function createInstallationPostMcpServer({ backend, actor }) {
       description: definition.description,
       inputSchema: definition.schema,
       annotations: definition.annotations,
-      _meta: definition.meta,
+      _meta: {
+        ...definition.meta,
+        securitySchemes: toolSecuritySchemes(definition),
+      },
     }, async (args) => {
       if (!scopes.has(definition.requiredScope)) {
         return {
           isError: true,
           content: [{ type: 'text', text: JSON.stringify({ error: 'insufficient_scope' }) }],
           structuredContent: { error: 'insufficient_scope' },
+          ...(resourceMetadataUrl ? {
+            _meta: {
+              'mcp/www_authenticate': [
+                `Bearer resource_metadata="${resourceMetadataUrl}", error="insufficient_scope", error_description="The requested installation-post action requires an additional OAuth scope"`,
+              ],
+            },
+          } : {}),
         };
       }
       return toolResult(await backend.call(definition.name, args, { verifiedActor: actor }));
     });
   }
+  // MCP SDK 1.30.0 retains extension fields only under `_meta`. OpenAI's
+  // authorization contract also requires `securitySchemes` at the top level,
+  // so replace only tools/list with an explicit wire representation while
+  // preserving the compatibility mirror and the SDK's validated call handler.
+  server.server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: TOOL_DEFINITIONS.map(advertisedTool),
+  }));
   return server;
 }
 
@@ -175,14 +211,16 @@ export function createRemoteMcpApp({ backend, env = process.env, verifyBearer } 
   const config = remoteConfiguration(env);
   const verify = verifyBearer || createOAuthVerifier(config);
   const app = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: [config.allowedHost] });
-  const resourceMetadataUrl = new URL('/.well-known/oauth-protected-resource', config.resource).toString();
+  const resourceMetadataUrl = new URL('/.well-known/oauth-protected-resource/mcp', config.resource).toString();
 
-  app.get('/.well-known/oauth-protected-resource', (_req, res) => res.json({
+  const protectedResourceMetadata = (_req, res) => res.json({
     resource: config.resource,
     authorization_servers: [config.issuer],
     scopes_supported: [READ_SCOPE, WRITE_SCOPE, PUBLISH_SCOPE],
     bearer_methods_supported: ['header'],
-  }));
+  });
+  app.get('/.well-known/oauth-protected-resource', protectedResourceMetadata);
+  app.get('/.well-known/oauth-protected-resource/mcp', protectedResourceMetadata);
 
   app.post('/mcp', async (req, res) => {
     let actor;
@@ -202,7 +240,7 @@ export function createRemoteMcpApp({ backend, env = process.env, verifyBearer } 
         jsonrpc: '2.0', error: { code: -32003, message: 'Forbidden' }, id: null,
       });
     }
-    const server = createInstallationPostMcpServer({ backend, actor });
+    const server = createInstallationPostMcpServer({ backend, actor, resourceMetadataUrl });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try {
       await server.connect(transport);

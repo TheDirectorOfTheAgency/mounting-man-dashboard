@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { z } from 'zod/v4';
 
 import { createInstallationPostBackendClient } from '../cloud/install-post-mcp/backend-client.mjs';
 import {
@@ -35,6 +36,15 @@ test('MCP initializes and lists the exact eight narrow tools with safety annotat
   const { server, client } = await connectedFixture();
   t.after(async () => { await client.close(); await server.close(); });
   const tools = (await client.listTools()).tools;
+  const rawTools = (await client.request({ method: 'tools/list' }, z.object({
+    tools: z.array(z.object({
+      name: z.string(),
+      securitySchemes: z.array(z.object({
+        type: z.literal('oauth2'), scopes: z.array(z.string()),
+      })),
+      _meta: z.record(z.string(), z.unknown()),
+    }).loose()),
+  }))).tools;
   assert.deepEqual(tools.map((tool) => tool.name), [
     'list_pending_installations',
     'get_installation_job',
@@ -52,6 +62,21 @@ test('MCP initializes and lists the exact eight narrow tools with safety annotat
   assert.equal(publishSchema.additionalProperties, false);
   const attach = tools.find((tool) => tool.name === 'attach_installation_photo');
   assert.deepEqual(attach._meta['openai/fileParams'], ['photo']);
+  assert.deepEqual(attach._meta.securitySchemes, [{
+    type: 'oauth2', scopes: ['installation-posts:write'],
+  }]);
+  assert.deepEqual(
+    rawTools.find((tool) => tool.name === 'attach_installation_photo').securitySchemes,
+    [{ type: 'oauth2', scopes: ['installation-posts:write'] }],
+  );
+  assert.deepEqual(
+    tools.find((tool) => tool.name === 'publish_installation_everywhere')._meta.securitySchemes,
+    [{ type: 'oauth2', scopes: ['installation-posts:publish'] }],
+  );
+  assert.deepEqual(
+    rawTools.find((tool) => tool.name === 'publish_installation_everywhere').securitySchemes,
+    [{ type: 'oauth2', scopes: ['installation-posts:publish'] }],
+  );
 });
 
 test('all eight representative calls forward only schema-approved arguments', async (t) => {
@@ -131,6 +156,7 @@ test('MCP enforces read, write, and publish scopes before reaching the backend',
   const calls = [];
   const server = createInstallationPostMcpServer({
     actor: { sub: 'owner-subject', scopes: ['installation-posts:read'] },
+    resourceMetadataUrl: 'https://mcp.example.test/.well-known/oauth-protected-resource/mcp',
     backend: { async call(name) { calls.push(name); return {}; } },
   });
   const client = new Client({ name: 'scope-test', version: '1.0.0' });
@@ -143,6 +169,12 @@ test('MCP enforces read, write, and publish scopes before reaching the backend',
   });
   assert.equal(denied.isError, true);
   assert.equal(denied.structuredContent.error, 'insufficient_scope');
+  assert.match(
+    denied._meta['mcp/www_authenticate'][0],
+    /resource_metadata="https:\/\/mcp\.example\.test\/\.well-known\/oauth-protected-resource\/mcp"/,
+  );
+  assert.match(denied._meta['mcp/www_authenticate'][0], /error="insufficient_scope"/);
+  assert.match(denied._meta['mcp/www_authenticate'][0], /error_description="[^"]+"/);
   assert.deepEqual(calls, []);
 });
 
@@ -193,6 +225,9 @@ test('remote transport publishes OAuth metadata and enforces the configured owne
   assert.deepEqual((await metadata.json()).scopes_supported, [
     'installation-posts:read', 'installation-posts:write', 'installation-posts:publish',
   ]);
+  const pathMetadata = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
+  assert.equal(pathMetadata.status, 200);
+  assert.equal((await pathMetadata.json()).resource, 'https://mcp.example.test/mcp');
 
   const unauthorized = await fetch(`${base}/mcp`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
