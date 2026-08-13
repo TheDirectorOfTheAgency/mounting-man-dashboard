@@ -1,0 +1,29 @@
+[Unit]
+Description=Cloudflare tunnel for synthetic installation-post MCP shadow
+After=network-online.target mounting-man-install-post-shadow.service
+Wants=network-online.target
+Requires=mounting-man-install-post-shadow.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/opt/mounting-man-install-post-shadow/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:3138 --http-host-header localhost --url http://127.0.0.1:3137
+Restart=always
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=256M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

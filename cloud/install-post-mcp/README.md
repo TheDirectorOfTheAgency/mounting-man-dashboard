@@ -36,3 +36,10 @@ The hardened VPS unit template is
 `systemd/mounting-man-install-post-shadow.service`. It runs as a dynamic user,
 has no writable filesystem path, is memory-capped by the host, and listens only
 on `127.0.0.1:3137`.
+
+`systemd/mounting-man-install-post-cloudflare-shadow.service` is an optional,
+ephemeral Cloudflare Quick Tunnel canary for that loopback service. It exposes
+only the synthetic, production-disabled adapter and carries no Cloudflare
+account credential. Its generated hostname can change after a restart, so it
+is transport evidence only—not the stable OAuth endpoint or a production
+cutover mechanism.
