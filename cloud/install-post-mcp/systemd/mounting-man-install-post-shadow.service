@@ -1,0 +1,33 @@
+[Unit]
+Description=Mounting Man synthetic installation-post MCP shadow
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/mounting-man-install-post-shadow
+Environment=NODE_ENV=production
+Environment=INSTALL_POST_MCP_SYNTHETIC_ONLY=1
+Environment=HOST=127.0.0.1
+Environment=PORT=3137
+ExecStart=/usr/bin/node /opt/mounting-man-install-post-shadow/synthetic-http-shadow.mjs
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=256M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

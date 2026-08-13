@@ -25,3 +25,14 @@ hard-blocks publish and retry effects. It refuses to start unless
 `INSTALL_POST_MCP_SYNTHETIC_ONLY=1` is set. This launcher is for developer-mode
 transport, tool-discovery, and file-envelope proof only; it does not fetch or
 validate attached file bytes and is not the authenticated production adapter.
+
+For an isolated always-on host canary, `synthetic-http-shadow.mjs` exposes the
+same production-disabled tools on loopback only. It also requires
+`INSTALL_POST_MCP_SYNTHETIC_ONLY=1` and refuses a non-loopback bind. This is a
+compute/runtime proof for a VPS; it is not a public endpoint, OAuth deployment,
+or production publishing service.
+
+The hardened VPS unit template is
+`systemd/mounting-man-install-post-shadow.service`. It runs as a dynamic user,
+has no writable filesystem path, is memory-capped by the host, and listens only
+on `127.0.0.1:3137`.
