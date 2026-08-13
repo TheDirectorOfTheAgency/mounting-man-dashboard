@@ -1,8 +1,8 @@
 [Unit]
-Description=Cloudflare tunnel for synthetic installation-post MCP shadow
-After=network-online.target mounting-man-install-post-shadow.service
+Description=Cloudflare tunnel for VPS installation-post MCP adapter
+After=network-online.target mounting-man-install-post-live.service
 Wants=network-online.target
-Requires=mounting-man-install-post-shadow.service
+Requires=mounting-man-install-post-live.service
 
 [Service]
 Type=simple

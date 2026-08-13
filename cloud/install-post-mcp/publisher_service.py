@@ -205,8 +205,12 @@ def main() -> int:
     body = json.load(sys.stdin)
     if action == "preview":
         result = preview(body)
-    elif action in {"publish", "retry"}:
+    elif action == "publish":
         result = publish(body)
+    elif action == "retry":
+        # Destination-bound retry orchestration remains owned by the dashboard
+        # state machine. Never turn a retry request into a full republish.
+        raise RuntimeError("destination_retry_not_enabled_on_vps")
     else:
         raise RuntimeError("unsupported_publisher_action")
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))

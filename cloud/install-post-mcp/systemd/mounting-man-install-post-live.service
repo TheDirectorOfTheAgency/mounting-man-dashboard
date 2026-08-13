@@ -1,0 +1,36 @@
+[Unit]
+Description=Mounting Man live VPS installation-post MCP adapter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=installpost
+Group=installpost
+WorkingDirectory=/opt/mounting-man-install-post-vps/mcp
+EnvironmentFile=/etc/mounting-man-install-post-vps.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3137
+Environment=HOME=/opt/mounting-man-install-post-vps/runtime
+ExecStart=/usr/bin/node /opt/mounting-man-install-post-vps/mcp/live-http.mjs
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/mounting-man-install-post-vps/runtime /opt/mounting-man-install-post-vps/work
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryMax=768M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

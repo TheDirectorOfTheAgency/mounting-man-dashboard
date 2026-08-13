@@ -1,6 +1,6 @@
 # Installation-post remote MCP adapter
 
-Private, production-disabled transport adapter for THE-144. It exposes the exact eight installation-post tools over stateless Streamable HTTP and forwards them to the existing dashboard queue through an HMAC-authenticated internal request.
+Private transport adapter for THE-144. It exposes the exact eight installation-post tools over stateless Streamable HTTP and forwards them to the existing dashboard queue through an HMAC-authenticated internal request. The VPS live unit is a parallel copy and does not replace the M1/Codex or Discord routes.
 
 ## Required deployment configuration
 
@@ -15,7 +15,7 @@ Private, production-disabled transport adapter for THE-144. It exposes the exact
 
 The service refuses to start when OAuth/resource configuration is incomplete. The dashboard backend separately requires the same internal token. Tool scopes are `installation-posts:read`, `installation-posts:write`, and `installation-posts:publish`.
 
-The plugin manifest intentionally uses a reserved `.invalid` URL until a private endpoint, OAuth client/resource metadata, workspace entitlement, and admin publication are approved. Do not replace that URL, deploy, install, or enable production publishing as part of the local pilot.
+The development plugin remains private and unlisted. The current Quick Tunnel is a temporary operator canary; production requires a stable HTTPS endpoint and OAuth.
 
 ## Production-disabled tunnel shadow
 
