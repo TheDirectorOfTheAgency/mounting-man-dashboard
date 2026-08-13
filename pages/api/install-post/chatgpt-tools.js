@@ -94,9 +94,10 @@ export default async function handler(req, res) {
     allowedFileHosts: String(process.env.INSTALL_POST_MCP_FILE_HOSTS || '')
       .split(',').map((entry) => entry.trim()).filter(Boolean),
     audit: { record: (entry) => store.saveChatgptAudit(entry) },
-    // Hard-disabled in THE-144. A reviewed code change is required after OAuth,
-    // durable audit storage, and complete-publisher parity are all proven.
-    publishEnabled: false,
+    // Deployment controls this explicitly. Keep the source default fail-closed,
+    // while allowing the separately deployed VPS publisher to be enabled after
+    // its queue, receipt, and credential checks are complete.
+    publishEnabled: process.env.INSTALL_POST_MCP_PUBLISH_ENABLED === '1',
   }) : null;
   return createChatgptToolsHandler({
     service,
