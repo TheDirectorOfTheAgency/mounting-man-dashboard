@@ -62,7 +62,11 @@ export async function startLiveHttp({ env = process.env } = {}) {
   const publisherToken = envRequired(env, 'INSTALL_POST_VPS_PUBLISHER_TOKEN');
   const backend = createInstallationPostBackendClient({ endpoint: backendEndpoint, token: backendToken });
   const actor = Object.freeze({ sub: ownerSubject, scopes: SCOPES });
-  const app = createMcpExpressApp({ host, allowedHosts: [host, 'localhost'] });
+  const publicHostname = String(env.INSTALL_POST_MCP_PUBLIC_HOSTNAME || '').trim();
+  const app = createMcpExpressApp({
+    host,
+    allowedHosts: [host, 'localhost', ...(publicHostname ? [publicHostname] : [])],
+  });
 
   app.get('/healthz', (_req, res) => res.json({
     status: 'ok',
