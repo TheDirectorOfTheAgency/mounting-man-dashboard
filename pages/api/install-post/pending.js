@@ -12,6 +12,7 @@
 import axios from 'axios';
 
 import { getInstallPostStore, importLegacyPendingRecord } from '../../../lib/install-post-store.mjs';
+import { upstashSetCommand } from '../../../lib/upstash-set.mjs';
 
 const KV_URL = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
@@ -93,14 +94,15 @@ async function kvSmembers(key) {
 }
 
 async function kvSrem(key, member) {
-  if (!KV_URL || !KV_TOKEN) return false;
   try {
-    await axios.post(
-      `${KV_URL}/srem/${encodeURIComponent(key)}`,
-      JSON.stringify([member]),
-      { headers: { Authorization: `Bearer ${KV_TOKEN}`, 'Content-Type': 'application/json' } },
-    );
-    return true;
+    return await upstashSetCommand({
+      httpClient: axios,
+      baseUrl: KV_URL,
+      token: KV_TOKEN,
+      command: 'srem',
+      key,
+      member,
+    });
   } catch (err) {
     console.error('[pending-kv-srem-error]', err.response?.data || err.message);
     return false;

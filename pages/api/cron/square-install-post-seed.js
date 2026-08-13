@@ -7,6 +7,7 @@ import {
 } from '../../../lib/install-post-seeds.mjs';
 import { formatOperatorLinkBlock } from '../../../lib/install-post-queue.mjs';
 import { getInstallPostStore, stageOperatorHandoff } from '../../../lib/install-post-store.mjs';
+import { upstashSetCommand } from '../../../lib/upstash-set.mjs';
 
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
 const SQUARE_VER = '2024-01-18';
@@ -92,19 +93,15 @@ async function kvRpush(key, value) {
 }
 
 async function kvSadd(key, member) {
-  if (!KV_URL || !KV_TOKEN) return false;
   try {
-    await axios.post(
-      `${KV_URL}/sadd/${encodeURIComponent(key)}`,
-      JSON.stringify([member]),
-      {
-        headers: {
-          Authorization: `Bearer ${KV_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-    return true;
+    return await upstashSetCommand({
+      httpClient: axios,
+      baseUrl: KV_URL,
+      token: KV_TOKEN,
+      command: 'sadd',
+      key,
+      member,
+    });
   } catch (err) {
     console.error('[install-seed-sadd-error]', err.response?.data || err.message);
     return false;

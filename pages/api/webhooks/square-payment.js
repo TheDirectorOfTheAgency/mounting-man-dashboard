@@ -29,6 +29,7 @@ import {
 } from '../../../lib/install-post-seeds.mjs';
 import { formatOperatorLinkBlock } from '../../../lib/install-post-queue.mjs';
 import { getInstallPostStore, stageOperatorHandoff } from '../../../lib/install-post-store.mjs';
+import { upstashSetCommand } from '../../../lib/upstash-set.mjs';
 import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
@@ -178,19 +179,15 @@ async function kvRpush(key, value) {
 
 /** Add a member to a Redis SET (for the pending-index) */
 async function kvSadd(key, member) {
-  if (!KV_URL || !KV_TOKEN) return false;
   try {
-    await axios.post(
-      `${KV_URL}/sadd/${encodeURIComponent(key)}`,
-      JSON.stringify([member]),
-      {
-        headers: {
-          Authorization: `Bearer ${KV_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
-    return true;
+    return await upstashSetCommand({
+      httpClient: axios,
+      baseUrl: KV_URL,
+      token: KV_TOKEN,
+      command: 'sadd',
+      key,
+      member,
+    });
   } catch (err) {
     console.error('[kv-sadd-error]', err.response?.data || err.message);
     return false;
