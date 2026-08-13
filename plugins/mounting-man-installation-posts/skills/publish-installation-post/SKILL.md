@@ -12,7 +12,10 @@ parallel systems and are never changed by this workflow.
 ## Required sequence
 
 1. Call `list_pending_installations`. If the user supplied a natural reference,
-   call `resolve_installation_reference` as well.
+   call `resolve_installation_reference` as well. When one or more jobs are
+   returned, say that the installation job is ready for a photo and reproduce
+   each returned safe seed as a copyable JSON code block. Do not add omitted
+   fields or reveal source records. If no jobs are returned, say so plainly.
 2. Never infer a job from a photo, free text, customer name, or a near tie. When
    the resolver returns multiple candidates, ask one concise question using the
    safe label and opaque reference. Repeat the chosen label and job ID before

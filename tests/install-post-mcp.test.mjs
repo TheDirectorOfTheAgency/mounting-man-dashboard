@@ -112,6 +112,42 @@ test('all eight representative calls forward only schema-approved arguments', as
   assert.deepEqual(calls, cases.map(([name, args]) => ({ name, args })));
 });
 
+test('pending list presents the Discord-style ready message and copyable safe seed', async (t) => {
+  const server = createInstallationPostMcpServer({
+    actor: { sub: 'owner-subject', scopes: ['installation-posts:read'] },
+    backend: {
+      async call() {
+        return {
+          installations: [{
+            jobId: 'job_champlin',
+            reference: 'mplin1',
+            label: '55-inch Samsung Frame · Cedar Ridge Lane North, Champlin · $350',
+            seed: {
+              city: 'Champlin',
+              'street-name': 'Cedar Ridge Lane North',
+              price: '$350',
+              'gallery-style': true,
+            },
+          }],
+          nextCursor: null,
+        };
+      },
+    },
+  });
+  const client = new Client({ name: 'ready-message-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  t.after(async () => { await client.close(); await server.close(); });
+
+  const result = await client.callTool({ name: 'list_pending_installations', arguments: {} });
+  assert.match(result.content[0].text, /Installation job ready for your photo/);
+  assert.match(result.content[0].text, /```json/);
+  assert.match(result.content[0].text, /Cedar Ridge Lane North/);
+  assert.doesNotMatch(result.content[0].text, /12816/);
+  assert.match(result.content[0].text, /No publish action has been taken/);
+  assert.equal(result.structuredContent.installations[0].seed.price, '$350');
+});
+
 test('publish rejects freeform captions and destination lists at the MCP boundary', async (t) => {
   const { server, client, calls } = await connectedFixture();
   t.after(async () => { await client.close(); await server.close(); });

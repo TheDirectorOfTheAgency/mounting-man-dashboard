@@ -102,9 +102,37 @@ export const TOOL_DEFINITIONS = Object.freeze([
   },
 ]);
 
-function toolResult(result) {
+function pendingInstallationsText(result) {
+  const installations = Array.isArray(result?.installations)
+    ? result.installations
+    : (Array.isArray(result?.jobs) ? result.jobs : []);
+  if (!installations.length) return 'No installation jobs are currently ready for a photo.';
+  const heading = installations.length === 1
+    ? 'Installation job ready for your photo.'
+    : `${installations.length} installation jobs are ready for photos.`;
+  const blocks = installations.map((installation, index) => {
+    const reference = installation.reference || installation.jobId || installation.job_id || 'unknown';
+    const label = installation.label ? `\nJob: ${installation.label}` : '';
+    return [
+      installations.length > 1 ? `Candidate ${index + 1}` : null,
+      `Reference: ${reference}${label}`,
+      'Safe seed JSON:',
+      '```json',
+      JSON.stringify(installation.seed || {}, null, 2),
+      '```',
+    ].filter(Boolean).join('\n');
+  });
+  return `${heading}\n\n${blocks.join('\n\n')}\n\nUpload the matching installation photo when ready. No publish action has been taken.`;
+}
+
+function toolResult(result, toolName) {
   return {
-    content: [{ type: 'text', text: JSON.stringify(result) }],
+    content: [{
+      type: 'text',
+      text: toolName === 'list_pending_installations'
+        ? pendingInstallationsText(result)
+        : JSON.stringify(result),
+    }],
     structuredContent: result,
   };
 }
@@ -169,7 +197,10 @@ export function createInstallationPostMcpServer({
           } : {}),
         };
       }
-      return toolResult(await backend.call(definition.name, args, { verifiedActor: actor }));
+      return toolResult(
+        await backend.call(definition.name, args, { verifiedActor: actor }),
+        definition.name,
+      );
     });
   }
   // MCP SDK 1.30.0 retains extension fields only under `_meta`. OpenAI's
