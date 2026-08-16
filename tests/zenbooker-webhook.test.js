@@ -204,7 +204,7 @@ test('captured booking attribution joins by ZenBooker customer and reaches the c
   assert.equal(calls[0].acquisition.paidMarker, 'gclid');
 });
 
-test('retryable coordinator upload failure returns a retryable 503', async (t) => {
+test('retryable coordinator upload failure returns 200 so ZenBooker does not disable the hook', async (t) => {
   const restoreEnv = installTestEnvironment();
   t.after(restoreEnv);
   const handler = createZenbookerWebhookHandler({
@@ -221,8 +221,9 @@ test('retryable coordinator upload failure returns a retryable 503', async (t) =
   });
   const res = createResponse();
   await handler(createRequest(completedPayload()), res);
-  assert.equal(res.statusCode, 503);
+  assert.equal(res.statusCode, 200);
   assert.equal(res.body.retryable, true);
+  assert.equal(res.body.errorCode, 'GOOGLE_TRANSIENT_FAILURE');
 });
 
 test('logs and responses never contain raw job, secret, email, phone, or address', async (t) => {

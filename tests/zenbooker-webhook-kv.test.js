@@ -9,7 +9,7 @@ import {
   installTestEnvironment,
 } from './webhook-test-helpers.js';
 
-test('KV/store failures remain retryable and never fall through to direct Google upload', async (t) => {
+test('KV/store failures stay retryable in the body, return 200, and never fall through to direct Google upload', async (t) => {
   const restoreEnv = installTestEnvironment();
   t.after(restoreEnv);
   let uploads = 0;
@@ -24,7 +24,7 @@ test('KV/store failures remain retryable and never fall through to direct Google
 
   const res = createResponse();
   await handler(createRequest(completedPayload()), res);
-  assert.equal(res.statusCode, 503);
+  assert.equal(res.statusCode, 200);
   assert.equal(res.body.retryable, true);
   assert.equal(res.body.errorCode, 'ATTRIBUTION_PROCESSING_FAILED');
   assert.equal(uploads, 0);

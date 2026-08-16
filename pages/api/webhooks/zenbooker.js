@@ -103,7 +103,8 @@ export function createZenbookerWebhookHandler({
         const activeKV = kvClient === undefined ? await getDefaultKV() : kvClient;
         if (!activeKV) {
           logger.error('offline_conversion_store_unavailable', { jobRef });
-          return res.status(503).json({
+          // 200: ZenBooker disables the hook after four non-2xx. Ads stay unuploaded.
+          return res.status(200).json({
             processed: false,
             retryable: true,
             errorCode: 'ATTRIBUTION_STORE_UNAVAILABLE',
@@ -162,7 +163,8 @@ export function createZenbookerWebhookHandler({
       });
 
       const retryable = Boolean(result.retryable);
-      return res.status(retryable ? 503 : 200).json({
+      // Always 200 after auth. 503 made ZenBooker disable the subscription.
+      return res.status(200).json({
         processed: true,
         status: result.status,
         retryable,
@@ -175,7 +177,7 @@ export function createZenbookerWebhookHandler({
         jobRef,
         errorType: error.name || 'Error',
       });
-      return res.status(503).json({
+      return res.status(200).json({
         processed: false,
         retryable: true,
         errorCode: 'ATTRIBUTION_PROCESSING_FAILED',
