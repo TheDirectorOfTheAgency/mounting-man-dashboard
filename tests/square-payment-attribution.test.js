@@ -5,6 +5,7 @@ import {
   createSquarePaymentHandler,
   notifyQInstallPost,
 } from '../pages/api/webhooks/square-payment.js';
+import { resetKronkiteMissingUrlLog } from '../lib/notify-install-post.mjs';
 import { createResponse } from './webhook-test-helpers.js';
 
 function paymentRequest(eventType = 'payment.updated', payment = {}) {
@@ -242,6 +243,22 @@ test('paired invoice and payment events record exactly one canonical payment att
   assert.equal(deps.calls.attribution[0].value.paymentId, 'payment-1');
 });
 
+test('install-post notifier failure cannot suppress review SMS', async () => {
+  const deps = dependencies({
+    installPostNotifier: async () => { throw new Error('Kronkite exploded'); },
+  });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.status, 'sms_sent');
+  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(
+    deps.calls.logs.some(([event]) => event === 'square_install_post_notify_failed'),
+    true,
+  );
+});
+
 test('attribution failure cannot suppress install-post notification or review SMS', async () => {
   const deps = dependencies({
     attributionCoordinator: {
@@ -369,11 +386,11 @@ test('non-completed payments and unrelated events remain ignored before side eff
   }
 });
 
-test('install-post notifier generates seeds, stages pending work, queues Q, and posts to Discord', async () => {
+test('install-post notifier stages pending work and forwards once to Kronkite, not Discord', async () => {
   const writes = [];
-  const queueWrites = [];
   const setMembers = [];
   const posts = [];
+  const claimed = new Set();
   const lineItems = [
     {
       name: '65 Inch TV Mounting',
@@ -382,56 +399,157 @@ test('install-post notifier generates seeds, stages pending work, queues Q, and 
       total_money: { amount: 20000 },
     },
   ];
+  const customer = {
+    given_name: 'Test',
+    family_name: 'Customer',
+    email_address: 'customer@example.com',
+    phone_number: '+16125550123',
+    address: {
+      address_line_1: '123 Main St',
+      locality: 'Minneapolis',
+      administrative_district_level_1: 'MN',
+      postal_code: '55401',
+    },
+  };
 
-  await notifyQInstallPost(
+  const deps = {
+    exists: async (key) => claimed.has(key),
+    set: async (...args) => {
+      claimed.add(args[0]);
+      writes.push(args);
+      return true;
+    },
+    rpush: async () => true,
+    sadd: async (...args) => { setMembers.push(args); return true; },
+    kronkiteUrl: 'https://kronkite.example/square-wake',
+    kronkiteKey: 'kronkite-sender-key',
+    httpClient: {
+      async get(url) {
+        assert.match(url, /\/orders\/order-1$/);
+        return { data: { order: { id: 'order-1', line_items: lineItems } } };
+      },
+      async post(url, body, config) {
+        posts.push({ url, body, headers: config?.headers || {} });
+        return { data: {} };
+      },
+    },
+  };
+
+  const args = {
+    orderId: 'order-1',
+    payment: { id: 'payment-1', team_member_id: 'TMSiHOOr7RGdl2Ki', source_type: 'CARD' },
+    invoice: {},
+    isInvoiceEvent: false,
+    eventType: 'payment.created',
+    firstName: 'Test',
+    lastName: 'Customer',
+    customer,
+    amount: '200.00',
+    amountCents: 20000,
+  };
+
+  const first = await notifyQInstallPost(args, deps);
+  const second = await notifyQInstallPost(args, deps);
+
+  assert.equal(first.skipped, null);
+  assert.equal(second.skipped, 'duplicate');
+  assert.equal(writes.some(([key]) => key === 'install-post:pending:order-1'), true);
+  assert.deepEqual(setMembers, [['install-post:pending-index', 'install-post:pending:order-1']]);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, 'https://kronkite.example/square-wake');
+  assert.equal(posts[0].headers['x-webhook-secret'], 'kronkite-sender-key');
+  assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
+  assert.equal(posts.some(({ url }) => String(url).includes('discord.com')), false);
+
+  const payload = posts[0].body;
+  assert.deepEqual(payload, {
+    city: 'Minneapolis',
+    streetName: 'Main St',
+    tvSize: '65"',
+    tvBrand: '',
+    wallSurface: '',
+    mount: '',
+    installationSubtotal: '$200',
+    paymentId: 'payment-1',
+    orderId: 'order-1',
+    paymentSource: 'CARD',
+    eventType: 'payment.created',
+  });
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of ['Test Customer', '123 Main', '55401', 'customer@example.com', '+16125550123', 'kronkite-sender-key']) {
+    assert.ok(!serialized.includes(forbidden), `sanitized payload leaked ${forbidden}`);
+  }
+});
+
+test('unset Kronkite URL skips the wake once and still stages the phone queue', async () => {
+  resetKronkiteMissingUrlLog();
+  const logs = [];
+  const writes = [];
+  const result = await notifyQInstallPost(
     {
-      orderId: 'order-1',
-      payment: { id: 'payment-1', team_member_id: 'TMSiHOOr7RGdl2Ki' },
+      orderId: 'order-skip',
+      payment: { id: 'payment-skip', source_type: 'CASH' },
       invoice: {},
       isInvoiceEvent: false,
-      eventType: 'payment.created',
-      firstName: 'Test',
-      lastName: 'Customer',
-      customer: {
-        address: {
-          address_line_1: '123 Main St',
-          locality: 'Minneapolis',
-          administrative_district_level_1: 'MN',
-          postal_code: '55401',
-        },
-      },
-      amount: '200.00',
-      amountCents: 20000,
+      eventType: 'payment.updated',
+      firstName: 'Skip',
+      lastName: 'Wake',
+      customer: { address: { locality: 'Austin' } },
+      amount: '150.00',
+      amountCents: 15000,
     },
     {
-      discordBotToken: 'test-token',
-      discordUserId: 'q-user',
       exists: async () => false,
       set: async (...args) => { writes.push(args); return true; },
-      rpush: async (...args) => { queueWrites.push(args); return true; },
-      sadd: async (...args) => { setMembers.push(args); return true; },
+      sadd: async () => true,
+      kronkiteUrl: '',
+      kronkiteKey: 'unused-key',
+      logger: {
+        info: (...args) => logs.push(['info', ...args]),
+        warn: (...args) => logs.push(['warn', ...args]),
+        error: (...args) => logs.push(['error', ...args]),
+      },
       httpClient: {
-        async get(url) {
-          assert.match(url, /\/orders\/order-1$/);
-          return { data: { order: { id: 'order-1', line_items: lineItems } } };
-        },
-        async post(url, body) {
-          posts.push({ url, body });
-          return { data: {} };
-        },
+        async get() { return { data: { order: { id: 'order-skip', line_items: [] } } }; },
+        async post() { throw new Error('Kronkite must not be called when URL is unset'); },
       },
     },
   );
 
-  assert.equal(queueWrites.length, 1);
-  assert.equal(queueWrites[0][0], 'agency:context:siri_queue');
-  const queued = JSON.parse(queueWrites[0][1]);
-  assert.equal(queued.from, 'square-payment-webhook');
-  assert.equal(queued.orderId, 'order-1');
-  assert.equal(queued.seeds.length, 1);
-  assert.equal(writes.some(([key]) => key === 'install-post:pending:order-1'), true);
-  assert.deepEqual(setMembers, [['install-post:pending-index', 'install-post:pending:order-1']]);
-  assert.equal(posts.length, 1);
-  assert.match(posts[0].url, /discord\.com\/api\/v10\/channels\//);
-  assert.match(posts[0].body.content, /Suggested seed JSON|New job paid/);
+  assert.equal(result.kronkite.skipped, 'missing_url');
+  assert.equal(writes.some(([key]) => key === 'install-post:pending:order-skip'), true);
+  assert.equal(logs.filter(([level, msg]) => level === 'warn' && String(msg).includes('KRONKITE_SQUARE_WEBHOOK_URL unset')).length, 1);
+});
+
+test('Kronkite forward failure does not throw and maps EXTERNAL/CHECK', async () => {
+  const result = await notifyQInstallPost(
+    {
+      orderId: 'order-ext',
+      payment: { id: 'payment-ext', source_type: 'EXTERNAL', external_details: { type: 'CHECK' } },
+      invoice: {},
+      isInvoiceEvent: false,
+      eventType: 'payment.updated',
+      firstName: 'Cash',
+      lastName: 'Job',
+      customer: { address: { locality: 'Houston' } },
+      amount: '300.00',
+      amountCents: 30000,
+    },
+    {
+      exists: async () => false,
+      set: async () => true,
+      sadd: async () => true,
+      kronkiteUrl: 'https://kronkite.example/square-wake',
+      kronkiteKey: 'kronkite-sender-key',
+      httpClient: {
+        async get() { return { data: { order: { id: 'order-ext', line_items: [] } } }; },
+        async post() { throw new Error('kronkite down'); },
+      },
+    },
+  );
+
+  assert.equal(result.skipped, null);
+  assert.equal(result.kronkite.forwarded, false);
+  assert.equal(result.kronkitePayload.paymentSource, 'EXTERNAL/CHECK');
+  assert.equal(result.kronkitePayload.city, 'Houston');
 });
