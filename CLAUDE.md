@@ -184,7 +184,7 @@ All production values live in **Vercel project settings**. Local dev uses `.env.
 **Notifications** — `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `DISCORD_BOT_TOKEN`, `DISCORD_Q_BOT_TOKEN`, `DISCORD_Q_USER_ID`, `TELEGRAM_BOT_TOKEN`
 **Misc** — `CRON_SECRET`, `VAULT_GITHUB_TOKEN`, `VAULT_WRITE_SECRET`, `TELL_Q_SECRET`, `GOOGLE_GEMINI_API_KEY`, `DEPLOYMENT_COMMIT_SHA`, `NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL`
 
-**Note:** `NEXT_PUBLIC_*` on the Square/Webflow tokens is legacy and wrong — they are only used server-side, but the prefix ships them to the browser bundle. Migrating them is on the roadmap.
+**Note:** `NEXT_PUBLIC_*` on the Square/Webflow tokens is a misleading legacy name, **not a live leak.** Next.js only inlines a `NEXT_PUBLIC_` var into a bundle that references it, and every reference lives in `pages/api/**` (server-only). Verified against a production build: the values appear in `.next/server/*` and in **no** `.next/static/*` chunk. Renaming them is hygiene, so a future client-side reference cannot quietly publish them — it is not an incident.
 
 ---
 
@@ -239,7 +239,7 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - `pages/api/telemetry.js` falls back to a **hardcoded Upstash host** when `AGENCY_REDIS_URL` is unset, and returns empty rather than failing loudly.
 
 **Structural**
-- `NEXT_PUBLIC_*` prefix leaks Square/Webflow tokens into the client bundle.
+- `NEXT_PUBLIC_*` prefix on the Square/Webflow tokens is misleading but does **not** leak them — every reference is server-side and the client bundle is clean (verified against a production build). Rename is hygiene, not urgent.
 - No error boundary — if `Dashboard.js` throws, the page goes blank.
 - `Dashboard.js` (666 lines) and `zenbooker-to-square.js` (~1700 lines) are both overdue for decomposition.
 - `DEFAULT_TEAM_MEMBER_MAP` is duplicated across three files.
@@ -253,7 +253,7 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 
 **Security**
 - [ ] Rotate the Google Ads developer token exposed in git history
-- [ ] Migrate `NEXT_PUBLIC_` Square/Webflow secrets to server-only vars
+- [ ] Rename the `NEXT_PUBLIC_` Square/Webflow vars to server-only names (hygiene — verified not leaking today)
 
 **Measurement**
 - [ ] Enable Enhanced Conversions for Leads in the Google Ads UI (Settings → Measurement) — cannot be done via Basic Access API
