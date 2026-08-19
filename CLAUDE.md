@@ -1,249 +1,282 @@
 # Mounting Man Dashboard
 
 ## Identity
-- Tactical Business Intelligence Dashboard for The Mounting Man (TV mounting service)
+- Tactical Business Intelligence Dashboard for The Mounting Man (TV mounting service), plus the back-office automation that grew around it
 - Owner: The Agency (theagency)
 - Status: Active, production
 - Live: https://mounting-man-dashboard.vercel.app
-- Design: Spy/HUD aesthetic — dark backgrounds (#0a0a0a), neon green (#c8e632), Orbitron font for headings/numbers, IBM Plex Mono for body, scan lines + noise overlays
+- Design: Spy/HUD aesthetic — dark backgrounds (#0a0a0a), neon green (#c8e632), Orbitron for headings/numbers, IBM Plex Mono for body, scan lines + noise overlays
+
+> **This repo is no longer "a dashboard."** The dashboard is roughly 10% of the code.
+> The rest is webhook plumbing: Square, ZenBooker, Google Ads offline conversions,
+> and a cloud installation-post publisher. Read "Subsystems" before changing anything.
+
+---
+
+## ⚠️ Security debt — read first
+
+`CLAUDE.md` and `GOOGLE_ADS_AUDIT_2026-02-21.md` previously committed the **live Google Ads
+developer token in plaintext**. The value has been removed from this file, but **it is still
+in git history** and history has not been rewritten.
+
+- [ ] **Rotate the Google Ads developer token** (Google Ads → Admin → API Center → Reset token). Rotating is the only real fix; a reset also re-pairs the token to the calling GCP project, which is a known good outcome here (see "Google Ads debugging notes").
+- [ ] Purge or rotate any other credential in `GOOGLE_ADS_AUDIT_2026-02-21.md`.
+- **Never put a token value in a tracked file.** Names of env vars only.
+
+---
 
 ## Architecture
-- Next.js 14, Pages Router (NOT App Router)
-- Single-page dashboard: `pages/index.js` renders `components/Dashboard.js`
-- API routes proxy all external calls — client never talks directly to Square/Webflow/Google
-- Auto-refresh every 5 minutes via setInterval in Dashboard.js
-- Deployed on Vercel, no database, no auth
-- Data flow: External APIs → `/api/*` routes (server-side) → Dashboard.js (client-side fetch)
 
-## File Map
+- **Next.js 14, Pages Router** (NOT App Router). React 18. No TypeScript.
+- **Two halves:**
+  1. **Read path** — `pages/index.js` → `components/Dashboard.js`, which polls five `/api/*` routes on an interval. Client never talks to Square/Webflow/Google directly.
+  2. **Write path** — inbound webhooks and crons that reconcile Square, ZenBooker, Google Ads and Webflow. Most of the repo's logic and *all* of its tests live here.
+- **Storage:** Upstash Redis via `@vercel/kv` (`KV_REST_API_*`). No SQL database. A *second, separate* Redis (`AGENCY_REDIS_*`) backs the agency telemetry/Siri-queue routes.
+- **Auth:** none on the dashboard itself. Webhook and operator routes use per-route shared secrets or signed capabilities.
+- **Tests:** 33 files, ~300 assertions, `node --test` via `tsx`. Pure-function and handler-factory style — every handler exports a `createXHandler({ deps })` factory so tests inject fakes. **Follow that pattern for new routes.**
+- **CI:** there is **no PR CI**. The only workflow is `workflow_dispatch`-only. Local `npm test` + `npm run build` are the gate.
+
+### Conventions that actually hold
+- Handlers export a factory (`createZenbookerWebhookHandler`, `createBookingAttributionHandler`, `createGclidReceiverHandler`) plus a default instance. Tests use the factory.
+- **Webhook routes return 200 for everything after auth passes.** ZenBooker disables a subscription after four non-2xx replies. Only method / bad secret / unconfigured secret return non-2xx. Do not "fix" this by returning 503.
+- Money crosses the API boundary in **dollars**; Square gives **cents**.
+- Customer identifiers are never logged raw — hash to an opaque ref via `opaqueRef()` and log 12 chars.
+- CSS classes use the `hud-*` prefix (`tailwind.config.js` + `styles/globals.css`).
+
+---
+
+## Subsystems
+
+### 1. Dashboard (read path)
+`components/Dashboard.js` (~666 lines, still monolithic) polls:
+`/api/square-revenue`, `/api/webflow-posts`, `/api/google-ads`, `/api/telemetry`, `/api/thread-feed`.
+
+Sub-components inside that one file: `HudGauge`, `StatusDot`, `DataRow`, `TrackingBar`, `NodeBlock`.
+
+### 2. Offline conversions (ZenBooker → Google Ads)
+**Why:** Samsung Frame, MantelMount and stone/tile customers phone Marshall, who books for them. Those jobs are invisible to Google Ads because the GTM tag only fires on self-booked `/thank-you` visits.
+
+**Chain:** `job.completed` webhook → `extractJobCandidate()` → `evaluateJob()` eligibility gate → coordinator matches the job to a *trusted* Square payment → `uploadOfflineConversion()` (Enhanced Conversions for Leads: SHA-256 hashed PII + `orderId`).
+
+- `OFFLINE_CONVERSION_MODE`: `observe` | `validate` | `one_shot` | `continuous` (`active` aliases `continuous`). **Defaults to `observe`** — nothing uploads unless it is set.
+- Consent is enforced: a `DENIED` status blocks upload, and consent captured before `PRIVACY_DISCLOSURE_VERSION`'s date is downgraded to `UNKNOWN`.
+- Dedup and claims live in KV: `conv:success:*`, `conv:claim:*`, `attrib:*`.
+- WRITE calls to Google Ads **omit** `login-customer-id`; READ calls **include** it. See "Google Ads debugging notes".
+
+**Attribution capture is deliberately lossy.** `normalizeAcquisition()` records *that* a click id existed (`hasGclid`, `paidMarker`) and discards the value. Enhanced Conversions for Leads needs no GCLID, so this is fine — but it means click-based upload is impossible from that data.
+
+`/api/attribution/gclid` is the one exception: it retains the **raw** click identifier under `attrib:click:*` (90-day TTL). It is **capture-only** — no upload, nothing reads those keys yet, and ZenBooker is not pointed at it.
+
+### 3. ZenBooker → Square invoicing
+`pages/api/webhooks/zenbooker-to-square.js` (~1700 lines, the largest file here). Finds or creates the Square customer, builds full-priced invoice lines from `services[].pricing_summary`, creates an order applying processing-fee tax to every line and sales tax only to hardware lines, then creates a **draft** invoice. It does not publish or auto-send. `ZENBOOKER_SQUARE_INVOICE_DRY_RUN` short-circuits the write.
+
+### 4. Installation-post queue (cloud publisher)
+Square payment webhook stages an immutable seed → operator gets a phone card at `/install-posts/open#<capability>` → photo upload binds to one exact `(seed, photo)` revision → an explicit **Publish** tap dispatches the GitHub Actions runner (`cloud/install-post-runner/`), which holds the Webflow token and publishes + verifies.
+
+States: `AWAITING_PHOTO → READY → PUBLISHING → VERIFYING → PUBLISHED`, plus `RETRYABLE_FAILURE`, `BLOCKED`, `INDETERMINATE`. Only **Reconcile** exits `INDETERMINATE`. Stale after 15 min.
+
+**⚠️ Legacy dual path:** `scripts/codex-install-post-relay.mjs` + its launchd plist poll the same pending endpoint from an M1. The cloud queue replaced it, but the plan's retirement step is **unchecked** and the agent may still be loaded. Check `launchctl list | grep codex-install-post-relay` on the M1.
+
+### 5. Agency-side routes (not Mounting Man)
+`/api/telemetry`, `/api/thread-feed` (Discord), `/api/vault/write` (commits notes to `the-agency-vault`), `/api/shortcuts/tell-q` (Siri → Redis queue → Telegram receipt), `/pages/obsidian.js`.
+
+---
+
+## File map
+
 ```
-CLAUDE.md                              # This file — project context for Claude
-pages/index.js                         # Entry point, renders <Dashboard />
-pages/_app.js                          # App wrapper, imports globals.css
-pages/_document.js                     # HTML shell, loads Google Fonts (Orbitron, IBM Plex Mono, Space Mono)
-pages/api/square-revenue.js            # Square Payments API proxy — paginates all payments, calculates revenue metrics
-pages/api/webflow-posts.js             # Webflow Collections API proxy — counts published/draft/archived blog posts
-pages/api/google-ads.js                # Google Ads REST API — uses shared auth, 15min cache + fallback to hardcoded data
-pages/api/webhooks/zenbooker.js        # Zenbooker job.completed webhook → offline conversion upload to Google Ads
-lib/google-ads-auth.js                 # Shared OAuth2 token refresh — used by google-ads.js and conversions upload
-lib/hash-pii.js                        # PII normalization + SHA-256 hashing for Google Ads Enhanced Conversions
-lib/google-ads-conversions.js          # Google Ads uploadClickConversions wrapper (Enhanced Conversions for Leads)
-components/Dashboard.js                # THE main component — all UI lives here (~447 lines, monolithic)
-styles/globals.css                     # All custom CSS: HUD grid, scan lines, glow effects, noise overlay, panel styles
-tailwind.config.js                     # Custom colors (hud-*), fonts (mono, terminal), animations (scan, flicker)
-scripts/get-google-refresh-token.js    # One-time OAuth helper to generate Google Ads refresh tokens
-.env.example                           # Template for all environment variables
-vercel.json                            # Build config (framework: nextjs)
+CLAUDE.md                                  # This file
+pages/api/CLAUDE.md                        # STALE — describes only the 3 original proxies
+
+# Dashboard read path
+pages/index.js                             # Entry, renders <Dashboard />
+components/Dashboard.js                    # 666 lines, monolithic, all dashboard UI
+pages/api/square-revenue.js                # Square Payments proxy → revenue + 7-day history
+pages/api/webflow-posts.js                 # Webflow Collections proxy → post counts
+pages/api/google-ads.js                    # Google Ads REST (v20), 15-min cache, hardcoded fallback
+pages/api/telemetry.js                     # Agency Redis: agent status / priorities
+pages/api/thread-feed.js                   # Discord message feed for The Agency guild
+
+# Offline conversions / attribution
+lib/google-ads-auth.js                     # Shared OAuth2 refresh
+lib/google-ads-conversions.js              # uploadClickConversions (API v24), retry classification
+lib/hash-pii.js                            # Normalize + SHA-256 for Enhanced Conversions
+lib/offline-conversion-eligibility.js      # Payload extraction, consent, paid-evidence gates
+lib/offline-conversion-coordinator.js      # Job↔payment matching, claims, modes
+lib/offline-conversion-store.js            # All KV keys for attribution + conversions
+pages/api/webhooks/zenbooker.js            # job.completed → eligibility → coordinator
+pages/api/attribution/booking.js           # Browser capture (CORS). Booleans only, no raw ids
+pages/api/attribution/gclid.js             # Raw GCLID receiver. Capture-only, not wired
+public/tmm-attribution-v1.js               # Browser helper on themountingman.com
+
+# ZenBooker → Square
+pages/api/webhooks/zenbooker-to-square.js  # Customer + order + DRAFT invoice
+lib/zenbooker-square-mapper.mjs            # Service → catalog mapping
+lib/zenbooker-square-invoice.mjs           # Invoice line construction
+
+# Installation-post queue
+pages/api/webhooks/square-payment.js       # Payment → review SMS + seed staging + Discord
+pages/api/install-post/{session,mobile,pending,upload,publish}.js
+pages/api/install-post/runner/{envelope,callback}.js
+pages/install-posts/open.js                # Operator phone card
+lib/install-post-{queue,store,seeds,states,session,dispatch,photo-client}.mjs
+cloud/install-post-runner/                 # Python runner executed by GitHub Actions
+.github/workflows/publish-install-post.yml # workflow_dispatch ONLY
+
+# Crons (see vercel.json)
+pages/api/cron/square-install-post-seed.js # Seeds install posts from paid Square jobs
+pages/api/cron/square-refresh.js           # Warms the Square revenue cache
+pages/api/cron/jobs-snapshot.js            # Weekly lat/lng snapshot for /api/jobs-near
+
+# Public / misc
+pages/near-you.js, pages/api/jobs-near.js  # "Jobs near you" by zip
+pages/accent-wall-visualizer.js, pages/api/gemini.js
+pages/privacy.js, pages/terms.js           # Required for the consent/disclosure chain
+pages/api/health.js                        # Commit SHA, env, conversion mode
+pages/api/qbo-callback.js                  # ⚠️ Self-labelled "temporary", still deployed
 ```
 
-### Sub-components inside Dashboard.js
-- `HudGauge` — SVG circular progress rings with tick marks (used for revenue/jobs gauges)
-- `StatusDot` — Green/red indicator with glow effect
-- `DataRow` — Key-value display with optional highlight
-- `TrackingBar` — Horizontal progress bar with percentage
-- `NodeBlock` — Panel container with header, used throughout
-
-## Tech Stack
-- Next.js 14, React 18, Pages Router
-- Tailwind CSS 3.4 with custom `hud-*` color palette
-- Recharts (AreaChart, LineChart) for data visualization
-- Axios for HTTP (both API routes and client-side)
-- Fonts: Orbitron (headings), IBM Plex Mono (body), Space Mono (alt mono)
-- @vercel/kv (Upstash Redis) for webhook deduplication and offline conversion audit trail (NOTE: @vercel/kv is deprecated, migrate to Upstash Redis Marketplace integration when setting up KV store)
-- No TypeScript, no tests, no state management library
-
-## Environment Variables
-All set in **Vercel project settings** for production. Local dev uses `.env.local` (gitignored).
-
-### Square API
-- `NEXT_PUBLIC_SQUARE_ACCESS_TOKEN` — Production access token (SECRET) — Vercel env
-- `NEXT_PUBLIC_SQUARE_LOCATION_ID` — Location ID (safe) — value: `LVNM3Z4RVRWDK`
-
-### Webflow API
-- `NEXT_PUBLIC_WEBFLOW_TOKEN` — API token (SECRET) — Vercel env
-- `NEXT_PUBLIC_WEBFLOW_SITE_ID` — Site ID (safe) — value: `6536f19431181574585ac1ce`
-- `NEXT_PUBLIC_WEBFLOW_INSTALLATIONS_COLLECTION_ID` — Collection ID (safe) — value: `68167d5a313e2fd6f18650c9`
-
-### Google Ads API
-- `GOOGLE_ADS_DEVELOPER_TOKEN` — Developer token from MCC (SECRET) — Vercel env
-- `GOOGLE_ADS_CLIENT_ID` — OAuth client ID (SECRET) — Vercel env
-- `GOOGLE_ADS_CLIENT_SECRET` — OAuth client secret (SECRET) — Vercel env
-- `GOOGLE_ADS_REFRESH_TOKEN` — OAuth refresh token (SECRET) — Vercel env
-- `GOOGLE_ADS_LOGIN_CUSTOMER_ID` — MCC ID (safe) — defaults to `3167428631` in code
-
-### Google Ads Offline Conversions
-- `GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID` — Conversion action ID (safe) — value: `7509313857`
-
-### Zenbooker Webhook
-- `ZENBOOKER_WEBHOOK_SECRET` — Secret for webhook auth (SECRET) — Vercel env
-
-### Vercel KV (Upstash Redis)
-- `KV_REST_API_URL` — Auto-set by Vercel when KV database is added
-- `KV_REST_API_TOKEN` — Auto-set by Vercel when KV database is added
-
-### Dashboard Config
-- `NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL` — Refresh interval in ms (safe) — default: `300000` (5 min)
-
-**NOTE:** `NEXT_PUBLIC_*` vars are exposed to the browser bundle. Square/Webflow tokens use this prefix (legacy) but are only used server-side in API routes. Google Ads vars correctly omit the prefix.
-
-## API Integrations
-
-### Square Payments API
-- Base: `https://connect.squareup.com/v2/payments`
-- Auth: Bearer token + `Square-Version: 2024-01-18` header
-- Paginates with cursor, 100 per page, filters COMPLETED only
-- Returns: allTime, thisMonth, today totals + job counts + 7-day revenue history
-- Amounts are in cents (divided by 100 in code)
-
-### Webflow Collections API
-- Base: `https://api.webflow.com/v2/collections/{id}/items`
-- Auth: Bearer token
-- Paginates with offset/limit, 100 per page
-- Returns: published, draft, archived, total counts
-
-### Google Ads REST API
-- Base: `https://googleads.googleapis.com/v20/customers/{id}/googleAds:searchStream`
-- Auth: OAuth2 refresh token flow + `developer-token` header + `login-customer-id` header
-- Customer ID: `1287907452` (The Mounting Man advertiser account)
-- MCC (login-customer-id): `3167428631` (The Agency — owns the developer token)
-- 4 GAQL queries: monthly spend, weekly spend, 30-day daily breakdown, campaign detail
-- 15-minute server-side cache (in-memory)
-- Falls back to hardcoded data if credentials missing or API fails
-- `allTimeSpend` hardcoded at `350000` — historical data for removed campaigns can't be queried
-
-### Offline Conversion Pipeline (Zenbooker → Google Ads)
-- **Why**: Samsung Frame, MantelMount, and stone/tile customers call/text Marshall first. He books for them in Zenbooker. These jobs are invisible to Google Ads because GTM only fires on self-booked /thank-you page visits. This pipeline captures those offline conversions.
-- **Flow**: Zenbooker `job.completed` webhook → `POST /api/webhooks/zenbooker?secret=[REDACTED]` → hash PII (SHA-256) → upload to Google Ads Enhanced Conversions for Leads → dedup via Vercel KV
-- **Conversion Action**: "Offline Job Completed" (ID: `7509313857`), type: UPLOAD_CLICKS, category: PURCHASE, `primaryForGoal: false` (promote to primary after 2 weeks of validated data)
-- **Auth**: Uses shared `lib/google-ads-auth.js` module. WRITE operations OMIT `login-customer-id` header (direct owner access).
-- **PII Hashing**: `lib/hash-pii.js` normalizes then SHA-256 hashes email (Gmail dot/plus removal), phone (E.164), and name (lowercase)
-- **Dedup**: Vercel KV key `conv:{jobId}` with 90-day TTL. Monthly stats at `conv:stats:{YYYY-MM}` with 365-day TTL.
-- **Field Mapping**: Zenbooker webhook payload field names are best-guess. The handler logs full raw payloads and uses a `FIELD_MAP` config at the top of `zenbooker.js` that tries multiple dot-notation paths per field. Adjust after inspecting first real webhook in Vercel logs.
-- **Default Value**: $300 if no invoice amount found in webhook payload
-- **Error Handling**: Always returns 200 to Zenbooker (even on upload failure) to prevent retry storms
-- **Webhook URL**: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=[REDACTED]`
-- **KV Status**: ✅ LIVE — Upstash Redis `mounting-man-kv` (Free plan, US East iad1) connected to mounting-man-dashboard with KV_ prefix. Env vars `KV_REST_API_URL` and `KV_REST_API_TOKEN` auto-set. Deduplication verified working 2026-02-21.
-
-## Conventions
-- All UI lives in a single monolithic `Dashboard.js` (~447 lines)
-- CSS classes use `hud-*` prefix (defined in tailwind.config.js + globals.css)
-- API routes are GET-only (except `/api/webhooks/*` which are POST), return JSON with `error` field on failure
-- Money values are dollars (not cents) in API responses to client
-- Hardcoded business targets: $32,000/mo revenue, 20 jobs/mo
-- Hardcoded geographic data: Minneapolis 81%, Houston 12%, Austin 7%
-- `"Social Ready: 3"` is hardcoded in Dashboard.js
+---
 
 ## Commands
+
 ```bash
-npm run dev          # Local dev at http://localhost:3000
-npm run build        # Production build
-npm start            # Run production server locally
-npm run lint         # ESLint
-vercel               # Deploy preview
-vercel --prod        # Deploy to production
-vercel logs --follow # Tail deployment logs
+npm run dev            # Local dev at http://localhost:3000
+npm run build          # Production build
+npm test               # Full suite (node --test via tsx) — ~300 assertions
+npm run lint           # ESLint
+
+npm run test:zenbooker-square              # Focused mapper/invoice tests
+npm run check:zenbooker-square-catalog     # Verify Square catalog matches the mapper
+npm run audit:offline-conversion-candidates
+npm run backfill:attribution-job-maps
+npm run replay:offline-conversions
 ```
 
-## Known Issues
-- `NEXT_PUBLIC_*` prefix on Square/Webflow tokens exposes them to client bundle (should migrate to server-only)
-- ~~Google Ads API auth~~ **FIXED 2026-02-21** — see API Debugging Notes below
-- `allTimeSpend` ($350K) is hardcoded — removed/archived campaigns can't be summed via API
-- Geographic distribution is hardcoded, not from any API
-- "Social Ready: 3" is hardcoded
-- No error boundary — if Dashboard.js throws, page goes blank
-- No tests of any kind
-- `_document.js` references class `bg-agency-black` which doesn't exist in tailwind config (non-breaking, body bg is set in globals.css)
+Always run `npm test` **and** `npm run build` before pushing. There is no CI to catch you.
 
-## Google Ads Account Structure
+---
+
+## Scheduled work
+
+| Trigger | Target | Cadence |
+|---|---|---|
+| Vercel cron | `/api/cron/square-install-post-seed` | `* 14-23,0 * * *` |
+| Vercel cron | `/api/cron/square-refresh` | `0 15,17,19,21,23,1 * * *` |
+| Vercel cron | `/api/cron/jobs-snapshot` | `0 8 * * 0` (Sun 2 AM CT) |
+| GitHub Actions | `publish-install-post.yml` | dispatch only — never on push |
+| launchd (M1) | `ai.theagency.codex-install-post-relay` | every 90s **if still loaded** — legacy |
+
+---
+
+## Environment variables
+
+All production values live in **Vercel project settings**. Local dev uses `.env.local` (gitignored).
+`.env.example` is the template. **Names only below — never commit a value.**
+
+**Square** — `NEXT_PUBLIC_SQUARE_ACCESS_TOKEN`, `NEXT_PUBLIC_SQUARE_LOCATION_ID` (`LVNM3Z4RVRWDK`), `SQUARE_WEBHOOK_SIGNATURE_KEY`
+**Webflow** — `NEXT_PUBLIC_WEBFLOW_TOKEN`, `NEXT_PUBLIC_WEBFLOW_SITE_ID`, `NEXT_PUBLIC_WEBFLOW_INSTALLATIONS_COLLECTION_ID`
+**Google Ads** — `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, `GOOGLE_ADS_API_VERSION`, `GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID`
+**Conversions** — `OFFLINE_CONVERSION_MODE`, `PRIVACY_DISCLOSURE_VERSION`
+**ZenBooker** — `ZENBOOKER_WEBHOOK_SECRET`, `ZENBOOKER_GCLID_SECRET`, `ZENBOOKER_CONSENT_FIELD_LABEL`, `ZENBOOKER_API_KEY`, `ZENBOOKER_BASE_URL`, `ZENBOOKER_SQUARE_INVOICE_DRY_RUN`
+**Install-post** — `INSTALL_POST_ACCESS_SECRET`, `INSTALL_POST_RUNNER_SECRET`, `INSTALL_POST_BASE_URL`, `INSTALL_POST_DISPATCH_{TOKEN,OWNER,REPO,WORKFLOW,REF}`
+**Storage** — `KV_REST_API_URL`, `KV_REST_API_TOKEN` (auto-set by Vercel); `AGENCY_REDIS_URL`, `AGENCY_REDIS_TOKEN` (separate agency Redis)
+**Notifications** — `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `DISCORD_BOT_TOKEN`, `DISCORD_Q_BOT_TOKEN`, `DISCORD_Q_USER_ID`, `TELEGRAM_BOT_TOKEN`
+**Misc** — `CRON_SECRET`, `VAULT_GITHUB_TOKEN`, `VAULT_WRITE_SECRET`, `TELL_Q_SECRET`, `GOOGLE_GEMINI_API_KEY`, `DEPLOYMENT_COMMIT_SHA`, `NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL`
+
+**Note:** `NEXT_PUBLIC_*` on the Square/Webflow tokens is legacy and wrong — they are only used server-side, but the prefix ships them to the browser bundle. Migrating them is on the roadmap.
+
+---
+
+## Google Ads
 
 ### Accounts
 - **The Mounting Man** (advertiser): `128-790-7452` — owned by mntvmounting@gmail.com
-- **The Agency MCC #1**: `316-742-8631` — owned by marshallwayneemail@gmail.com — HAS developer token
-- **The Agency MCC #2**: `601-738-6949` — owned by marshallwayneemail@gmail.com — NO developer token
-- Cancelled account: `931-361-6976` (ignore)
+- **The Agency MCC #1**: `316-742-8631` — marshallwayneemail@gmail.com — **has** the developer token
+- **The Agency MCC #2**: `601-738-6949` — no developer token
+- Cancelled: `931-361-6976` (ignore)
 
-### API Credentials (stored in Vercel env vars + 1Password)
-- Developer Token: `[REDACTED]` (Basic Access, RESET 2026-02-21, registered under MCC #1)
-- Old Developer Token: `[REDACTED]` (DEAD — was permanently paired to wrong GCP project)
-- OAuth Client Project: "The Agency" (gen-lang-client-0151509552) — OLD client credentials
-  - Client ID: `155328431466-ms2ucl67h93ne8tcp3c965kdffi170nn.apps.googleusercontent.com`
-  - Client Secret: in Vercel env `GOOGLE_ADS_CLIENT_SECRET`
-- Refresh Token: generated for mntvmounting@gmail.com using OLD client — in Vercel env `GOOGLE_ADS_REFRESH_TOKEN`
-- There is also a NEW client project ("mounting-man-dashboard", ID 525376319550) — NOT currently in use
+### Debugging notes (2026-02-20 → resolved 2026-02-21)
+These cost two days. Do not re-derive them.
 
-### Access Grants & API Write Access
-- mntvmounting@gmail.com has **Read-only** access to MCC #1 (316-742-8631) — granted 2026-02-20
-- **CRITICAL DISCOVERY (2026-02-21):** mntvmounting@gmail.com is the **OWNER** of the advertiser account (128-790-7452) directly. For **WRITE operations**, OMIT the `login-customer-id` header — the request goes directly to the owned account with full write access. For **READ operations**, include `login-customer-id: 3167428631` (needed for developer token validation).
-- MCC Standard/Admin upgrade NOT needed for most operations — direct owner access is sufficient
-
-### Critical API Debugging Notes (2026-02-20 → RESOLVED 2026-02-21)
-These findings took 2 days to discover — preserved for future reference:
-1. `marshallwayneemail@gmail.com` tokens ALWAYS return `DEVELOPER_TOKEN_INVALID` regardless of which OAuth client, dev token, or login-customer-id is used. **Never use marshallwayneemail tokens for API access.**
-2. `mntvmounting@gmail.com` tokens work correctly. Use mntvmounting tokens.
-3. The `login-customer-id` header MUST be `3167428631` (the MCC that owns the dev token). Using the advertiser ID or omitting it causes `DEVELOPER_TOKEN_INVALID`.
-4. **ROOT CAUSE FOUND**: The old developer token `yIQ5GczkxvMT_d8JEXuPxw` was **permanently paired** to a different Google Cloud project. Per Google docs: "Each Google API Console project can be associated with the developer token from only one manager account. Once you make a Google Ads API request, the developer token is permanently paired to the Google API Console project." Since we were using a different OAuth client project than the one originally paired, it always failed.
-5. **FIX**: Reset the developer token in Google Ads Admin → API Center → Developer token → "Reset token". This generated new token `b7mhI-wsuUwSCkTdk-UGiA` which is now paired to the correct OAuth client project. API works immediately after reset.
-6. **API is fully working** as of 2026-02-21. All GAQL queries succeed (campaigns, keywords, demographics, search terms, etc.).
+1. **`marshallwayneemail@gmail.com` tokens always return `DEVELOPER_TOKEN_INVALID`**, regardless of OAuth client, dev token, or login-customer-id. Never use them for API access.
+2. **Use `mntvmounting@gmail.com` tokens.** They work.
+3. For **READ**, `login-customer-id` must be `3167428631` (the MCC owning the dev token). Omitting it or using the advertiser id causes `DEVELOPER_TOKEN_INVALID`.
+4. For **WRITE**, **omit `login-customer-id`** — mntvmounting is the direct owner of the advertiser account, so the request carries full write access. An MCC Standard/Admin upgrade is not needed.
+5. **Root cause of the original failure:** a developer token is *permanently paired* to the first Google API Console project that uses it. The old token was paired to a different project than the OAuth client in use, so it could never work.
+6. **Fix:** reset the developer token in Admin → API Center. Resetting re-pairs it to the calling project and works immediately.
 
 ### DO NOT USE ZAPIER
-Claude has a Zapier MCP connector for Google Ads — **do not use it**. It's a limited middleware layer that:
-- Only exposes pre-built actions (reports, find campaign, set status)
-- Cannot create/modify ads, ad groups, keywords, bids, or conversion actions
-- Silently overrides parameters like date ranges
-- Adds latency and unpredictability
+There is a Zapier MCP connector for Google Ads — **do not use it.** It only exposes pre-built actions, cannot create or modify ads/ad groups/keywords/bids/conversion actions, silently overrides parameters like date ranges, and adds latency. Use the REST API directly.
 
-Instead, use the direct Google Ads REST API via `pages/api/google-ads.js` or direct curl/API calls with the credentials above. For a Claude Code session to make Google Ads changes, use the REST API directly with the mntvmounting OAuth token.
+### Conversion actions
+- **Booked Appointment** (`6491204814`) — GTM on `/thank-you`. Working.
+- **Landing Page Phone Calls – DM** (`1065481863`) — Google forwarding numbers.
+- **Phone Call from Ad Extension** (`7509075265`) — `AD_CALL`, auto-tracked.
+- **Website Click-to-Call** (`7509024467`) — `send_to: AW-506833748/CvjaCNO9yvwbENTW1vEB`. **Still needs its GTM tag.**
+- **Offline Job Completed** (`7509313857`) — `UPLOAD_CLICKS` / `PURCHASE`, `primaryForGoal: false`.
+- Disabled duplicates: `7509075268`, `7509075271`.
 
-### Conversion Tracking Status (2026-02-21)
-Existing tracking that IS working:
-- **Booked Appointment** (6491204814) — GTM tag fires on /thank-you page. 21.7 conversions in last 30 days.
-- **Landing Page Phone Calls - DM** (1065481863) — Google forwarding numbers on website. Status needs verification.
-- **Phone Call from Ad Extension** (7509075265) — AD_CALL type, auto-tracks call extension clicks. Created 2026-02-21.
+---
 
-New actions created but needing GTM tags:
-- **Website Click-to-Call** (7509024467) — send_to: `AW-506833748/CvjaCNO9yvwbENTW1vEB`, $150 value
+## Business constants (hardcoded, not from any API)
+- Targets: **$32,000/mo** revenue, **20 jobs/mo**
+- Geographic split: Minneapolis 81%, Houston 12%, Austin 7%
+- `"Social Ready: 3"` in `Dashboard.js`
+- `allTimeSpend: 350000` in `google-ads.js` — removed/archived campaigns can't be summed via API
+- Square location: `LVNM3Z4RVRWDK`. Team member map lives in `lib/install-post-seeds.mjs` (`DEFAULT_TEAM_MEMBER_MAP`) and is duplicated in two other files.
 
-Disabled duplicates (primaryForGoal=false):
-- Website Booking Form Submission (7509075268) — duplicate of Booked Appointment
-- Phone Call from Website Google Tracking (7509075271) — duplicate of Landing Page Phone Calls
+---
 
-### Campaign Changes Applied (2026-02-21)
-- DC - General TV Mounting (23246944048) → **PAUSED**
-- DC - Samsung Frame TV (23246943838) → **PAUSED**
-- Houston General budget → **$5/day** (budget 15126435724)
-- Houston Samsung Frame budget → **$5/day** (budget 15126434527)
-- Display Remarketing budget → **$15/day** (budget 14955992821)
-- Ad schedules: **6AM-midnight** on MSP General, Samsung Frame, Brand, MantelMount, Remarketing
+## Known issues
+
+**Correctness / risk**
+- **Live developer token is in git history.** Rotate it. See "Security debt".
+- **Google Ads API version is split:** `google-ads.js` is on **v20**, `google-ads-conversions.js` defaults to **v24**. Unify them.
+- **Two installation-post publishers may both be live** (cloud queue + M1 launchd relay). Verify and retire the M1 one.
+- **`payment.team_member_id` is missing on ~67% of 2026 Square payments**, so any per-technician reporting is a floor, not a total. January 2026 has zero technician attribution at all.
+- `pages/api/qbo-callback.js` is self-labelled temporary and still deployed.
+- `pages/api/telemetry.js` falls back to a **hardcoded Upstash host** when `AGENCY_REDIS_URL` is unset, and returns empty rather than failing loudly.
+
+**Structural**
+- `NEXT_PUBLIC_*` prefix leaks Square/Webflow tokens into the client bundle.
+- No error boundary — if `Dashboard.js` throws, the page goes blank.
+- `Dashboard.js` (666 lines) and `zenbooker-to-square.js` (~1700 lines) are both overdue for decomposition.
+- `DEFAULT_TEAM_MEMBER_MAP` is duplicated across three files.
+- `pages/api/CLAUDE.md` is stale — it documents only the three original proxies.
+- No PR CI. `_document.js` references `bg-agency-black`, which is not in the Tailwind config (harmless).
+- Geographic distribution and "Social Ready" are hardcoded.
+
+---
 
 ## Roadmap
-- [x] Fix Google Ads API auth — DONE 2026-02-21 (dev token reset)
-- [x] Update Vercel env var `GOOGLE_ADS_DEVELOPER_TOKEN` — DONE 2026-02-21
-- [x] Redeploy production — DONE 2026-02-21
-- [x] Full Google Ads audit — DONE 2026-02-21 (see GOOGLE_ADS_AUDIT_2026-02-21.md)
-- [x] Pause DC campaigns — DONE 2026-02-21
-- [x] Reduce Houston budgets to $5/day — DONE 2026-02-21
-- [x] Apply ad schedules (block 1-6AM) — DONE 2026-02-21
-- [x] Increase remarketing budget to $15/day — DONE 2026-02-21
-- [x] Create conversion actions via API — DONE 2026-02-21
-- [x] Disable duplicate conversion actions — DONE 2026-02-21
-- [ ] Add Website Click-to-Call GTM tag (send_to: AW-506833748/CvjaCNO9yvwbENTW1vEB)
-- [ ] Verify Google forwarding numbers are active for phone call tracking
-- [x] Pause expensive Samsung keyword "Samsung The Frame installation" [PHRASE] — DONE 2026-02-21 (criterion 2453417012864)
-- [x] Build Zenbooker → Google Ads offline conversion pipeline — DONE 2026-02-21 (lib/*, pages/api/webhooks/zenbooker.js)
-- [x] Create "Offline Job Completed" conversion action (7509313857) — DONE 2026-02-21
-- [x] Extract shared Google Ads auth module — DONE 2026-02-21 (lib/google-ads-auth.js)
-- [x] Set up Vercel KV database — DONE 2026-02-21 (Upstash Redis `mounting-man-kv`, Free plan, US East iad1, connected with KV_ prefix)
-- [x] Set ZENBOOKER_WEBHOOK_SECRET and GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID in Vercel env — DONE 2026-02-21
-- [ ] Configure Zenbooker webhook URL: `https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker?secret=[REDACTED]`
-- [ ] **REQUIRED** Enable Enhanced Conversions for Leads in Google Ads UI (Settings → Measurement → Enhanced conversions → Turn on for leads) — cannot be done via Basic Access API, must be done in UI
-- [ ] Verify Zenbooker webhook field names match FIELD_MAP (check Vercel logs after first webhook)
-- [ ] After 2 weeks: promote "Offline Job Completed" to primaryForGoal=true
-- [ ] Add "OFFLINE CONVERSIONS" panel to Dashboard.js
+
+**Security**
+- [ ] Rotate the Google Ads developer token exposed in git history
+- [ ] Migrate `NEXT_PUBLIC_` Square/Webflow secrets to server-only vars
+
+**Measurement**
+- [ ] Enable Enhanced Conversions for Leads in the Google Ads UI (Settings → Measurement) — cannot be done via Basic Access API
+- [ ] Configure the ZenBooker `job.completed` webhook URL
+- [ ] Add the Website Click-to-Call GTM tag (`AW-506833748/CvjaCNO9yvwbENTW1vEB`)
+- [ ] Verify Google forwarding numbers are active
+- [ ] Verify ZenBooker payload field names against the extractor after the first live webhook
+- [ ] Decide whether the raw GCLID receiver feeds click-based upload, or stays capture-only
+- [ ] After two weeks of clean data, promote "Offline Job Completed" to `primaryForGoal: true`
+- [ ] Add an OFFLINE CONVERSIONS panel to the dashboard
+
+**Cleanup**
+- [ ] Unify the Google Ads API version across both modules
+- [ ] Confirm the M1 relay is unloaded, then retire the launchd scripts
+- [ ] Remove `qbo-callback.js` or finish it
+- [ ] Refresh `pages/api/CLAUDE.md`
+- [ ] De-duplicate the team member map
+- [ ] Add PR CI running `npm test` + `npm run build`
+- [ ] Add error boundaries; decompose `Dashboard.js`
+
+**Product**
 - [ ] Customer acquisition cost tracking
 - [ ] Revenue forecasting
-- [ ] Geographic heatmap (replace hardcoded data — API now supports geo queries)
+- [ ] Geographic heatmap from real data (the API supports geo queries now)
 - [ ] Campaign performance detail view
 - [ ] Slack/email alerts on milestones
-- [ ] Migrate NEXT_PUBLIC_ secrets to server-only env vars
-- [ ] Add error boundaries
-- [ ] Decompose Dashboard.js into smaller components
