@@ -65,7 +65,7 @@ Paste these two values from the Kronkite routine panel into **Vercel project set
 | `KRONKITE_SQUARE_WEBHOOK_URL` | Routine webhook URL |
 | `KRONKITE_SQUARE_WEBHOOK_KEY` | Sender key |
 
-The Square payment webhook authenticates with header `x-webhook-secret: <KRONKITE_SQUARE_WEBHOOK_KEY>`. If the URL is unset, the Kronkite wake is skipped and review SMS + the phone queue still run.
+The Square payment webhook authenticates with `Authorization: Bearer <KRONKITE_SQUARE_WEBHOOK_KEY>` (and still sends `x-webhook-secret` for compatibility). If the URL is unset, the Kronkite wake is skipped and review SMS + the phone queue still run.
 
 ## 🎨 Design
 
