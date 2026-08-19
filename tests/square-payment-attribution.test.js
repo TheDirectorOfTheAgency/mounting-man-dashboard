@@ -5,7 +5,7 @@ import {
   createSquarePaymentHandler,
   notifyQInstallPost,
 } from '../pages/api/webhooks/square-payment.js';
-import { resetKronkiteMissingUrlLog } from '../lib/notify-install-post.mjs';
+import { forwardKronkiteSquareWake, resetKronkiteMissingUrlLog } from '../lib/notify-install-post.mjs';
 import { createResponse } from './webhook-test-helpers.js';
 
 function paymentRequest(eventType = 'payment.updated', payment = {}) {
@@ -457,6 +457,7 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
   assert.deepEqual(setMembers, [['install-post:pending-index', 'install-post:pending:order-1']]);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, 'https://kronkite.example/square-wake');
+  assert.equal(posts[0].headers.Authorization, 'Bearer kronkite-sender-key');
   assert.equal(posts[0].headers['x-webhook-secret'], 'kronkite-sender-key');
   assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
   assert.equal(posts.some(({ url }) => String(url).includes('discord.com')), false);
@@ -552,4 +553,24 @@ test('Kronkite forward failure does not throw and maps EXTERNAL/CHECK', async ()
   assert.equal(result.kronkite.forwarded, false);
   assert.equal(result.kronkitePayload.paymentSource, 'EXTERNAL/CHECK');
   assert.equal(result.kronkitePayload.city, 'Houston');
+});
+
+test('forwardKronkiteSquareWake sends Authorization Bearer when the key is set', async () => {
+  const posts = [];
+  const result = await forwardKronkiteSquareWake({
+    payload: { paymentId: 'payment-auth' },
+    url: 'https://kronkite.example/square-wake',
+    key: 'kronkite-sender-key',
+    httpClient: {
+      async post(url, body, config) {
+        posts.push({ url, body, headers: config?.headers || {} });
+        return { data: {} };
+      },
+    },
+  });
+
+  assert.equal(result.forwarded, true);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].headers.Authorization, 'Bearer kronkite-sender-key');
+  assert.equal(posts[0].headers['x-webhook-secret'], 'kronkite-sender-key');
 });
