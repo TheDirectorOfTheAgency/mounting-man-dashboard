@@ -1,0 +1,60 @@
+# Pull request CI.
+#
+# Until this existed the only gate was whether whoever pushed remembered to run
+# `npm test` and `npm run build` locally. The repo's other workflow is
+# dispatch-only and never runs on a PR.
+#
+# This job takes no secrets and only reads the repo, so a compromised step has
+# nothing to steal. `actions/checkout` is still pinned to a commit SHA to match
+# the convention in publish-install-post.yml. Node comes from the runner image
+# rather than actions/setup-node, and the version floor is asserted below.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One run per branch; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      # The suite runs on node --test via tsx, which needs a modern Node.
+      - name: Require Node 20 or newer
+        run: |
+          node --version
+          major="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ "$major" -lt 20 ]; then
+            echo "Node $major is too old; this repo needs 20 or newer." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Non-blocking: the tree already carries pre-existing warnings, so a
+      # failure here should not gate a PR until those are cleared.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true

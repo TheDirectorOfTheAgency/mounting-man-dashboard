@@ -389,7 +389,7 @@ The Mounting Man (128-790-7452)
 
 ## APPENDIX B: API Credentials (Working as of 2026-02-21)
 
-- **Developer Token:** `b7mhI-wsuUwSCkTdk-UGiA` (reset 2026-02-21, Basic Access)
+- **Developer Token:** in Vercel env `GOOGLE_ADS_DEVELOPER_TOKEN` (reset 2026-02-21, Basic Access). The value was committed here in plaintext and is still in git history — rotate it, do not just read it.
 - **OAuth Client:** gen-lang-client-0151509552 (OLD "The Agency" project)
 - **Refresh Token:** For mntvmounting@gmail.com, stored in Vercel env
 - **API Endpoint:** `https://googleads.googleapis.com/v20/customers/1287907452/googleAds:searchStream`
@@ -400,7 +400,7 @@ The Mounting Man (128-790-7452)
 
 ### ✅ Completed (2026-02-21)
 - [x] Fix Google Ads API auth (developer token reset + root cause documented)
-- [x] Update Vercel env with new developer token (`b7mhI-wsuUwSCkTdk-UGiA`)
+- [x] Update Vercel env with new developer token (value not recorded here — see `GOOGLE_ADS_DEVELOPER_TOKEN`)
 - [x] Update CLAUDE.md with new developer token + resolved API issue
 - [x] Pause DC campaigns (both General + Samsung Frame)
 - [x] Reduce Houston daily budget to $5/day (both campaigns)
