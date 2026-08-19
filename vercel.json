@@ -4,12 +4,8 @@
   "framework": "nextjs",
   "crons": [
     {
-      "path": "/api/cron/square-install-post-seed",
-      "schedule": "* 14-23,0 * * *"
-    },
-    {
       "path": "/api/cron/square-refresh",
-      "schedule": "0 15,17,19,21,23,1 * * *"
+      "schedule": "0 0 * * *"
     },
     {
       "path": "/api/cron/jobs-snapshot",
