@@ -33,8 +33,8 @@ in git history** and history has not been rewritten.
   2. **Write path** — inbound webhooks and crons that reconcile Square, ZenBooker, Google Ads and Webflow. Most of the repo's logic and *all* of its tests live here.
 - **Storage:** Upstash Redis via `@vercel/kv` (`KV_REST_API_*`). No SQL database. A *second, separate* Redis (`AGENCY_REDIS_*`) backs the agency telemetry/Siri-queue routes.
 - **Auth:** none on the dashboard itself. Webhook and operator routes use per-route shared secrets or signed capabilities.
-- **Tests:** 33 files, ~300 assertions, `node --test` via `tsx`. Pure-function and handler-factory style — every handler exports a `createXHandler({ deps })` factory so tests inject fakes. **Follow that pattern for new routes.**
-- **CI:** there is **no PR CI**. The only workflow is `workflow_dispatch`-only. Local `npm test` + `npm run build` are the gate.
+- **Tests:** 34 files, ~303 assertions, `node --test` via `tsx`. Pure-function and handler-factory style — every handler exports a `createXHandler({ deps })` factory so tests inject fakes. **Follow that pattern for new routes.**
+- **CI:** `.github/workflows/ci.yml` runs `npm ci` + `npm test` + `npm run build` on every PR and on pushes to `main` (lint is non-blocking). `publish-install-post.yml` remains `workflow_dispatch`-only.
 
 ### Conventions that actually hold
 - Handlers export a factory (`createZenbookerWebhookHandler`, `createBookingAttributionHandler`, `createGclidReceiverHandler`) plus a default instance. Tests use the factory.
@@ -71,7 +71,7 @@ Sub-components inside that one file: `HudGauge`, `StatusDot`, `DataRow`, `Tracki
 `pages/api/webhooks/zenbooker-to-square.js` (~1700 lines, the largest file here). Finds or creates the Square customer, builds full-priced invoice lines from `services[].pricing_summary`, creates an order applying processing-fee tax to every line and sales tax only to hardware lines, then creates a **draft** invoice. It does not publish or auto-send. `ZENBOOKER_SQUARE_INVOICE_DRY_RUN` short-circuits the write.
 
 ### 4. Installation-post queue (cloud publisher)
-Square payment webhook stages an immutable seed → operator gets a phone card at `/install-posts/open#<capability>` → photo upload binds to one exact `(seed, photo)` revision → an explicit **Publish** tap dispatches the GitHub Actions runner (`cloud/install-post-runner/`), which holds the Webflow token and publishes + verifies.
+Square payment webhook stages an immutable seed and wakes the install-post desk once per paid job via `lib/notify-install-post.mjs` (Grok Bot Kronkite, after the 24h dedup claim — **not** Discord, and it does not @ Q; if `KRONKITE_SQUARE_WEBHOOK_URL` is unset the wake is skipped and SMS + queue still run) → operator gets a phone card at `/install-posts/open#<capability>` → photo upload binds to one exact `(seed, photo)` revision → an explicit **Publish** tap dispatches the GitHub Actions runner (`cloud/install-post-runner/`), which holds the Webflow token and publishes + verifies.
 
 States: `AWAITING_PHOTO → READY → PUBLISHING → VERIFYING → PUBLISHED`, plus `RETRYABLE_FAILURE`, `BLOCKED`, `INDETERMINATE`. Only **Reconcile** exits `INDETERMINATE`. Stale after 15 min.
 
@@ -115,7 +115,8 @@ lib/zenbooker-square-mapper.mjs            # Service → catalog mapping
 lib/zenbooker-square-invoice.mjs           # Invoice line construction
 
 # Installation-post queue
-pages/api/webhooks/square-payment.js       # Payment → review SMS + seed staging + Discord
+pages/api/webhooks/square-payment.js       # Payment → review SMS + seed staging + Kronkite wake
+lib/notify-install-post.mjs                # Shared install-post desk wake (Kronkite), used by webhook + cron
 pages/api/install-post/{session,mobile,pending,upload,publish}.js
 pages/api/install-post/runner/{envelope,callback}.js
 pages/install-posts/open.js                # Operator phone card
@@ -143,7 +144,7 @@ pages/api/qbo-callback.js                  # ⚠️ Self-labelled "temporary", s
 ```bash
 npm run dev            # Local dev at http://localhost:3000
 npm run build          # Production build
-npm test               # Full suite (node --test via tsx) — ~300 assertions
+npm test               # Full suite (node --test via tsx) — ~303 assertions
 npm run lint           # ESLint
 
 npm run test:zenbooker-square              # Focused mapper/invoice tests
@@ -153,7 +154,7 @@ npm run backfill:attribution-job-maps
 npm run replay:offline-conversions
 ```
 
-Always run `npm test` **and** `npm run build` before pushing. There is no CI to catch you.
+Always run `npm test` **and** `npm run build` before pushing — CI runs the same three commands, so a local failure is a red PR.
 
 ---
 
@@ -179,7 +180,7 @@ All production values live in **Vercel project settings**. Local dev uses `.env.
 **Google Ads** — `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`, `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, `GOOGLE_ADS_API_VERSION`, `GOOGLE_ADS_OFFLINE_CONVERSION_ACTION_ID`
 **Conversions** — `OFFLINE_CONVERSION_MODE`, `PRIVACY_DISCLOSURE_VERSION`
 **ZenBooker** — `ZENBOOKER_WEBHOOK_SECRET`, `ZENBOOKER_GCLID_SECRET`, `ZENBOOKER_CONSENT_FIELD_LABEL`, `ZENBOOKER_API_KEY`, `ZENBOOKER_BASE_URL`, `ZENBOOKER_SQUARE_INVOICE_DRY_RUN`
-**Install-post** — `INSTALL_POST_ACCESS_SECRET`, `INSTALL_POST_RUNNER_SECRET`, `INSTALL_POST_BASE_URL`, `INSTALL_POST_DISPATCH_{TOKEN,OWNER,REPO,WORKFLOW,REF}`
+**Install-post** — `INSTALL_POST_ACCESS_SECRET`, `INSTALL_POST_RUNNER_SECRET`, `INSTALL_POST_BASE_URL`, `INSTALL_POST_DISPATCH_{TOKEN,OWNER,REPO,WORKFLOW,REF}`, `KRONKITE_SQUARE_WEBHOOK_URL`, `KRONKITE_SQUARE_WEBHOOK_KEY`
 **Storage** — `KV_REST_API_URL`, `KV_REST_API_TOKEN` (auto-set by Vercel); `AGENCY_REDIS_URL`, `AGENCY_REDIS_TOKEN` (separate agency Redis)
 **Notifications** — `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `DISCORD_BOT_TOKEN`, `DISCORD_Q_BOT_TOKEN`, `DISCORD_Q_USER_ID`, `TELEGRAM_BOT_TOKEN`
 **Misc** — `CRON_SECRET`, `VAULT_GITHUB_TOKEN`, `VAULT_WRITE_SECRET`, `TELL_Q_SECRET`, `GOOGLE_GEMINI_API_KEY`, `DEPLOYMENT_COMMIT_SHA`, `NEXT_PUBLIC_DASHBOARD_REFRESH_INTERVAL`
@@ -244,7 +245,7 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - `Dashboard.js` (666 lines) and `zenbooker-to-square.js` (~1700 lines) are both overdue for decomposition.
 - `DEFAULT_TEAM_MEMBER_MAP` is duplicated across three files.
 - `pages/api/CLAUDE.md` is stale — it documents only the three original proxies.
-- No PR CI. `_document.js` references `bg-agency-black`, which is not in the Tailwind config (harmless).
+- `_document.js` references `bg-agency-black`, which is not in the Tailwind config (harmless).
 - Geographic distribution and "Social Ready" are hardcoded.
 
 ---
@@ -271,7 +272,6 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - [ ] Remove `qbo-callback.js` or finish it
 - [ ] Refresh `pages/api/CLAUDE.md`
 - [ ] De-duplicate the team member map
-- [ ] Add PR CI running `npm test` + `npm run build`
 - [ ] Add error boundaries; decompose `Dashboard.js`
 
 **Product**

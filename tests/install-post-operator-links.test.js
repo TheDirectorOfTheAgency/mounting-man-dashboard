@@ -7,7 +7,7 @@ import { notifyQInstallPost } from '../pages/api/webhooks/square-payment.js';
 
 const SECRET = 'test-capability-secret';
 const BASE_URL = 'https://mounting-man-dashboard.vercel.app';
-const OPERATOR_MARKER = 'Add photo & publish';
+const KRONKITE_URL = 'https://kronkite.example/square-wake';
 
 function createFakeKv() {
   const values = new Map();
@@ -107,15 +107,15 @@ test('buildOperatorLinks returns nothing when it is not configured', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Discord handoff
+// Phone-first handoff + Kronkite wake (no Discord install-thread)
 // ---------------------------------------------------------------------------
 
 async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
   const posts = [];
-  await notifyQInstallPost(
+  const result = await notifyQInstallPost(
     {
       orderId: 'order-1',
-      payment: { id: 'payment-1', team_member_id: 'TMSiHOOr7RGdl2Ki' },
+      payment: { id: 'payment-1', team_member_id: 'TMSiHOOr7RGdl2Ki', source_type: 'CARD' },
       invoice: {},
       isInvoiceEvent: false,
       eventType: 'payment.created',
@@ -126,8 +126,6 @@ async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
       amountCents: 60000,
     },
     {
-      discordBotToken: 'test-token',
-      discordUserId: 'q-user',
       exists: async () => false,
       set: async () => true,
       rpush: async () => true,
@@ -135,27 +133,29 @@ async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
       installPostStore: store,
       capabilitySecret: SECRET,
       queueBaseUrl: BASE_URL,
+      kronkiteUrl: KRONKITE_URL,
+      kronkiteKey: 'kronkite-sender-key',
       httpClient: {
         async get() { return { data: { order: { id: 'order-1', line_items: lineItems } } }; },
-        async post(url, body) { posts.push({ url, body }); return { data: {} }; },
+        async post(url, body, config) { posts.push({ url, body, headers: config?.headers || {} }); return { data: {} }; },
       },
     },
   );
-  return posts;
+  return { posts, result };
 }
 
-test('the notifier stages one cloud job per TV and links each one separately', async () => {
+test('the notifier stages one cloud job per TV without posting Discord', async () => {
   const store = createInstallPostStore(createFakeKv());
-  const posts = await runNotifier({ store });
+  const { posts, result } = await runNotifier({ store });
 
   const jobIds = await store.listJobIds();
   assert.equal(jobIds.length, 2);
+  assert.equal(result.operatorLinks.length, 2);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
 
-  const content = posts[0].body.content;
-  assert.ok(content.includes(OPERATOR_MARKER), content);
-
-  const urls = [...content.matchAll(/https:\/\/\S+\/install-posts\/open#\S+/g)].map((m) => m[0]);
-  assert.equal(urls.length, 2);
+  const urls = result.operatorLinks.map((link) => link.url);
   assert.equal(new Set(urls).size, 2);
 
   const linkedJobIds = urls.map((url) => verifyJobCapability(new URL(url).hash.slice(1), {
@@ -165,33 +165,38 @@ test('the notifier stages one cloud job per TV and links each one separately', a
   assert.deepEqual(linkedJobIds.slice().sort(), jobIds.slice().sort());
 });
 
-test('the operator block carries safe labels and no customer identity', async () => {
+test('Kronkite payload and staged seeds carry safe labels and no customer identity', async () => {
   const store = createInstallPostStore(createFakeKv());
-  const posts = await runNotifier({ store });
+  const { posts, result } = await runNotifier({ store });
 
-  const content = posts[0].body.content;
-  // The operator block is the marker line plus its bullets, up to the next
-  // blank line — the legacy seed JSON below it is separate, unchanged output.
-  const lines = content.split('\n');
-  const start = lines.findIndex((line) => line.includes(OPERATOR_MARKER));
-  const end = lines.findIndex((line, i) => i > start && line.trim() === '');
-  const operatorBlock = lines.slice(start, end === -1 ? undefined : end).join('\n');
-
-  assert.equal(operatorBlock.split('\n').length, 3, operatorBlock);
-  for (const forbidden of ['Test Customer', '4821', '55424', 'order-1', 'payment-1', SECRET]) {
-    assert.ok(!operatorBlock.includes(forbidden), `operator block leaked ${forbidden}`);
+  const payload = JSON.stringify(posts[0].body);
+  for (const forbidden of ['Test Customer', '4821', '55424', SECRET, 'kronkite-sender-key']) {
+    assert.ok(!payload.includes(forbidden), `Kronkite payload leaked ${forbidden}`);
   }
-  assert.ok(operatorBlock.includes('65"'), operatorBlock);
-  assert.ok(operatorBlock.includes('55"'), operatorBlock);
-  assert.ok(operatorBlock.includes('Elm Street'), operatorBlock);
-  assert.ok(!operatorBlock.includes('```'), 'operator block must not contain raw JSON');
+  assert.equal(posts[0].body.streetName, 'Elm Street');
+  assert.equal(posts[0].body.city, 'Edina');
+  assert.ok(!payload.includes('@'), payload);
+
+  const jobIds = await store.listJobIds();
+  for (const jobId of jobIds) {
+    const record = await store.loadRecord(jobId);
+    const seed = JSON.stringify(record.seed);
+    for (const forbidden of ['Test Customer', '4821', '55424', 'order-1', 'payment-1', SECRET]) {
+      assert.ok(!seed.includes(forbidden), `job seed leaked ${forbidden}`);
+    }
+    assert.ok(seed.includes('Elm Street'), seed);
+  }
+
+  assert.ok(result.operatorLinks.every((link) => link.label.includes('65"') || link.label.includes('55"')));
 });
 
-test('the notifier still works, without links, when the cloud queue is unconfigured', async () => {
-  const posts = await runNotifier({ store: null });
-  const content = posts[0].body.content;
-  assert.ok(!content.includes(OPERATOR_MARKER));
-  assert.ok(content.includes('New job paid'));
+test('the notifier still wakes Kronkite, without links, when the cloud queue is unconfigured', async () => {
+  const { posts, result } = await runNotifier({ store: null });
+  assert.deepEqual(result.operatorLinks, []);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].body.paymentId, 'payment-1');
+  assert.equal(posts.some(({ url }) => String(url).includes('discord.com')), false);
 });
 
 test('a webhook retry re-links the same jobs instead of creating new cards', async () => {
@@ -200,8 +205,8 @@ test('a webhook retry re-links the same jobs instead of creating new cards', asy
   const second = await runNotifier({ store });
 
   assert.equal((await store.listJobIds()).length, 2);
-  const extract = (posts) => [...posts[0].body.content.matchAll(/\/install-posts\/open#(\S+)/g)]
-    .map((m) => verifyJobCapability(m[1], { secret: SECRET, now: Date.now() }).jobId)
+  const extract = ({ result }) => result.operatorLinks
+    .map((link) => verifyJobCapability(new URL(link.url).hash.slice(1), { secret: SECRET, now: Date.now() }).jobId)
     .sort();
   assert.deepEqual(extract(first), extract(second));
 });

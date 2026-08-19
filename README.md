@@ -54,15 +54,18 @@ mounting-man-dashboard/
 
 ## 🔑 Environment Variables
 
-Create `.env.local`:
+Create `.env.local` from `.env.example`.
 
-```
-NEXT_PUBLIC_SQUARE_ACCESS_TOKEN=your_token
-NEXT_PUBLIC_SQUARE_LOCATION_ID=LVNM3Z4RVRWDK
-NEXT_PUBLIC_WEBFLOW_TOKEN=your_token
-NEXT_PUBLIC_WEBFLOW_SITE_ID=6536f19431181574585ac1ce
-NEXT_PUBLIC_WEBFLOW_INSTALLATIONS_COLLECTION_ID=68167d5a313e2fd6f18650c9
-```
+### Kronkite (Grok Bot install-post desk)
+
+Paste these two values from the Kronkite routine panel into **Vercel project settings** (and `.env.local` for local runs):
+
+| Variable | What it is |
+|---|---|
+| `KRONKITE_SQUARE_WEBHOOK_URL` | Routine webhook URL |
+| `KRONKITE_SQUARE_WEBHOOK_KEY` | Sender key |
+
+The Square payment webhook authenticates with header `x-webhook-secret: <KRONKITE_SQUARE_WEBHOOK_KEY>`. If the URL is unset, the Kronkite wake is skipped and review SMS + the phone queue still run.
 
 ## 🎨 Design
 
