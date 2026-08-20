@@ -225,7 +225,7 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - Geographic split: Minneapolis 81%, Houston 12%, Austin 7%
 - `"Social Ready: 3"` in `Dashboard.js`
 - `allTimeSpend: 350000` in `google-ads.js` — removed/archived campaigns can't be summed via API
-- Square location: `LVNM3Z4RVRWDK`. Team member map lives in `lib/install-post-seeds.mjs` (`DEFAULT_TEAM_MEMBER_MAP`) and is duplicated in two other files.
+- Square location: `LVNM3Z4RVRWDK`. Team member map: `DEFAULT_TEAM_MEMBER_MAP` in `lib/install-post-seeds.mjs`, exported and imported everywhere else that needs it (`lib/notify-install-post.mjs`). Single source — do not add a local copy.
 
 ---
 
@@ -243,7 +243,6 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - `NEXT_PUBLIC_*` prefix on the Square/Webflow tokens is misleading but does **not** leak them — every reference is server-side and the client bundle is clean (verified against a production build). Rename is hygiene, not urgent.
 - No error boundary — if `Dashboard.js` throws, the page goes blank.
 - `Dashboard.js` (666 lines) and `zenbooker-to-square.js` (~1700 lines) are both overdue for decomposition.
-- `DEFAULT_TEAM_MEMBER_MAP` is duplicated across three files.
 - `pages/api/CLAUDE.md` is stale — it documents only the three original proxies.
 - `_document.js` references `bg-agency-black`, which is not in the Tailwind config (harmless).
 - Geographic distribution and "Social Ready" are hardcoded.
@@ -271,7 +270,6 @@ There is a Zapier MCP connector for Google Ads — **do not use it.** It only ex
 - [ ] Confirm the M1 relay is unloaded, then retire the launchd scripts
 - [ ] Remove `qbo-callback.js` or finish it
 - [ ] Refresh `pages/api/CLAUDE.md`
-- [ ] De-duplicate the team member map
 - [ ] Add error boundaries; decompose `Dashboard.js`
 
 **Product**
