@@ -33,7 +33,7 @@ in git history** and history has not been rewritten.
   2. **Write path** — inbound webhooks and crons that reconcile Square, ZenBooker, Google Ads and Webflow. Most of the repo's logic and *all* of its tests live here.
 - **Storage:** Upstash Redis via `@vercel/kv` (`KV_REST_API_*`). No SQL database. A *second, separate* Redis (`AGENCY_REDIS_*`) backs the agency telemetry/Siri-queue routes.
 - **Auth:** none on the dashboard itself. Webhook and operator routes use per-route shared secrets or signed capabilities.
-- **Tests:** 34 files, ~304 assertions, `node --test` via `tsx`. Pure-function and handler-factory style — every handler exports a `createXHandler({ deps })` factory so tests inject fakes. **Follow that pattern for new routes.**
+- **Tests:** 34 files, ~308 assertions, `node --test` via `tsx`. Pure-function and handler-factory style — every handler exports a `createXHandler({ deps })` factory so tests inject fakes. **Follow that pattern for new routes.**
 - **CI:** `.github/workflows/ci.yml` runs `npm ci` + `npm test` + `npm run build` on every PR and on pushes to `main` (lint is non-blocking). `publish-install-post.yml` remains `workflow_dispatch`-only.
 
 ### Conventions that actually hold
@@ -144,7 +144,7 @@ pages/api/qbo-callback.js                  # ⚠️ Self-labelled "temporary", s
 ```bash
 npm run dev            # Local dev at http://localhost:3000
 npm run build          # Production build
-npm test               # Full suite (node --test via tsx) — ~304 assertions
+npm test               # Full suite (node --test via tsx) — ~308 assertions
 npm run lint           # ESLint
 
 npm run test:zenbooker-square              # Focused mapper/invoice tests
