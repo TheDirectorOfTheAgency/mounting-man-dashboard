@@ -94,6 +94,39 @@ test('safeSeed strips house numbers and inline contact details', () => {
   assert.ok(!result['job-notes'].includes('612-555-1234'));
 });
 
+test('safeSeed keeps unmount job-type and copy, and strips unit numbers from streets', () => {
+  const result = safeSeed({
+    city: 'Oakdale',
+    'job-type': 'unmount',
+    title: 'TV Unmounting in Oakdale | 86" Near 2nd Street North',
+    slug: 'tv-unmounting-oakdale-86-inch-2nd-street-north',
+    'post-body': 'We took down this 86" TV near 2nd Street North in Oakdale.',
+    'street-name': '86 2nd Street North #12',
+    'local-reference': '2nd Street North Unit 4',
+    'tv-size': '86"',
+  });
+
+  assert.equal(result['job-type'], 'unmount');
+  assert.match(result.title, /TV Unmounting/);
+  assert.equal(result['street-name'], '2nd Street North');
+  assert.equal(result['local-reference'], '2nd Street North');
+  assert.doesNotMatch(JSON.stringify(result), /\b(?:apt|apartment|unit|#12)\b/i);
+});
+
+test('cardLabel names an unmount without calling it an installation', () => {
+  const label = cardLabel(baseRecord({
+    seed: baseSeed({
+      'job-type': 'unmount',
+      'tv-size': '',
+      'tv-brand': '',
+      city: 'Oakdale',
+      'street-name': '2nd Street North',
+    }),
+  }));
+  assert.match(label, /TV unmounting/i);
+  assert.doesNotMatch(label, /TV installation/i);
+});
+
 // ---------------------------------------------------------------------------
 // Recognizable card labels
 // ---------------------------------------------------------------------------

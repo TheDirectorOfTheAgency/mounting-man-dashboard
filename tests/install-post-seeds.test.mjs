@@ -5,6 +5,7 @@ import {
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
 } from '../lib/install-post-seeds.mjs';
+import { isUnmountSeed, stripPublicUnitNumber } from '../lib/install-post-copy.mjs';
 
 const customer = {
   address: {
@@ -468,4 +469,176 @@ test('install post subtotal display sums seed prices instead of Square charged t
 
   assert.equal(subtotal, '$700');
   assert.notEqual(subtotal, '$850');
+});
+
+function unmountCustomer(overrides = {}) {
+  return {
+    address: {
+      address_line_1: '86 2nd Street North Apt 4',
+      locality: 'Oakdale',
+      administrative_district_level_1: 'Minnesota',
+      postal_code: '55128',
+      ...overrides,
+    },
+  };
+}
+
+function assertUnmountCopy(seed) {
+  assert.equal(isUnmountSeed(seed), true);
+  assert.equal(seed['job-type'], 'unmount');
+  assert.match(seed.title, /TV Unmounting/i);
+  assert.doesNotMatch(seed.title, /\bTV Mounting\b/i);
+  assert.doesNotMatch(seed.title, /TV Installation/i);
+  assert.match(seed.slug, /tv-unmounting/);
+  assert.doesNotMatch(seed.slug, /tv-mounting|tv-installation/);
+  assert.match(seed['post-body'], /unmount|took down|take-down/i);
+  assert.doesNotMatch(seed['post-body'], /We mounted this/i);
+  assert.match(seed['post-body'], /professional TV mounting services/);
+  assert.match(seed['post-body'], /themountingman\.com\/tv-mounting/);
+  assert.match(seed['post-body'], /before shot/i);
+  for (const field of ['title', 'slug', 'post-body', 'post-summary', 'street-name', 'local-reference']) {
+    const value = String(seed[field] || '');
+    assert.doesNotMatch(value, /\b(?:apt|apartment|unit|suite)\b/i, `${field} leaked a unit number: ${value}`);
+    assert.doesNotMatch(value, /#\s*\w/, `${field} leaked a unit hash: ${value}`);
+  }
+}
+
+test('an unmount line item is a first-class unmount seed, not a fake mount', () => {
+  const seeds = buildInstallPostSeeds({
+    customer: unmountCustomer(),
+    payment: { id: 'payment-oakdale-unmount', order_id: 'order-oakdale-unmount' },
+    order: {},
+    lineItems: [
+      line('TV Unmount', '86"', 12500),
+    ],
+  });
+
+  assert.equal(seeds.length, 1);
+  assertUnmountCopy(seeds[0]);
+  assert.equal(seeds[0]['tv-size'], '86"');
+  assert.equal(seeds[0].city, 'Oakdale');
+  assert.equal(seeds[0]['street-name'], '2nd Street North');
+  assert.match(seeds[0].title, /2nd Street North/);
+  assert.match(seeds[0]['job-notes'], /TV Unmounting/);
+  assert.equal(seeds[0]['wall-surface'], undefined);
+  assert.doesNotMatch(seeds[0].title, /Drywall/);
+  assert.doesNotMatch(String(seeds[0]['post-body']), /Drywall/);
+});
+
+test('dismount and take-down line names publish as TV unmounting', () => {
+  for (const name of ['TV Dismount', 'TV Take Down', 'Taking Down']) {
+    const [seed] = buildInstallPostSeeds({
+      customer: unmountCustomer({ address_line_1: '200 2nd Street North Unit 12' }),
+      payment: { id: `payment-${name}`, order_id: `order-${name}` },
+      order: {},
+      lineItems: [line(name, '75"', 10000)],
+    });
+    assertUnmountCopy(seed);
+    assert.equal(seed['tv-size'], '75"');
+    assert.equal(seed['street-name'], '2nd Street North');
+  }
+});
+
+test('unmounting is not classified as a mount just because the word contains mounting', () => {
+  const [seed] = buildInstallPostSeeds({
+    customer: unmountCustomer(),
+    payment: { id: 'payment-unmounting-word', order_id: 'order-unmounting-word' },
+    order: {},
+    lineItems: [line('TV Unmounting', '86"', 12500)],
+  });
+  assertUnmountCopy(seed);
+  assert.doesNotMatch(seed['job-notes'], /TV Installation/);
+});
+
+test('unmount add-on on a mount stays on the mount and does not invent a second job', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-addon', order_id: 'order-addon' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '65"', 15000),
+      line('Unmount Needed?', 'Unmount TV 65" or Under', 7500),
+    ],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['job-type'], undefined);
+  assert.equal(seeds[0].title, undefined);
+  assert.equal(seeds[0]['tv-size'], '65"');
+  assert.equal(seeds[0]['wall-surface'], 'Drywall');
+  assert.match(seeds[0]['job-notes'], /TV Installation/);
+  assert.equal(seeds[0].price, '$225');
+});
+
+test('a real second job on the same visit still suffixes as its own unmount seed', () => {
+  const seeds = buildInstallPostSeeds({
+    customer: unmountCustomer(),
+    payment: { id: 'payment-two-jobs', order_id: 'order-two-jobs' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '65"', 15000),
+      line('TV Unmount', '86"', 12500),
+    ],
+  });
+
+  assert.equal(seeds.length, 2);
+  assert.equal(seeds[0]['tv-size'], '65"');
+  assert.equal(seeds[0]['job-type'], undefined);
+  assert.equal(seeds[0].title, undefined);
+  assert.equal(seeds[1]['seed-index'], 2);
+  assert.equal(seeds[1]['seed-count'], 2);
+  assertUnmountCopy(seeds[1]);
+  assert.equal(seeds[1]['tv-size'], '86"');
+  assert.match(seeds[1].slug, /-2$/);
+});
+
+test('unmount wall type stays Square-only and never invents Drywall', () => {
+  const [plain] = buildInstallPostSeeds({
+    customer: unmountCustomer(),
+    payment: { id: 'payment-no-wall', order_id: 'order-no-wall' },
+    order: {},
+    lineItems: [line('TV Unmount', '86"', 12500)],
+  });
+  assert.equal(plain['wall-surface'], undefined);
+
+  const [withWall] = buildInstallPostSeeds({
+    customer: unmountCustomer(),
+    payment: { id: 'payment-brick-wall', order_id: 'order-brick-wall' },
+    order: {},
+    lineItems: [
+      line('TV Unmount', '86"', 12500),
+      line('Wall Type', 'Brick'),
+    ],
+  });
+  assert.equal(withWall['wall-surface'], 'Brick');
+  assert.match(withWall['job-notes'], /Brick — Wall Type/);
+});
+
+test('unmount pages never emit a unit or apartment number', () => {
+  const [seed] = buildInstallPostSeeds({
+    customer: unmountCustomer({ address_line_1: '86 2nd Street North, Unit 4B' }),
+    payment: { id: 'payment-unit', order_id: 'order-unit' },
+    order: {},
+    lineItems: [line('TV Unmount Service', '86"', 12500)],
+  });
+  assertUnmountCopy(seed);
+  assert.equal(stripPublicUnitNumber('2nd Street North #12'), '2nd Street North');
+  const blob = JSON.stringify(seed);
+  assert.doesNotMatch(blob, /Unit 4B/i);
+  assert.doesNotMatch(blob, /\bApt 4\b/i);
+});
+
+test('No Unmounting Needed does not create an unmount seed', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-no-unmount', order_id: 'order-no-unmount' },
+    order: {},
+    lineItems: [
+      line('TV Installation', '55"', 15000),
+      line('Unmount Needed?', 'No Unmounting Needed', 0),
+    ],
+  });
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['job-type'], undefined);
+  assert.equal(seeds[0]['tv-size'], '55"');
 });

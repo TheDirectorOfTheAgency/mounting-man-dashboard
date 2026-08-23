@@ -213,6 +213,45 @@ test('Publish refuses a job with no photo bound', async () => {
   assert.equal(dispatcher.dispatches.length, 0);
 });
 
+test('today\'s Oakdale 86-inch unmount does not publish without a before photo', async () => {
+  const kv = createFakeKv();
+  const store = createInstallPostStore(kv);
+  const [staged] = await store.stageJobRecords({
+    seeds: [{
+      city: 'Oakdale',
+      'job-type': 'unmount',
+      title: 'TV Unmounting in Oakdale | 86" Near 2nd Street North',
+      slug: 'tv-unmounting-oakdale-86-inch-2nd-street-north',
+      'post-body': 'We took down this 86" TV near 2nd Street North in Oakdale.',
+      'tv-size': '86"',
+      'street-name': '2nd Street North',
+      'local-reference': '2nd Street North',
+      'seed-index': 1,
+      'seed-count': 1,
+    }],
+    sourceRefs: { orderId: 'ORDER-OAKDALE-UNMOUNT', paymentId: 'PAY-OAKDALE-UNMOUNT' },
+    source: 'square-webhook',
+    stagedAt: '2026-08-23T15:00:00.000Z',
+  });
+
+  const dispatcher = createFakeDispatcher();
+  const session = signOperatorSession({ jobId: staged.jobId, secret: SESSION_SECRET, expiresAt: NOW + 3600_000 });
+  const publish = createPublishHandler({
+    store,
+    sessionSecret: SESSION_SECRET,
+    dispatcher,
+    now: () => NOW,
+  });
+
+  const res = createResponse();
+  await publish(publishRequest(session, { revision: staged.revision }), res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.body.error, 'photo_required');
+  assert.equal(dispatcher.dispatches.length, 0);
+  assert.equal(staged.seed['job-type'], 'unmount');
+  assert.doesNotMatch(JSON.stringify(staged.seed), /\b(?:apt|apartment|unit)\b/i);
+});
+
 test('a failed dispatch releases the lease so Publish can be retried', async () => {
   const { publish, store, session, record } = await setup({ dispatcherOptions: { fail: true } });
   const failed = createResponse();

@@ -50,7 +50,7 @@ function assetFileName(record) {
   const parts = [
     slugPart(seed['tv-size']),
     slugPart(seed['tv-brand']),
-    'tv-installation',
+    seed['job-type'] === 'unmount' ? 'tv-unmounting' : 'tv-installation',
     slugPart(seed.city),
   ].filter(Boolean);
   return `${parts.join('-')}-${String(record.revision).slice(0, 8)}.webp`;
