@@ -22,6 +22,7 @@ import { installPostPollDelayMs } from '../../lib/install-post-states.mjs';
 import styles from '../../styles/InstallPostQueue.module.css';
 
 const FACT_LABELS = {
+  'job-type': 'Job type',
   'tv-size': 'TV size',
   'tv-brand': 'TV brand',
   'wall-surface': 'Wall surface',
@@ -261,7 +262,9 @@ export default function InstallPostCard() {
           reconcile_required: 'The last attempt never finished. Tap “Check and finish” to sort it out.',
           not_reconcilable: 'Nothing to reconcile — this job has a clear result.',
           already_published: 'This job is already published.',
-          photo_required: 'Add the installation photo first.',
+          photo_required: job?.seed?.['job-type'] === 'unmount'
+            ? 'Add the before photo first — TV still on the wall.'
+            : 'Add the installation photo first.',
           locked: 'Another change is in progress — try again in a moment.',
         }[data.error] || `Publish failed: ${data.error}`);
         if (data.job) setJob(data.job);
@@ -349,7 +352,11 @@ export default function InstallPostCard() {
               </section>
 
               <section className={styles.section}>
-                <p className={styles.sectionTitle}>Installation photo</p>
+                <p className={styles.sectionTitle}>
+                  {job.seed?.['job-type'] === 'unmount'
+                    ? 'Before photo (TV still on the wall)'
+                    : 'Installation photo'}
+                </p>
                 {preview ? (
                   <img
                     className={styles.preview}

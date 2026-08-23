@@ -6,6 +6,51 @@ import json
 import re
 from pathlib import Path
 
+_UNIT_NUMBER_RE = re.compile(
+    r"(?:#\s*[\w-]+|\b(?:apt|apartment|unit|suite|ste|bldg|building)\.?\s*[\w-]+|,\s*(?:no\.?|number|#)?\s*\d+[A-Za-z]?\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_unmount_job(post_data: dict) -> bool:
+    job_type = str(post_data.get("job-type") or post_data.get("job_type") or "").strip().lower()
+    return job_type in {"unmount", "dismount", "takedown", "take-down"}
+
+
+def _strip_unit_number(value: str) -> str:
+    text = _UNIT_NUMBER_RE.sub(" ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" ,")
+    return text
+
+
+def _unmount_local_reference(post_data: dict, city: str) -> str:
+    raw = _clean_local_reference(
+        str(post_data.get("local-reference") or post_data.get("street-name") or "").strip(),
+        city,
+    )
+    return _strip_unit_number(raw)
+
+
+def _unmount_visit_suffix(post_data: dict) -> str:
+    try:
+        count = int(post_data.get("seed-count") or 0)
+        index = int(post_data.get("seed-index") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if count > 1 and index > 1:
+        return str(index)
+    return ""
+
+
+def _unmount_unit_label(post_data: dict) -> str:
+    size = str(post_data.get("tv-size") or "").strip()
+    brand = _normalized_brand(post_data)
+    parts = [part for part in [size, brand] if part]
+    label = " ".join(parts).strip()
+    if label and not label.lower().endswith("tv"):
+        label = f"{label} TV"
+    return label or "TV"
+
 
 def _normalize_city_name(value: str) -> str:
     city = (value or "").strip()
@@ -135,6 +180,8 @@ def _clean_local_reference(value: str, city: str = "") -> str:
 
 
 def _primary_install_intent(post_data: dict) -> tuple[str, str]:
+    if _is_unmount_job(post_data):
+        return "TV Unmounting", "tv-unmounting"
     brand = _normalized_brand(post_data)
     mount_label = _specific_mount_label(post_data.get("mount-type") or post_data.get("bracket-type") or "")
     mount_slug = slugify(mount_label)
@@ -175,6 +222,13 @@ def _samsung_frame_install_label(post_data: dict) -> str:
 
 
 def build_seo_slug(post_data: dict, city: str) -> str:
+    if _is_unmount_job(post_data):
+        street = _unmount_local_reference(post_data, city)
+        size = str(post_data.get("tv-size", "")).strip().replace('"', " inch")
+        brand = _normalized_brand(post_data)
+        surface = str(post_data.get("wall-surface", "")).strip()
+        bits = ["tv-unmounting", city, size, brand, surface, street, _unmount_visit_suffix(post_data)]
+        return slugify(_strip_unit_number(" ".join(bit for bit in bits if bit)))
     _, primary_slug = _primary_install_intent(post_data)
     brand = _normalized_brand(post_data)
     size = str(post_data.get("tv-size", "")).strip().replace('"', ' inch')
@@ -451,6 +505,19 @@ def multi_tv_job_details(post_data: dict) -> dict[str, object]:
 
 
 def build_seo_title(post_data: dict, city: str) -> str:
+    if _is_unmount_job(post_data):
+        size = str(post_data.get("tv-size") or "").strip()
+        brand = _normalized_brand(post_data)
+        surface = str(post_data.get("wall-surface") or "").strip()
+        street = _unmount_local_reference(post_data, city)
+        bits = [bit for bit in [size, brand, surface] if bit]
+        if street:
+            bits.append(f"Near {street}")
+        suffix = _unmount_visit_suffix(post_data)
+        if suffix:
+            bits.append(suffix)
+        title = f"TV Unmounting in {city}" if not bits else f"TV Unmounting in {city} | {' '.join(bits)}"
+        return _strip_unit_number(title)
     brand = _normalized_brand(post_data)
     size = str(post_data.get("tv-size", "TV")).strip()
     room = str(post_data.get("room-type", "")).replace("-", " ").strip()
@@ -898,6 +965,20 @@ def build_distinctive_install_section(post_data: dict, city: str, *, unit_label:
 
 
 def generate_post_summary(post_data: dict, city: str) -> str:
+    if _is_unmount_job(post_data):
+        city = _normalize_city_name(city)
+        street = _unmount_local_reference(post_data, city)
+        wall = str(post_data.get("wall-surface") or "").strip()
+        summary = f"{_unmount_unit_label(post_data)} unmounting in {city}"
+        if wall:
+            summary += f" on {wall.lower()}"
+        if street:
+            summary += f", completed near {street}"
+        summary += ". The photo is the before shot, with the TV still on the wall."
+        price_display = display_price_subtotal(post_data)
+        if price_display:
+            summary += f" Completed for {price_display}."
+        return _strip_unit_number(summary)
     city = _normalize_city_name(city)
     size = str(post_data.get("tv-size", "TV"))
     brand = _normalized_brand(post_data)
@@ -1030,7 +1111,61 @@ _SURFACE_CHALLENGES = {
 }
 
 
+def _generate_unmount_post_body(post_data: dict, city: str) -> str:
+    city = _normalize_city_name(city)
+    street = _unmount_local_reference(post_data, city)
+    size = str(post_data.get("tv-size") or "").strip()
+    brand = _normalized_brand(post_data)
+    wall = str(post_data.get("wall-surface") or "").strip()
+    price_display = display_price_subtotal(post_data)
+    unit_label = html.escape(_unmount_unit_label(post_data))
+    location = f"{html.escape(street)}, {html.escape(city)}" if street else html.escape(city)
+    heading = f"TV Unmounting Near {html.escape(street)}" if street else f"TV Unmounting in {html.escape(city)}"
+    where = f"near {html.escape(street)} in {html.escape(city)}" if street else f"in {html.escape(city)}"
+    nearby_cities = ensure_list(post_data.get("nearby-cities"))
+
+    details = ["<h2>Job Details</h2>", "<ul>", "<li><strong>Service:</strong> TV Unmounting</li>"]
+    if size:
+        details.append(f"<li><strong>TV Size:</strong> {html.escape(size)}</li>")
+    if brand:
+        details.append(f"<li><strong>TV Brand:</strong> {html.escape(brand)}</li>")
+    if wall:
+        details.append(f"<li><strong>Wall Type:</strong> {html.escape(wall)}</li>")
+    if price_display:
+        details.append(f"<li><strong>Price:</strong> {html.escape(price_display)}</li>")
+    details.extend([f"<li><strong>Location:</strong> {location}</li>", "</ul>"])
+
+    points = [
+        (
+            f"Completed near {html.escape(street)} in {html.escape(city)}. This was a TV unmount, not a new mount."
+            if street
+            else f"This was a TV unmount in {html.escape(city)}, not a new mount."
+        )
+    ]
+    if price_display:
+        points.append(f"Unmount subtotal: {html.escape(price_display)}.")
+    points.append("The required photo is the before shot, with the TV still on the wall.")
+
+    # Famous-mounter CTA is unchanged: same service-area paragraph as mounts.
+    body = "\n".join([
+        "\n".join(details),
+        f"<h2>{heading}</h2>",
+        f"<p>We took down this {unit_label} {where}. The photo for this job is the before shot, with the TV still on the wall.</p>",
+        "<h2>What Made This Unmount Different</h2>",
+        "<ul>",
+        *[f"<li>{point}</li>" for point in points],
+        "</ul>",
+        "<h2>Taking a TV Off the Wall</h2>",
+        "<p>A clean unmount means supporting the TV, backing out the hardware, and walking the screen off the wall without damaging the set or the surface. This job was a take-down, not a mount.</p>",
+        f"<h2>TV Mounting in {html.escape(city)}</h2>",
+        f"<p>{_service_area_paragraph(post_data, city, nearby_cities)}</p>",
+    ])
+    return _strip_unit_number(body)
+
+
 def generate_post_body(post_data: dict, city: str) -> str:
+    if _is_unmount_job(post_data):
+        return _generate_unmount_post_body(post_data, city)
     city = _normalize_city_name(city)
     size = str(post_data.get("tv-size", "TV"))
     brand = str(post_data.get("tv-brand", "")).strip()
