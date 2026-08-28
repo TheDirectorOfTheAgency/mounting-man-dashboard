@@ -175,6 +175,11 @@ test('Kronkite payload and staged seeds carry safe labels and no customer identi
   }
   assert.equal(posts[0].body.streetName, 'Elm Street');
   assert.equal(posts[0].body.city, 'Edina');
+  assert.equal(posts[0].body.tvCount, 2);
+  assert.deepEqual(posts[0].body.tvSizes, ['65"', '55"']);
+  assert.deepEqual(posts[0].body.tvLines.map((line) => line.size), ['65"', '55"']);
+  assert.ok(posts[0].body.tvLines.some((line) => line.name.includes('65 Inch TV Mounting')));
+  assert.ok(posts[0].body.tvLines.some((line) => line.name.includes('55 Inch TV Mounting')));
   assert.ok(!payload.includes('@'), payload);
 
   const jobIds = await store.listJobIds();
