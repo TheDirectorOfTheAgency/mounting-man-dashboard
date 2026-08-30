@@ -49,7 +49,9 @@ X_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 X_CREATE_TWEET_URL = "https://api.twitter.com/2/tweets"
 
 FACEBOOK_ENV = ("FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN")
-INSTAGRAM_ENV = ("INSTAGRAM_BUSINESS_ACCOUNT_ID", "FACEBOOK_PAGE_ACCESS_TOKEN")
+# Page id is required so the runner can host a JPEG rendition. Instagram's
+# image container rejects the dashboard's WebP asset URL.
+INSTAGRAM_ENV = ("INSTAGRAM_BUSINESS_ACCOUNT_ID", "FACEBOOK_PAGE_ID", "FACEBOOK_PAGE_ACCESS_TOKEN")
 LINKEDIN_ENV = ("LINKEDIN_ACCESS_TOKEN", "LINKEDIN_AUTHOR_URN")
 X_ENV = (
     "TWITTER_API_KEY",
@@ -236,14 +238,19 @@ class SocialPublisher:
         raise SocialBlockedError(f"{name} is not a cloud-runner destination")
 
     def _instagram(self, *, post_data, live_url, image_url, image_bytes) -> str:
-        del image_bytes
         creds = require_env(INSTAGRAM_ENV, self.env)
         caption = build_social_caption(post_data, live_url)
         ig_id = creds["INSTAGRAM_BUSINESS_ACCOUNT_ID"]
         token = creds["FACEBOOK_PAGE_ACCESS_TOKEN"]
+        jpeg_url = self._host_jpeg_rendition(
+            page_id=creds["FACEBOOK_PAGE_ID"],
+            token=token,
+            image_bytes=image_bytes,
+            fallback_url=image_url,
+        )
         created = self._graph_post(
             f"{GRAPH_BASE}/{ig_id}/media",
-            data={"image_url": image_url, "caption": caption, "access_token": token},
+            data={"image_url": jpeg_url, "caption": caption, "access_token": token},
             action="Instagram media create",
         )
         creation_id = str(created.get("id") or "")
@@ -418,6 +425,51 @@ class SocialPublisher:
         if not media_id:
             raise SocialRetryableError("X media upload returned no media_id")
         return media_id
+
+    def _host_jpeg_rendition(self, *, page_id: str, token: str, image_bytes: bytes, fallback_url: str) -> str:
+        """Host a JPEG that Instagram will accept.
+
+        Dashboard photos are WebP. Instagram's ``/{ig-user-id}/media`` image
+        container requires JPEG. An unpublished Facebook Page photo is the
+        existing Graph path that transcodes the bytes and returns a JPEG CDN
+        URL — no third host, no Reddit, no GBP.
+        """
+        if not image_bytes:
+            raise SocialRetryableError("Instagram JPEG rendition needs the bound photo bytes")
+        try:
+            uploaded = self.http.post(
+                f"{GRAPH_BASE}/{page_id}/photos",
+                data={"published": "false", "access_token": token},
+                files={"source": ("install.jpg", image_bytes, "image/webp")},
+                timeout=60,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise SocialRetryableError(f"Instagram JPEG host failed: {exc}") from exc
+        self._raise_http(uploaded, "Instagram JPEG host")
+        photo_id = str((uploaded.json() or {}).get("id") or "")
+        if not photo_id:
+            raise SocialRetryableError("Instagram JPEG host returned no photo id")
+        try:
+            lookup = self.http.get(
+                f"{GRAPH_BASE}/{photo_id}",
+                params={"fields": "images", "access_token": token},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise SocialRetryableError(f"Instagram JPEG lookup failed: {exc}") from exc
+        self._raise_http(lookup, "Instagram JPEG lookup")
+        images = (lookup.json() or {}).get("images") or []
+        jpeg_url = ""
+        for image in images:
+            url = str((image or {}).get("source") or "").strip()
+            if url and ".webp" not in url.lower():
+                jpeg_url = url
+                break
+        if not jpeg_url:
+            raise SocialRetryableError("Instagram JPEG lookup returned no JPEG URL")
+        if fallback_url and jpeg_url.rstrip("/") == str(fallback_url).rstrip("/"):
+            raise SocialRetryableError("Instagram JPEG host returned the original WebP URL")
+        return jpeg_url
 
     def _graph_post(self, url: str, *, data: dict, action: str) -> dict:
         try:

@@ -68,6 +68,10 @@ class RecordingHttp:
         self._record("GET", url, **kwargs)
         if "verify_credentials" in url:
             return FakeResponse(json_data=self.verify_user)
+        if "fb-unpub-1" in url:
+            return FakeResponse(json_data={
+                "images": [{"source": "https://scontent.xx.fbcdn.net/install.jpg"}],
+            })
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, **kwargs):
@@ -81,6 +85,9 @@ class RecordingHttp:
         if url.endswith("/media_publish"):
             return FakeResponse(json_data={"id": "ig-media-1"})
         if url.endswith("/photos"):
+            data = kwargs.get("data") or {}
+            if kwargs.get("files") or data.get("published") == "false":
+                return FakeResponse(json_data={"id": "fb-unpub-1"})
             return FakeResponse(json_data={"post_id": "fb-1"})
         if "assets" in url:
             return FakeResponse(json_data={
@@ -189,6 +196,30 @@ def test_already_posted_requires_published_status():
     assert already_posted("x", [{"name": "x", "status": "PUBLISHED"}]) is True
     assert already_posted("x", [{"name": "x", "status": "RETRYABLE_FAILURE"}]) is False
     assert already_posted("x", [{"name": "instagram", "status": "PUBLISHED"}]) is False
+
+
+def test_instagram_uses_a_jpeg_rendition_not_the_webp_asset():
+    http = RecordingHttp()
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    media_create = next(
+        call for call in http.calls
+        if call["method"] == "POST" and str(call.get("url", "")).endswith("/media")
+        and "ig-1" in str(call.get("url", ""))
+    )
+    sent_url = (media_create.get("data") or {}).get("image_url")
+    assert sent_url == "https://scontent.xx.fbcdn.net/install.jpg"
+    assert "webp" not in sent_url.lower()
+    assert sent_url != IMAGE_URL
+    assert any(call.get("files") for call in http.calls if str(call.get("url", "")).endswith("/photos"))
 
 
 def test_missing_social_credentials_are_skipped_not_invented():

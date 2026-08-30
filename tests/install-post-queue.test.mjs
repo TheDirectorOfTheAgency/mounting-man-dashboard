@@ -6,6 +6,7 @@ import {
   SAFE_SEED_FIELDS,
   canonicalRevision,
   cardLabel,
+  collectPostedDestinations,
   safeSeed,
   sanitizePublishResult,
   signJobCapability,
@@ -329,6 +330,53 @@ test('an indeterminate result keeps the lease so retries must reconcile first', 
   });
   assert.equal(retry.ok, false);
   assert.equal(retry.reason, 'reconcile_required');
+});
+
+test('reconcile keeps published social destinations after result is cleared', () => {
+  const withPhoto = transitionRecord(baseRecord(), { type: 'photo', image: IMAGE_A }).record;
+  const publishing = transitionRecord(withPhoto, {
+    type: 'approve',
+    revision: withPhoto.revision,
+    dispatchId: 'd1',
+  }).record;
+
+  const indeterminate = transitionRecord(publishing, {
+    type: 'result',
+    result: {
+      status: 'INDETERMINATE',
+      liveUrl: 'https://www.themountingman.com/installations/x',
+      publicStatus: 200,
+      destinations: [
+        { name: 'website', status: 'PUBLISHED', detail: 'https://www.themountingman.com/installations/x' },
+        { name: 'instagram', status: 'PUBLISHED', detail: 'ig-1' },
+        { name: 'facebook', status: 'RETRYABLE_FAILURE', detail: 'HTTP 503' },
+      ],
+    },
+  }).record;
+
+  assert.deepEqual(
+    indeterminate.postedDestinations.map((entry) => entry.name).sort(),
+    ['instagram', 'website'],
+  );
+
+  const reconciled = transitionRecord(indeterminate, {
+    type: 'reconcile',
+    revision: indeterminate.revision,
+    dispatchId: 'd2',
+  }).record;
+
+  assert.equal(reconciled.state, INSTALL_POST_STATES.PUBLISHING);
+  assert.equal(reconciled.result, null);
+  assert.deepEqual(
+    reconciled.postedDestinations.map((entry) => entry.name).sort(),
+    ['instagram', 'website'],
+  );
+  assert.deepEqual(
+    collectPostedDestinations(reconciled.postedDestinations, reconciled.result?.destinations)
+      .map((entry) => entry.name)
+      .sort(),
+    ['instagram', 'website'],
+  );
 });
 
 test('a published job is terminal and cannot be republished or edited', () => {

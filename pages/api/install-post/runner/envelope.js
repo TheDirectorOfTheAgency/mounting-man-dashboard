@@ -5,7 +5,7 @@
 // Square identifier, a customer detail, or a credential.
 
 import { verifyRunnerRequest } from '../../../../lib/install-post-dispatch.mjs';
-import { INSTALL_POST_STATES } from '../../../../lib/install-post-queue.mjs';
+import { collectPostedDestinations, INSTALL_POST_STATES } from '../../../../lib/install-post-queue.mjs';
 import { getInstallPostStore } from '../../../../lib/install-post-store.mjs';
 
 export const ENVELOPE_PATH = '/api/install-post/runner/envelope';
@@ -51,16 +51,10 @@ export function createRunnerEnvelopeHandler({ store, runnerSecret, now = Date.no
       return res.status(409).json({ error: 'photo_required' });
     }
 
-    const postedDestinations = Array.isArray(record.result?.destinations)
-      ? record.result.destinations
-        .filter((entry) => entry && typeof entry === 'object')
-        .map((entry) => ({
-          name: String(entry.name || ''),
-          status: String(entry.status || ''),
-          detail: String(entry.detail || ''),
-        }))
-        .filter((entry) => entry.name)
-      : [];
+    const postedDestinations = collectPostedDestinations(
+      record.postedDestinations,
+      record.result?.destinations,
+    );
 
     return res.status(200).json({
       jobId: record.jobId,
