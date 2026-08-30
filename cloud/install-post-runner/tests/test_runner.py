@@ -491,3 +491,30 @@ def test_linkedin_share_urn_is_a_documented_published_post_receipt():
         "detail": "urn:li:share:7499851525402308608",
     }
     assert result["status"] == "PUBLISHED"
+
+
+def test_indeterminate_social_create_keeps_the_overall_result_indeterminate():
+    class IndeterminateSocial:
+        def publish(self, **kwargs):
+            return [{
+                "name": "linkedin",
+                "status": "INDETERMINATE",
+                "detail": "LinkedIn post create outcome is unknown",
+            }]
+
+    api, webflow = FakeApi(), FakeWebflow()
+    result = R.run(
+        job_id=JOB_ID,
+        revision=REVISION,
+        dispatch_id="dispatch-1",
+        api_base=API_BASE,
+        runner_secret=RUNNER_SECRET,
+        http=api,
+        webflow=webflow,
+        fetch_image=lambda url, timeout=None: FakeResponse(status_code=200, content=IMAGE_BYTES, url=url),
+        social=IndeterminateSocial(),
+    ).result
+
+    assert result["status"] == "INDETERMINATE"
+    linkedin = next(entry for entry in result["destinations"] if entry["name"] == "linkedin")
+    assert linkedin["status"] == "INDETERMINATE"

@@ -50,6 +50,7 @@ STATUS_PUBLISHED = "PUBLISHED"
 STATUS_SKIPPED = "SKIPPED"
 STATUS_BLOCKED = "BLOCKED"
 STATUS_RETRYABLE = "RETRYABLE_FAILURE"
+STATUS_INDETERMINATE = "INDETERMINATE"
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
 LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
@@ -59,6 +60,14 @@ LINKEDIN_RECEIPT_FAILURE = (
     "LinkedIn success requires a Posts API x-restli-id share or ugcPost URN"
 )
 _LINKEDIN_POST_ID_RE = re.compile(r"^urn:li:(?:share|ugcPost):\d+$", re.IGNORECASE)
+_LINKEDIN_LEGACY_RECEIPT_RE = re.compile(
+    r"^(?:"
+    r"https://www\.linkedin\.com/posts/themountingman_[^\s]*-activity-\d+(?:-[A-Za-z0-9_-]+)?"
+    r"|https://www\.linkedin\.com/feed/update/urn:li:activity:\d+/?"
+    r"|urn:li:activity:\d+"
+    r")$",
+    re.IGNORECASE,
+)
 X_VERIFY_URL = "https://api.twitter.com/1.1/account/verify_credentials.json"
 X_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 X_CREATE_TWEET_URL = "https://api.twitter.com/2/tweets"
@@ -84,6 +93,10 @@ class SocialRetryableError(RuntimeError):
     """Transient failure. Safe to retry; the destination was not confirmed."""
 
 
+class SocialIndeterminateError(RuntimeError):
+    """The create may have landed. Reconcile manually; never retry blindly."""
+
+
 class SocialSkip(RuntimeError):
     """Destination is not configured. Not a failure."""
 
@@ -106,13 +119,18 @@ def is_linkedin_post_id(detail: object) -> bool:
     return bool(_LINKEDIN_POST_ID_RE.fullmatch(str(detail or "").strip()))
 
 
+def is_linkedin_post_receipt(detail: object) -> bool:
+    value = str(detail or "").strip()
+    return is_linkedin_post_id(value) or bool(_LINKEDIN_LEGACY_RECEIPT_RE.fullmatch(value))
+
+
 def classify_linkedin_destination(status: object, detail: object) -> tuple[str, str]:
     """Fail closed unless a PUBLISHED LinkedIn result has a Posts API ID."""
     status_text = str(status or "")
     detail_text = str(detail or "")
     if status_text != STATUS_PUBLISHED:
         return status_text, detail_text
-    if is_linkedin_post_id(detail_text):
+    if is_linkedin_post_receipt(detail_text):
         return STATUS_PUBLISHED, detail_text
     return STATUS_RETRYABLE, LINKEDIN_RECEIPT_FAILURE
 
@@ -127,17 +145,22 @@ def require_linkedin_person_author(author: object) -> str:
     return value
 
 
-def already_posted(name: str, posted_destinations) -> bool:
+def already_posted_detail(name: str, posted_destinations) -> str | None:
     for entry in posted_destinations or []:
         if not isinstance(entry, dict):
             continue
         entry_name = str(entry.get("name") or "").strip().lower()
         if entry_name != name or str(entry.get("status") or "") != STATUS_PUBLISHED:
             continue
-        if name == "linkedin" and not is_linkedin_post_id(entry.get("detail")):
+        detail = str(entry.get("detail") or "").strip()
+        if name == "linkedin" and not is_linkedin_post_receipt(detail):
             continue
-        return True
-    return False
+        return detail
+    return None
+
+
+def already_posted(name: str, posted_destinations) -> bool:
+    return already_posted_detail(name, posted_destinations) is not None
 
 
 def refuse_forbidden_destination(name: str) -> None:
@@ -193,7 +216,7 @@ def _linkedin_created_post_id(response) -> str:
     headers = getattr(response, "headers", None) or {}
     header_id = str(headers.get("x-restli-id") or headers.get("X-RestLi-Id") or "")
     if not is_linkedin_post_id(header_id):
-        raise SocialRetryableError(
+        raise SocialIndeterminateError(
             "LinkedIn post create HTTP 201 requires x-restli-id with a share or ugcPost URN"
         )
     return header_id
@@ -277,8 +300,10 @@ class SocialPublisher:
         results = []
         for name in SOCIAL_DESTINATIONS:
             refuse_forbidden_destination(name)
-            if already_posted(name, posted_destinations):
-                results.append(_destination(name, STATUS_PUBLISHED, f"skipped: already posted for {slug}"))
+            posted_detail = already_posted_detail(name, posted_destinations)
+            if posted_detail is not None:
+                detail = posted_detail if name == "linkedin" else f"skipped: already posted for {slug}"
+                results.append(_destination(name, STATUS_PUBLISHED, detail))
                 continue
             try:
                 detail = self._publish_one(
@@ -293,6 +318,8 @@ class SocialPublisher:
                 results.append(_destination(name, STATUS_SKIPPED, str(exc)))
             except SocialBlockedError as exc:
                 results.append(_destination(name, STATUS_BLOCKED, str(exc)))
+            except SocialIndeterminateError as exc:
+                results.append(_destination(name, STATUS_INDETERMINATE, str(exc)))
             except SocialRetryableError as exc:
                 results.append(_destination(name, STATUS_RETRYABLE, str(exc)))
             except Exception as exc:  # noqa: BLE001 — classify unexpected as retryable
@@ -413,12 +440,17 @@ class SocialPublisher:
                 timeout=45,
             )
         except requests.exceptions.RequestException as exc:
-            raise SocialRetryableError(f"LinkedIn post create failed: {exc}") from exc
-        self._raise_http(created, "LinkedIn post create")
-        if getattr(created, "status_code", 0) != 201:
-            raise SocialRetryableError(
-                f"LinkedIn post create expected HTTP 201, got {getattr(created, 'status_code', 0)}"
-            )
+            raise SocialIndeterminateError(
+                "LinkedIn post create outcome is unknown after a transport failure"
+            ) from exc
+        create_status = getattr(created, "status_code", 0)
+        if create_status >= 500 or 200 <= create_status < 300:
+            if create_status != 201:
+                raise SocialIndeterminateError(
+                    f"LinkedIn post create outcome is unknown after HTTP {create_status}"
+                )
+        else:
+            self._raise_http(created, "LinkedIn post create")
         return _linkedin_created_post_id(created)
 
     def _x(self, *, post_data, live_url, image_url, image_bytes) -> str:

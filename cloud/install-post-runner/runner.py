@@ -222,7 +222,13 @@ def _result(status: str, *, message: str = "", destinations=None, **fields) -> d
             "detail": redact(dest_detail),
         })
     payload["destinations"] = dests
-    if any(entry.get("status") == STATUS_RETRYABLE for entry in dests if entry.get("name") != "website"):
+    social_statuses = {
+        entry.get("status") for entry in dests if entry.get("name") != "website"
+    }
+    if STATUS_INDETERMINATE in social_statuses and status == STATUS_PUBLISHED:
+        payload["status"] = STATUS_INDETERMINATE
+        payload.setdefault("message", redact("Website is live; a social create outcome needs reconciliation"))
+    elif STATUS_RETRYABLE in social_statuses:
         if status == STATUS_PUBLISHED:
             payload["status"] = STATUS_INDETERMINATE
             payload.setdefault("message", redact("Website is live; a social destination still needs a retry"))

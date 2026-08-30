@@ -23,10 +23,12 @@ from social import (  # noqa: E402
     MOUNTINGMANTV_SCREEN_NAME,
     SOCIAL_DESTINATIONS,
     SocialBlockedError,
+    SocialIndeterminateError,
     SocialPublisher,
     SocialRetryableError,
     already_posted,
     assert_mountingmantv,
+    is_linkedin_post_receipt,
     refuse_forbidden_destination,
     require_linkedin_person_author,
 )
@@ -70,11 +72,13 @@ class RecordingHttp:
         *,
         linkedin_receipt="urn:li:ugcPost:7499800000000000000",
         linkedin_post_status=201,
+        linkedin_post_exception=None,
     ):
         self.calls = []
         self.verify_user = verify_user or {"screen_name": MOUNTINGMANTV_SCREEN_NAME, "id_str": "1"}
         self.linkedin_receipt = linkedin_receipt
         self.linkedin_post_status = linkedin_post_status
+        self.linkedin_post_exception = linkedin_post_exception
 
     def _record(self, method, url, **kwargs):
         self.calls.append({"method": method, "url": url, **kwargs})
@@ -112,6 +116,8 @@ class RecordingHttp:
                 }
             })
         if url.endswith("/rest/posts"):
+            if self.linkedin_post_exception is not None:
+                raise self.linkedin_post_exception
             headers = {"x-restli-id": self.linkedin_receipt} if self.linkedin_receipt is not None else {}
             return FakeResponse(status_code=self.linkedin_post_status, headers=headers)
         raise AssertionError(f"unexpected POST {url}")
@@ -326,15 +332,36 @@ def test_linkedin_accepts_documented_201_post_id_receipts(receipt):
     ]) is True
 
 
-@pytest.mark.parametrize(
-    ("receipt", "status"),
-    [
-        (None, 201),
-        ("urn:li:image:not-a-post", 201),
-        (UGC_URN, 200),
-    ],
-)
-def test_linkedin_rejects_missing_malformed_or_non_201_receipts(receipt, status):
-    http = RecordingHttp(linkedin_receipt=receipt, linkedin_post_status=status)
-    with pytest.raises(SocialRetryableError, match="201|x-restli-id"):
+@pytest.mark.parametrize("receipt", [None, "urn:li:image:not-a-post"])
+def test_linkedin_missing_or_malformed_201_receipt_is_indeterminate(receipt):
+    http = RecordingHttp(linkedin_receipt=receipt, linkedin_post_status=201)
+    with pytest.raises(SocialIndeterminateError, match="x-restli-id"):
         _publish_linkedin(http)
+
+
+def test_linkedin_post_read_timeout_and_server_error_are_indeterminate():
+    timeout_http = RecordingHttp(
+        linkedin_post_exception=__import__("requests").exceptions.ReadTimeout("after send")
+    )
+    with pytest.raises(SocialIndeterminateError, match="outcome is unknown"):
+        _publish_linkedin(timeout_http)
+
+    with pytest.raises(SocialIndeterminateError, match="HTTP 503"):
+        _publish_linkedin(RecordingHttp(linkedin_post_status=503))
+
+
+def test_linkedin_legacy_activity_receipt_is_preserved_without_reposting():
+    legacy = "https://www.linkedin.com/posts/themountingman_install-activity-7499800000000000000-AbCd"
+    assert is_linkedin_post_receipt(legacy) is True
+    http = RecordingHttp()
+    results = SocialPublisher(env=_full_env(), http=http).publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+        posted_destinations=[{"name": "linkedin", "status": "PUBLISHED", "detail": legacy}],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin == {"name": "linkedin", "status": "PUBLISHED", "detail": legacy}
+    assert not any("linkedin.com/rest" in call["url"] for call in http.calls)
