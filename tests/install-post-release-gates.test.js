@@ -61,6 +61,8 @@ test('release CI covers Node, build, cloud runner, and M1 worker with immutable 
   assert.match(ci, /npm run build/);
   assert.match(ci, /pytest[^\n]*cloud\/install-post-runner\/tests|cloud\/install-post-runner\/tests/);
   assert.match(ci, /m1\/gbp-worker\/tests/);
+  assert.match(ci, /--require-hashes --no-deps -r ci\/python-test-requirements\.txt/);
+  assert.doesNotMatch(ci, /pip install pytest==/);
   const actions = [...ci.matchAll(/uses:\s*([^\s#]+)/g)].map((match) => match[1]);
   assert.ok(actions.length >= 3);
   for (const action of actions) {
