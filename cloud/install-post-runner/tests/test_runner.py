@@ -462,7 +462,7 @@ def test_wrong_x_account_blocks_x_without_creating_a_second_webflow_item():
     assert "reddit" not in str(result).lower()
 
 
-def test_linkedin_share_urn_cannot_be_reported_as_published():
+def test_linkedin_share_urn_is_a_documented_published_post_receipt():
     class ShareSocial:
         def publish(self, **kwargs):
             return [{
@@ -485,7 +485,9 @@ def test_linkedin_share_urn_cannot_be_reported_as_published():
     ).result
 
     linkedin = next(entry for entry in result["destinations"] if entry["name"] == "linkedin")
-    assert linkedin["status"] == "RETRYABLE_FAILURE"
-    assert "share" in linkedin["detail"].lower()
-    assert "urn:li:ugcPost:" not in linkedin["detail"]
-    assert result["status"] == "INDETERMINATE"
+    assert linkedin == {
+        "name": "linkedin",
+        "status": "PUBLISHED",
+        "detail": "urn:li:share:7499851525402308608",
+    }
+    assert result["status"] == "PUBLISHED"

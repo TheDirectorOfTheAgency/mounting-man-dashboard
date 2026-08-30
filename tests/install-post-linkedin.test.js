@@ -3,8 +3,8 @@ import test from 'node:test';
 
 import {
   LINKEDIN_RECEIPT_FAILURE,
-  LINKEDIN_SHARE_FAILURE,
   isLinkedInImageUgcSuccess,
+  isLinkedInPostReceipt,
   isLinkedInShareReceipt,
   sanitizeLinkedInDestination,
 } from '../lib/install-post-linkedin.mjs';
@@ -18,15 +18,18 @@ const ACTIVITY_POSTS = (
   + 'tvmounting-brooklynpark-activity-7499800000000000000-AbCd'
 );
 
-test('a share URN or share permalink is never a LinkedIn success', () => {
+test('a raw share URN is a documented Posts API receipt but a share permalink is not', () => {
   assert.equal(isLinkedInShareReceipt(SHARE_ID), true);
   assert.equal(isLinkedInShareReceipt(SHARE_PERMALINK), true);
-  assert.equal(isLinkedInImageUgcSuccess(SHARE_ID), false);
+  assert.equal(isLinkedInPostReceipt(SHARE_ID), true);
+  assert.equal(isLinkedInImageUgcSuccess(SHARE_ID), true);
+  assert.equal(isLinkedInPostReceipt(SHARE_PERMALINK), false);
   assert.equal(isLinkedInImageUgcSuccess(SHARE_PERMALINK), false);
-  assert.equal(isLinkedInImageUgcSuccess(`posted ${SHARE_ID}`), false);
+  assert.equal(isLinkedInPostReceipt(`posted ${SHARE_ID}`), false);
 });
 
-test('an image ugcPost id or Posts-tab activity URL is success', () => {
+test('a ugcPost id or legacy Posts-tab activity URL is success', () => {
+  assert.equal(isLinkedInPostReceipt(UGC_ID), true);
   assert.equal(isLinkedInImageUgcSuccess(UGC_ID), true);
   assert.equal(isLinkedInImageUgcSuccess(ACTIVITY_POSTS), true);
   assert.equal(
@@ -36,14 +39,14 @@ test('an image ugcPost id or Posts-tab activity URL is success', () => {
   assert.equal(isLinkedInShareReceipt(UGC_ID), false);
 });
 
-test('sanitizeLinkedInDestination downgrades a share-only PUBLISHED receipt', () => {
+test('sanitizeLinkedInDestination preserves documented raw post IDs and rejects malformed receipts', () => {
   const share = sanitizeLinkedInDestination({
     name: 'linkedin',
     status: 'PUBLISHED',
     detail: SHARE_ID,
   });
-  assert.equal(share.status, 'RETRYABLE_FAILURE');
-  assert.equal(share.detail, LINKEDIN_SHARE_FAILURE);
+  assert.equal(share.status, 'PUBLISHED');
+  assert.equal(share.detail, SHARE_ID);
 
   const empty = sanitizeLinkedInDestination({
     name: 'linkedin',
@@ -62,7 +65,7 @@ test('sanitizeLinkedInDestination downgrades a share-only PUBLISHED receipt', ()
   assert.equal(ok.detail, UGC_ID);
 });
 
-test('sanitizePublishResult cannot report LinkedIn posted from a share URN', () => {
+test('sanitizePublishResult retains a documented LinkedIn share Post ID', () => {
   const sanitized = sanitizePublishResult({
     status: 'PUBLISHED',
     liveUrl: 'https://www.themountingman.com/installations/fireplace-tv-mounting-maple-grove-75-inch-tilting-mount-jewel-way',
@@ -73,11 +76,11 @@ test('sanitizePublishResult cannot report LinkedIn posted from a share URN', () 
     ],
   });
   const linkedin = sanitized.destinations.find((entry) => entry.name === 'linkedin');
-  assert.equal(linkedin.status, 'RETRYABLE_FAILURE');
-  assert.equal(isLinkedInImageUgcSuccess(linkedin.detail), false);
+  assert.equal(linkedin.status, 'PUBLISHED');
+  assert.equal(isLinkedInPostReceipt(linkedin.detail), true);
   assert.equal(
     collectPostedDestinations(sanitized.destinations).some((entry) => entry.name === 'linkedin'),
-    false,
+    true,
   );
 });
 

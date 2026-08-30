@@ -7,10 +7,10 @@ Facebook, LinkedIn, and X/Twitter. Never Reddit. Never Google Business
 Profile. X fails closed unless the authenticated screen_name is
 MountingManTV.
 
-LinkedIn success is a PUBLIC PUBLISHED IMAGE ugcPost on the personal
-profile (urn:li:person: / w_member_social). A member share of the
-article URL (urn:li:share / feed/update/urn:li:share) is failure, even
-if a crawler can render "Marshall Wayne's Post". Never POST to /v2/shares.
+LinkedIn uses the versioned Images and Posts APIs with a personal author
+(urn:li:person: / w_member_social). The Posts API may return either a
+urn:li:share or urn:li:ugcPost ID; both are documented success receipts.
+The write-only token must never be used for image or post GET readback.
 
 Credential names match GitHub Actions secrets / Vercel env (names only):
   FACEBOOK_PAGE_ID
@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import os
 import re
 import time
@@ -37,6 +38,7 @@ from typing import Callable
 from uuid import uuid4
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 from content import display_price_subtotal
 
@@ -50,32 +52,13 @@ STATUS_BLOCKED = "BLOCKED"
 STATUS_RETRYABLE = "RETRYABLE_FAILURE"
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
-LINKEDIN_ASSETS_URL = "https://api.linkedin.com/v2/assets?action=registerUpload"
-LINKEDIN_ASSETS_GET_URL = "https://api.linkedin.com/v2/assets"
-LINKEDIN_UGC_URL = "https://api.linkedin.com/v2/ugcPosts"
-LINKEDIN_SHARES_URL = "https://api.linkedin.com/v2/shares"
-LINKEDIN_PROFILE_VANITY = "themountingman"
-LINKEDIN_SHARE_FAILURE = (
-    "LinkedIn share URN is not a Posts-tab photo post; "
-    "need a PUBLIC PUBLISHED IMAGE ugcPost / activity posts URL"
-)
+LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
+LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
+LINKEDIN_VERSION_DEFAULT = "202608"
 LINKEDIN_RECEIPT_FAILURE = (
-    "LinkedIn success requires an image ugcPost id or activity posts URL"
+    "LinkedIn success requires a Posts API x-restli-id share or ugcPost URN"
 )
-_LINKEDIN_SHARE_RE = re.compile(
-    r"urn:li:share:|urn%3ali%3ashare%3a|/feed/update/urn:li:share:",
-    re.IGNORECASE,
-)
-_LINKEDIN_UGC_RE = re.compile(r"urn:li:ugcpost:|urn%3ali%3augcpost%3a", re.IGNORECASE)
-_LINKEDIN_ACTIVITY_POSTS_RE = re.compile(
-    r"linkedin\.com/posts/themountingman_[^\s]*-activity-\d+",
-    re.IGNORECASE,
-)
-_LINKEDIN_ACTIVITY_FEED_RE = re.compile(
-    r"linkedin\.com/feed/update/urn:li:activity:",
-    re.IGNORECASE,
-)
-_LINKEDIN_ACTIVITY_URN_RE = re.compile(r"urn:li:activity:\d+", re.IGNORECASE)
+_LINKEDIN_POST_ID_RE = re.compile(r"^urn:li:(?:share|ugcPost):\d+$", re.IGNORECASE)
 X_VERIFY_URL = "https://api.twitter.com/1.1/account/verify_credentials.json"
 X_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 X_CREATE_TWEET_URL = "https://api.twitter.com/2/tweets"
@@ -118,49 +101,19 @@ def require_env(names: tuple[str, ...], env: dict | None = None) -> dict[str, st
     return values
 
 
-def is_linkedin_share_receipt(detail: object) -> bool:
-    return bool(_LINKEDIN_SHARE_RE.search(str(detail or "")))
-
-
-def is_linkedin_image_ugc_success(detail: object) -> bool:
-    """Success requires an image ugcPost id or a Posts-tab activity URL.
-
-    A share URN / feed/update/urn:li:share permalink is always failure.
-    Crawler-visible "Marshall Wayne's Post" text from a share is not a Posts-tab post.
-    """
-    text = str(detail or "")
-    if not text or is_linkedin_share_receipt(text):
-        return False
-    if _LINKEDIN_UGC_RE.search(text):
-        return True
-    if _LINKEDIN_ACTIVITY_POSTS_RE.search(text):
-        return True
-    if _LINKEDIN_ACTIVITY_FEED_RE.search(text):
-        return True
-    if _LINKEDIN_ACTIVITY_URN_RE.search(text):
-        return True
-    return False
-
-
-def assert_linkedin_image_ugc_success(detail: object) -> str:
-    """Dry-run / callback assertion: share-only receipts cannot be reported as posted."""
-    text = str(detail or "")
-    if is_linkedin_image_ugc_success(text):
-        return text
-    raise SocialRetryableError(
-        LINKEDIN_SHARE_FAILURE if is_linkedin_share_receipt(text) else LINKEDIN_RECEIPT_FAILURE
-    )
+def is_linkedin_post_id(detail: object) -> bool:
+    """Return whether detail is a documented Posts API creation receipt."""
+    return bool(_LINKEDIN_POST_ID_RE.fullmatch(str(detail or "").strip()))
 
 
 def classify_linkedin_destination(status: object, detail: object) -> tuple[str, str]:
+    """Fail closed unless a PUBLISHED LinkedIn result has a Posts API ID."""
     status_text = str(status or "")
     detail_text = str(detail or "")
     if status_text != STATUS_PUBLISHED:
         return status_text, detail_text
-    if is_linkedin_image_ugc_success(detail_text):
+    if is_linkedin_post_id(detail_text):
         return STATUS_PUBLISHED, detail_text
-    if is_linkedin_share_receipt(detail_text):
-        return STATUS_RETRYABLE, LINKEDIN_SHARE_FAILURE
     return STATUS_RETRYABLE, LINKEDIN_RECEIPT_FAILURE
 
 
@@ -181,7 +134,7 @@ def already_posted(name: str, posted_destinations) -> bool:
         entry_name = str(entry.get("name") or "").strip().lower()
         if entry_name != name or str(entry.get("status") or "") != STATUS_PUBLISHED:
             continue
-        if name == "linkedin" and not is_linkedin_image_ugc_success(entry.get("detail")):
+        if name == "linkedin" and not is_linkedin_post_id(entry.get("detail")):
             continue
         return True
     return False
@@ -218,34 +171,32 @@ def _destination(name: str, status: str, detail: str = "") -> dict:
     return {"name": name, "status": status, "detail": str(detail or "")[:300]}
 
 
-def _linkedin_image_content_type(image_bytes: bytes) -> str:
-    if image_bytes[:3] == b"\xff\xd8\xff":
-        return "image/jpeg"
-    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
-        return "image/png"
-    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
-        return "image/webp"
-    return "application/octet-stream"
+def linkedin_jpeg_bytes(image_bytes: bytes) -> bytes:
+    """Decode the bound image and return a real RGB JPEG rendition."""
+    if not image_bytes:
+        raise SocialRetryableError("LinkedIn JPEG rendition needs the bound photo bytes")
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.load()
+            rgb_image = image.convert("RGB")
+            output = io.BytesIO()
+            rgb_image.save(output, format="JPEG", quality=90)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise SocialRetryableError(f"LinkedIn JPEG rendition failed: {exc}") from exc
+    jpeg_bytes = output.getvalue()
+    if not jpeg_bytes.startswith(b"\xff\xd8\xff"):
+        raise SocialRetryableError("LinkedIn JPEG rendition did not produce JPEG bytes")
+    return jpeg_bytes
 
 
-def _linkedin_created_id(response) -> str:
+def _linkedin_created_post_id(response) -> str:
     headers = getattr(response, "headers", None) or {}
     header_id = str(headers.get("x-restli-id") or headers.get("X-RestLi-Id") or "")
-    body_id = ""
-    try:
-        body_id = str((response.json() or {}).get("id") or "")
-    except Exception:  # noqa: BLE001
-        body_id = ""
-    return header_id or body_id
-
-
-def _linkedin_asset_recipe_status(payload: dict) -> str:
-    for recipe in payload.get("recipes") or []:
-        status = str((recipe or {}).get("status") or "").upper()
-        if status:
-            return status
-    status = str(payload.get("status") or "").upper()
-    return status
+    if not is_linkedin_post_id(header_id):
+        raise SocialRetryableError(
+            "LinkedIn post create HTTP 201 requires x-restli-id with a share or ugcPost URN"
+        )
+    return header_id
 
 
 # ---------------------------------------------------------------------------
@@ -337,12 +288,7 @@ class SocialPublisher:
                     image_url=image_url,
                     image_bytes=image_bytes,
                 )
-                status = STATUS_PUBLISHED
-                if name == "linkedin":
-                    status, detail = classify_linkedin_destination(status, detail)
-                    if status != STATUS_PUBLISHED:
-                        raise SocialRetryableError(detail)
-                results.append(_destination(name, status, detail))
+                results.append(_destination(name, STATUS_PUBLISHED, detail))
             except SocialSkip as exc:
                 results.append(_destination(name, STATUS_SKIPPED, str(exc)))
             except SocialBlockedError as exc:
@@ -411,81 +357,69 @@ class SocialPublisher:
         creds = require_env(LINKEDIN_ENV, self.env)
         token = creds["LINKEDIN_ACCESS_TOKEN"]
         author = require_linkedin_person_author(creds["LINKEDIN_AUTHOR_URN"])
+        linkedin_version = _env("LINKEDIN_VERSION", self.env) or LINKEDIN_VERSION_DEFAULT
         caption = build_social_caption(post_data, live_url, limit=3000)
+        jpeg_bytes = linkedin_jpeg_bytes(image_bytes)
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Linkedin-Version": linkedin_version,
             "X-Restli-Protocol-Version": "2.0.0",
         }
         try:
-            register = self.http.post(
-                LINKEDIN_ASSETS_URL,
+            initialized = self.http.post(
+                LINKEDIN_IMAGES_URL,
                 headers=headers,
                 json={
-                    "registerUploadRequest": {
-                        "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
-                        "owner": author,
-                        "serviceRelationships": [{
-                            "relationshipType": "OWNER",
-                            "identifier": "urn:li:userGeneratedContent",
-                        }],
-                    }
+                    "initializeUploadRequest": {"owner": author}
                 },
                 timeout=45,
             )
         except requests.exceptions.RequestException as exc:
-            raise SocialRetryableError(f"LinkedIn upload register failed: {exc}") from exc
-        self._raise_http(register, "LinkedIn upload register")
-        value = (register.json() or {}).get("value") or {}
-        asset = str(value.get("asset") or "")
-        upload_url = (
-            ((value.get("uploadMechanism") or {})
-             .get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest") or {})
-            .get("uploadUrl")
-        )
-        if not asset or not upload_url:
-            raise SocialRetryableError("LinkedIn upload register returned no asset")
-        content_type = _linkedin_image_content_type(image_bytes)
+            raise SocialRetryableError(f"LinkedIn image initialize failed: {exc}") from exc
+        self._raise_http(initialized, "LinkedIn image initialize")
+        value = (initialized.json() or {}).get("value") or {}
+        image_urn = str(value.get("image") or "")
+        upload_url = str(value.get("uploadUrl") or "")
+        if not image_urn.startswith("urn:li:image:") or not upload_url:
+            raise SocialRetryableError("LinkedIn image initialize returned no image or upload URL")
         try:
             uploaded = self.http.put(
                 upload_url,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
-                data=image_bytes,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "image/jpeg",
+                    "Content-Disposition": 'attachment; filename="install.jpg"',
+                },
+                data=jpeg_bytes,
                 timeout=60,
             )
         except requests.exceptions.RequestException as exc:
             raise SocialRetryableError(f"LinkedIn image upload failed: {exc}") from exc
         self._raise_http(uploaded, "LinkedIn image upload")
-        self._linkedin_wait_for_asset(headers, asset)
         try:
             created = self.http.post(
-                LINKEDIN_UGC_URL,
+                LINKEDIN_POSTS_URL,
                 headers=headers,
                 json={
                     "author": author,
+                    "commentary": caption,
+                    "visibility": "PUBLIC",
+                    "distribution": {"feedDistribution": "MAIN_FEED"},
+                    "content": {"media": {"id": image_urn}},
                     "lifecycleState": "PUBLISHED",
-                    "specificContent": {
-                        "com.linkedin.ugc.ShareContent": {
-                            "shareCommentary": {"text": caption},
-                            "shareMediaCategory": "IMAGE",
-                            "media": [{
-                                "status": "READY",
-                                "description": {"text": caption[:200]},
-                                "media": asset,
-                                "title": {"text": str(post_data.get("title") or "TV installation")},
-                            }],
-                        }
-                    },
-                    "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+                    "isReshareDisabledByAuthor": False,
                 },
                 timeout=45,
             )
         except requests.exceptions.RequestException as exc:
             raise SocialRetryableError(f"LinkedIn post create failed: {exc}") from exc
         self._raise_http(created, "LinkedIn post create")
-        created_id = _linkedin_created_id(created)
-        # A share URN or the raw asset id is not a Posts-tab photo post.
-        return self._linkedin_confirm_image_ugc(headers, created_id)
+        if getattr(created, "status_code", 0) != 201:
+            raise SocialRetryableError(
+                f"LinkedIn post create expected HTTP 201, got {getattr(created, 'status_code', 0)}"
+            )
+        return _linkedin_created_post_id(created)
 
     def _x(self, *, post_data, live_url, image_url, image_bytes) -> str:
         del image_url
@@ -609,67 +543,6 @@ class SocialPublisher:
             raise SocialRetryableError(f"{action} failed: {exc}") from exc
         self._raise_http(response, action)
         return response.json() or {}
-
-    def _linkedin_wait_for_asset(self, headers: dict, asset: str, *, timeout: float = 30) -> None:
-        """Do not create the ugcPost until the image recipe is AVAILABLE.
-
-        Posting while the asset is still PROCESSING is how LinkedIn silently
-        emits a member share of the article URL instead of an IMAGE ugcPost.
-        """
-        asset_id = str(asset or "").rsplit(":", 1)[-1].strip()
-        if not asset_id:
-            raise SocialRetryableError("LinkedIn upload register returned no asset id")
-        url = f"{LINKEDIN_ASSETS_GET_URL}/{asset_id}"
-        deadline = time.time() + timeout
-        delay = 0.4
-        last_status = ""
-        while time.time() <= deadline:
-            try:
-                response = self.http.get(url, headers=headers, timeout=30)
-            except requests.exceptions.RequestException as exc:
-                raise SocialRetryableError(f"LinkedIn asset status failed: {exc}") from exc
-            self._raise_http(response, "LinkedIn asset status")
-            payload = response.json() or {}
-            last_status = _linkedin_asset_recipe_status(payload)
-            if last_status == "AVAILABLE":
-                return
-            if last_status in ("CLIENT_ERROR", "SERVER_ERROR"):
-                raise SocialRetryableError(
-                    f"LinkedIn image asset {last_status}; refusing to fall back to an article share"
-                )
-            self._sleep(delay)
-            delay = min(delay * 2, 4)
-        raise SocialRetryableError(
-            f"LinkedIn image asset did not become AVAILABLE (last={last_status or 'unknown'})"
-        )
-
-    def _linkedin_confirm_image_ugc(self, headers: dict, created_id: str) -> str:
-        assert_linkedin_image_ugc_success(created_id)
-        encoded = urllib.parse.quote(created_id, safe="")
-        try:
-            response = self.http.get(f"{LINKEDIN_UGC_URL}/{encoded}", headers=headers, timeout=30)
-        except requests.exceptions.RequestException as exc:
-            raise SocialRetryableError(f"LinkedIn ugcPost lookup failed: {exc}") from exc
-        status = getattr(response, "status_code", 0)
-        if status == 404:
-            return created_id
-        self._raise_http(response, "LinkedIn ugcPost lookup")
-        payload = response.json() or {}
-        category = (
-            ((payload.get("specificContent") or {}).get("com.linkedin.ugc.ShareContent") or {})
-            .get("shareMediaCategory")
-        )
-        lifecycle = str(payload.get("lifecycleState") or "")
-        if str(category or "").upper() != "IMAGE" or lifecycle != "PUBLISHED":
-            raise SocialRetryableError(
-                "LinkedIn create did not yield a PUBLIC PUBLISHED IMAGE ugcPost "
-                f"(category={category or 'missing'}, state={lifecycle or 'missing'})"
-            )
-        final_id = str(payload.get("id") or created_id)
-        return f"{final_id} https://www.linkedin.com/feed/update/{final_id}"
-
-    def _sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
 
     def _raise_http(self, response, action: str) -> None:
         status = getattr(response, "status_code", 0)
