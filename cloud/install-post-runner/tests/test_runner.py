@@ -460,3 +460,32 @@ def test_wrong_x_account_blocks_x_without_creating_a_second_webflow_item():
     assert x_dest["status"] == "BLOCKED"
     assert "MountingManTV" in x_dest["detail"]
     assert "reddit" not in str(result).lower()
+
+
+def test_linkedin_share_urn_cannot_be_reported_as_published():
+    class ShareSocial:
+        def publish(self, **kwargs):
+            return [{
+                "name": "linkedin",
+                "status": "PUBLISHED",
+                "detail": "urn:li:share:7499851525402308608",
+            }]
+
+    api, webflow = FakeApi(), FakeWebflow()
+    result = R.run(
+        job_id=JOB_ID,
+        revision=REVISION,
+        dispatch_id="dispatch-1",
+        api_base=API_BASE,
+        runner_secret=RUNNER_SECRET,
+        http=api,
+        webflow=webflow,
+        fetch_image=lambda url, timeout=None: FakeResponse(status_code=200, content=IMAGE_BYTES, url=url),
+        social=ShareSocial(),
+    ).result
+
+    linkedin = next(entry for entry in result["destinations"] if entry["name"] == "linkedin")
+    assert linkedin["status"] == "RETRYABLE_FAILURE"
+    assert "share" in linkedin["detail"].lower()
+    assert "urn:li:ugcPost:" not in linkedin["detail"]
+    assert result["status"] == "INDETERMINATE"

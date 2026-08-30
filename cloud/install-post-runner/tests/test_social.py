@@ -17,13 +17,21 @@ sys.path.insert(0, str(RUNNER_DIR / "publisher"))
 
 from social import (  # noqa: E402
     FORBIDDEN_DESTINATIONS,
+    LINKEDIN_RECEIPT_FAILURE,
+    LINKEDIN_SHARE_FAILURE,
     MOUNTINGMANTV_SCREEN_NAME,
     SOCIAL_DESTINATIONS,
     SocialBlockedError,
     SocialPublisher,
+    SocialRetryableError,
     already_posted,
+    assert_linkedin_image_ugc_success,
     assert_mountingmantv,
+    classify_linkedin_destination,
+    is_linkedin_image_ugc_success,
+    is_linkedin_share_receipt,
     refuse_forbidden_destination,
+    require_linkedin_person_author,
 )
 
 POST_DATA = {
@@ -72,6 +80,22 @@ class RecordingHttp:
             return FakeResponse(json_data={
                 "images": [{"source": "https://scontent.xx.fbcdn.net/install.jpg"}],
             })
+        if "/assets/" in url:
+            return FakeResponse(json_data={
+                "recipes": [{
+                    "recipe": "urn:li:digitalmediaRecipe:feedshare-image",
+                    "status": "AVAILABLE",
+                }],
+            })
+        if "ugcPosts" in url:
+            return FakeResponse(json_data={
+                "id": "urn:li:ugcPost:1",
+                "lifecycleState": "PUBLISHED",
+                "specificContent": {
+                    "com.linkedin.ugc.ShareContent": {"shareMediaCategory": "IMAGE"},
+                },
+                "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+            })
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, **kwargs):
@@ -101,7 +125,7 @@ class RecordingHttp:
                 }
             })
         if "ugcPosts" in url:
-            return FakeResponse(headers={"x-restli-id": "urn:li:share:1"})
+            return FakeResponse(headers={"x-restli-id": "urn:li:ugcPost:1"})
         raise AssertionError(f"unexpected POST {url}")
 
     def put(self, url, **kwargs):
@@ -116,7 +140,7 @@ def _full_env():
         "FACEBOOK_PAGE_ACCESS_TOKEN": "page-token",
         "INSTAGRAM_BUSINESS_ACCOUNT_ID": "ig-1",
         "LINKEDIN_ACCESS_TOKEN": "li-token",
-        "LINKEDIN_AUTHOR_URN": "urn:li:organization:1",
+        "LINKEDIN_AUTHOR_URN": "urn:li:person:person-1",
     }
 
 
@@ -234,3 +258,116 @@ def test_missing_social_credentials_are_skipped_not_invented():
     )
     assert {entry["status"] for entry in results} == {"SKIPPED"}
     assert http.calls == []
+
+
+SHARE_URN = "urn:li:share:7499851525402308608"
+SHARE_PERMALINK = "https://www.linkedin.com/feed/update/urn:li:share:7499924411085611008"
+UGC_URN = "urn:li:ugcPost:7499800000000000000"
+ACTIVITY_POSTS = (
+    "https://www.linkedin.com/posts/themountingman_"
+    "tvmounting-brooklynpark-activity-7499800000000000000-AbCd"
+)
+
+
+def test_linkedin_share_urn_is_never_success():
+    assert is_linkedin_share_receipt(SHARE_URN) is True
+    assert is_linkedin_share_receipt(SHARE_PERMALINK) is True
+    assert is_linkedin_image_ugc_success(SHARE_URN) is False
+    assert is_linkedin_image_ugc_success(SHARE_PERMALINK) is False
+    with pytest.raises(SocialRetryableError, match="share URN"):
+        assert_linkedin_image_ugc_success(SHARE_URN)
+    status, detail = classify_linkedin_destination("PUBLISHED", SHARE_URN)
+    assert status == "RETRYABLE_FAILURE"
+    assert detail == LINKEDIN_SHARE_FAILURE
+
+
+def test_linkedin_image_ugc_or_activity_posts_url_is_success():
+    assert is_linkedin_image_ugc_success(UGC_URN) is True
+    assert is_linkedin_image_ugc_success(ACTIVITY_POSTS) is True
+    assert assert_linkedin_image_ugc_success(UGC_URN) == UGC_URN
+    assert classify_linkedin_destination("PUBLISHED", UGC_URN) == ("PUBLISHED", UGC_URN)
+    with pytest.raises(SocialRetryableError, match="ugcPost"):
+        assert_linkedin_image_ugc_success("urn:li:digitalmediaAsset:asset-1")
+    assert classify_linkedin_destination("PUBLISHED", "asset-1")[1] == LINKEDIN_RECEIPT_FAILURE
+
+
+def test_linkedin_company_page_author_is_blocked():
+    with pytest.raises(SocialBlockedError, match="person"):
+        require_linkedin_person_author("urn:li:organization:1")
+    http = RecordingHttp()
+    env = _full_env()
+    env["LINKEDIN_AUTHOR_URN"] = "urn:li:organization:1"
+    publisher = SocialPublisher(env=env, http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin["status"] == "BLOCKED"
+    assert "person" in linkedin["detail"]
+    assert not any("ugcPosts" in call["url"] and call["method"] == "POST" for call in http.calls)
+
+
+def test_linkedin_publishes_a_public_image_ugc_post_not_an_article_share():
+    http = RecordingHttp()
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin["status"] == "PUBLISHED"
+    assert is_linkedin_image_ugc_success(linkedin["detail"])
+    assert not is_linkedin_share_receipt(linkedin["detail"])
+    assert not any("/v2/shares" in call["url"] for call in http.calls)
+    create = next(
+        call for call in http.calls
+        if call["method"] == "POST" and "ugcPosts" in call["url"]
+    )
+    body = create["json"]
+    assert body["lifecycleState"] == "PUBLISHED"
+    assert body["visibility"]["com.linkedin.ugc.MemberNetworkVisibility"] == "PUBLIC"
+    content = body["specificContent"]["com.linkedin.ugc.ShareContent"]
+    assert content["shareMediaCategory"] == "IMAGE"
+    assert content["media"][0]["media"] == "urn:li:digitalmediaAsset:asset-1"
+    assert body["author"].startswith("urn:li:person:")
+    assert any("/assets/" in call["url"] and call["method"] == "GET" for call in http.calls)
+
+
+class ShareIdHttp(RecordingHttp):
+    def post(self, url, **kwargs):
+        if "ugcPosts" in url:
+            self._record("POST", url, **kwargs)
+            return FakeResponse(headers={"x-restli-id": SHARE_URN})
+        return super().post(url, **kwargs)
+
+
+def test_linkedin_share_response_is_retryable_failure_not_published():
+    http = ShareIdHttp()
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin["status"] == "RETRYABLE_FAILURE"
+    assert "share" in linkedin["detail"].lower()
+    assert not is_linkedin_image_ugc_success(linkedin["detail"])
+
+
+def test_linkedin_share_receipt_is_not_already_posted():
+    assert already_posted("linkedin", [
+        {"name": "linkedin", "status": "PUBLISHED", "detail": SHARE_URN},
+    ]) is False
+    assert already_posted("linkedin", [
+        {"name": "linkedin", "status": "PUBLISHED", "detail": UGC_URN},
+    ]) is True

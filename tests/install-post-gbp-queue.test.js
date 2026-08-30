@@ -10,6 +10,7 @@ import {
   createGbpQueue,
   enqueueGbpAfterPublish,
   gbpPayloadFromRecord,
+  gbpSurfacesComplete,
   sanitizeGbpItem,
   shouldEnqueueGbp,
 } from '../lib/install-post-gbp-queue.mjs';
@@ -217,6 +218,10 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
   assert.equal(pending[0].cta_url, pending[0].live_url);
   assert.equal(pending[0].image_url, IMAGE.hostedUrl);
   assert.equal(pending[0].image_path, null);
+  assert.deepEqual(pending[0].required_surfaces, ['update', 'photos']);
+  assert.equal(pending[0].skip_photos_when_update_pending, false);
+  assert.equal(pending[0].surfaces.update.status, 'pending');
+  assert.equal(pending[0].surfaces.photos.status, 'pending');
   assert.match(pending[0].caption, /65 inch Samsung/);
   assert.doesNotMatch(pending[0].caption, /4821/);
   assert.doesNotMatch(JSON.stringify(pending[0]), /reddit/i);
@@ -290,9 +295,65 @@ test('the M1 worker can pull caption, live_url, image URL, and slug', async () =
   assert.ok(res.body.latest.image_url.startsWith('https://'));
   assert.equal(res.body.latest.image_path, null);
   assert.ok(res.body.latest.caption);
+  assert.deepEqual(res.body.latest.required_surfaces, ['update', 'photos']);
+  assert.equal(res.body.latest.skip_photos_when_update_pending, false);
 });
 
-test('the M1 worker can mark a slug posted so enqueue skips it', async () => {
+test('legacy complete without a surface records Update only and keeps Photos pending', async () => {
+  const { gbp, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({
+    queue: gbpQueue,
+    record: { ...record, result: publishedResult() },
+  });
+
+  const claimed = createResponse();
+  await gbp(gbpRequest('POST', { body: { action: 'claim', slug: '65-inch-samsung-edina' } }), claimed);
+  assert.equal(claimed.statusCode, 200);
+  assert.equal(claimed.body.item.status, 'claimed');
+
+  const updateOnly = createResponse();
+  await gbp(gbpRequest('POST', { body: { action: 'complete', slug: '65-inch-samsung-edina' } }), updateOnly);
+  assert.equal(updateOnly.statusCode, 200);
+  assert.equal(updateOnly.body.item.status, 'pending');
+  assert.equal(updateOnly.body.item.surfaces.update.status, 'posted');
+  assert.equal(updateOnly.body.item.surfaces.photos.status, 'pending');
+  assert.equal((await gbpQueue.listPending()).length, 1);
+  assert.equal(gbpSurfacesComplete(updateOnly.body.item.surfaces), false);
+
+  const again = await enqueueGbpAfterPublish({
+    queue: gbpQueue,
+    record: { ...record, result: publishedResult() },
+  });
+  assert.equal(again.queued, false);
+  assert.equal(again.reason, 'already_queued');
+});
+
+test('pending-review Update never skips the independent Photos upload', async () => {
+  const { gbp, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({
+    queue: gbpQueue,
+    record: { ...record, result: publishedResult() },
+  });
+
+  const review = createResponse();
+  await gbp(gbpRequest('POST', {
+    body: {
+      action: 'complete',
+      slug: '65-inch-samsung-edina',
+      surface: 'update',
+      status: 'pending_review',
+      id: 'update-pending-1',
+    },
+  }), review);
+  assert.equal(review.statusCode, 200);
+  assert.equal(review.body.item.status, 'pending');
+  assert.equal(review.body.item.surfaces.update.status, 'pending_review');
+  assert.equal(review.body.item.surfaces.photos.status, 'pending');
+  assert.equal(review.body.item.skip_photos_when_update_pending, false);
+  assert.equal((await gbpQueue.listPending()).length, 1);
+});
+
+test('the M1 worker can mark a slug posted only after Update AND Photos', async () => {
   const { gbp, gbpQueue, record } = await publishedSetup();
   await enqueueGbpAfterPublish({
     queue: gbpQueue,
@@ -305,9 +366,20 @@ test('the M1 worker can mark a slug posted so enqueue skips it', async () => {
   assert.equal(claimed.body.item.status, 'claimed');
 
   const done = createResponse();
-  await gbp(gbpRequest('POST', { body: { action: 'complete', slug: '65-inch-samsung-edina' } }), done);
+  await gbp(gbpRequest('POST', {
+    body: {
+      action: 'complete',
+      slug: '65-inch-samsung-edina',
+      surfaces: {
+        update: { status: 'posted', id: 'local-post-1' },
+        photos: { status: 'posted', id: 'photo-1' },
+      },
+    },
+  }), done);
   assert.equal(done.statusCode, 200);
   assert.equal(done.body.item.status, 'posted');
+  assert.equal(done.body.item.surfaces.update.status, 'posted');
+  assert.equal(done.body.item.surfaces.photos.status, 'posted');
   assert.equal((await gbpQueue.listPending()).length, 0);
 
   const again = await enqueueGbpAfterPublish({

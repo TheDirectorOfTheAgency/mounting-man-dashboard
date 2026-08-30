@@ -6,7 +6,10 @@
 //   → { pending, latest, count } — caption, live_url, cta_url, image_url, slug
 // POST /api/install-post/gbp
 //   { action: "claim", slug }     → mark in-progress
-//   { action: "complete", slug }  → mark posted so enqueue skips
+//   { action: "complete", slug, surface?, surfaces?, status?, id? }
+//     Update and Photos are independent. Pending-review Update still
+//     requires Photos. A body with no surface records Update only.
+//     Item stays pending until both required surfaces are done.
 //
 // Auth: Authorization: Bearer INSTALL_POST_GBP_WORKER_SECRET
 //       (x-install-post-gbp-secret accepted; no query-string secret)
@@ -70,7 +73,12 @@ export function createGbpHandler({ queue, workerSecret } = {}) {
     }
 
     if (action === 'complete') {
-      const result = await queue.complete(slug);
+      const result = await queue.complete(slug, {
+        surface: req.body?.surface,
+        surfaces: req.body?.surfaces,
+        status: req.body?.status,
+        id: req.body?.id,
+      });
       if (!result.ok) return res.status(result.reason === 'not_found' ? 404 : 409).json({ error: result.reason });
       return res.status(200).json({ ok: true, item: result.item });
     }
