@@ -427,6 +427,41 @@ test('an indeterminate outcome blocks retry until it is reconciled', async () =>
   assert.equal(dispatcher.dispatches.length, 1);
 });
 
+test('the runner envelope keeps published social destinations after reconcile', async () => {
+  const { envelope, callback, publish, session, record, dispatchId } = await publishedSetup();
+  await callback(signedRunnerRequest({
+    path: '/api/install-post/runner/callback',
+    body: {
+      jobId: record.jobId,
+      revision: record.revision,
+      dispatchId,
+      result: {
+        status: 'INDETERMINATE',
+        liveUrl: 'https://www.themountingman.com/installations/x',
+        publicStatus: 200,
+        destinations: [
+          { name: 'website', status: 'PUBLISHED', detail: 'https://www.themountingman.com/installations/x' },
+          { name: 'instagram', status: 'PUBLISHED', detail: 'ig-1' },
+          { name: 'facebook', status: 'RETRYABLE_FAILURE', detail: 'HTTP 503' },
+        ],
+      },
+    },
+  }), createResponse());
+
+  await publish(publishRequest(session, { revision: record.revision, reconcile: true }), createResponse());
+
+  const res = createResponse();
+  await envelope(signedRunnerRequest({
+    path: '/api/install-post/runner/envelope',
+    body: { jobId: record.jobId, revision: record.revision },
+  }), res);
+
+  assert.equal(res.statusCode, 200);
+  const names = res.body.postedDestinations.map((entry) => entry.name).sort();
+  assert.deepEqual(names, ['instagram', 'website']);
+  assert.ok(res.body.postedDestinations.every((entry) => entry.status === 'PUBLISHED'));
+});
+
 test('a callback for a revision that is no longer approved is refused', async () => {
   const { callback, store, record, dispatchId } = await publishedSetup();
   const path = '/api/install-post/runner/callback';
