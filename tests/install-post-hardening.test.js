@@ -136,20 +136,27 @@ test('cloud runner and workflow never mention Reddit or GBP browser', () => {
   const runner = read('cloud/install-post-runner/runner.py');
   const social = read('cloud/install-post-runner/publisher/social.py');
   const notify = read('lib/notify-install-post.mjs');
+  const gbpQueue = read('lib/install-post-gbp-queue.mjs');
+  const gbpApi = read('pages/api/install-post/gbp.js');
   for (const [name, source] of [
     ['workflow', workflow],
     ['runner', runner],
     ['social', social],
     ['notify', notify],
+    ['gbp-queue', gbpQueue],
+    ['gbp-api', gbpApi],
   ]) {
     assert.doesNotMatch(source, /reddit\.com/i, `${name} calls Reddit`);
     assert.doesNotMatch(source, /old\.reddit|oauth\.reddit/i, `${name} calls Reddit`);
+    assert.doesNotMatch(source, /business\.google\.com/i, `${name} drives the GBP UI`);
   }
   assert.match(social, /Never Reddit/);
   assert.match(social, /MountingManTV/);
   assert.match(notify, /publish_one\.py/);
   assert.match(notify, /go\.py/);
   assert.doesNotMatch(workflow, /playwright|puppeteer|chromium/i);
+  assert.match(gbpQueue, /Never Reddit/);
+  assert.match(gbpApi, /Never Reddit/);
 });
 
 test('runner dependencies are hash-pinned and installed in hash-checking mode', () => {

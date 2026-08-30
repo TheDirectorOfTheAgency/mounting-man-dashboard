@@ -7,6 +7,11 @@
 // late callback from an abandoned run, a replay, or a run for a newer approval
 // is refused rather than allowed to overwrite the job.
 
+import {
+  attachGbpQueuedDestination,
+  enqueueGbpAfterPublish,
+  getInstallPostGbpQueue,
+} from '../../../../lib/install-post-gbp-queue.mjs';
 import { verifyRunnerRequest } from '../../../../lib/install-post-dispatch.mjs';
 import {
   INSTALL_POST_STATES,
@@ -23,7 +28,7 @@ const LEASE_CLEARING_STATES = new Set([
   INSTALL_POST_STATES.BLOCKED,
 ]);
 
-export function createRunnerCallbackHandler({ store, runnerSecret, now = Date.now } = {}) {
+export function createRunnerCallbackHandler({ store, runnerSecret, gbpQueue, now = Date.now } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
       return res.status(405).json({ error: 'method_not_allowed' });
@@ -68,7 +73,25 @@ export function createRunnerCallbackHandler({ store, runnerSecret, now = Date.no
         refusal = transition.reason;
         return null;
       }
-      return transition.record;
+      // Website is the first asset. GBP is the second — enqueue for the M1
+      // worker after Webflow is live. Never post GBP (or Reddit) from here.
+      let record = transition.record;
+      try {
+        const enqueued = await enqueueGbpAfterPublish({
+          queue: gbpQueue,
+          record,
+          at: new Date(now()).toISOString(),
+        });
+        if (enqueued.item || enqueued.reason === 'already_queued' || enqueued.reason === 'already_posted') {
+          record = attachGbpQueuedDestination(record, {
+            slug: enqueued.item?.slug || record.result?.slug,
+            reason: enqueued.queued ? 'queued' : enqueued.reason,
+          });
+        }
+      } catch (err) {
+        console.error('[install-post-gbp] enqueue failed:', err?.message || err);
+      }
+      return record;
     });
 
     if (!outcome.ok) {
@@ -86,8 +109,10 @@ export function createRunnerCallbackHandler({ store, runnerSecret, now = Date.no
 
 export default async function handler(req, res) {
   const store = await getInstallPostStore();
+  const gbpQueue = await getInstallPostGbpQueue();
   return createRunnerCallbackHandler({
     store,
+    gbpQueue,
     runnerSecret: (process.env.INSTALL_POST_RUNNER_SECRET || '').trim(),
   })(req, res);
 }
