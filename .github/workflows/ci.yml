@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Run Node contract and source-guard tests
+        run: npm test
+
+      - name: Lint dashboard
+        run: npm run lint
+
+      - name: Build production dashboard
+        run: npm run build
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+
+      - name: Install hash-checked publisher dependencies
+        run: |
+          python -m pip install --require-hashes --no-deps -r cloud/install-post-runner/requirements.txt
+          python -m pip install pytest==8.3.3
+
+      - name: Verify cloud publisher
+        run: |
+          python -m pytest -q cloud/install-post-runner/tests
+          python -m compileall -q cloud/install-post-runner
+
+      - name: Install hash-checked M1 worker dependencies
+        run: python -m pip install --require-hashes --no-deps -r m1/gbp-worker/requirements.txt
+
+      - name: Verify M1 worker without opening GBP
+        run: |
+          python -m unittest discover -s m1/gbp-worker/tests -v
+          python -m py_compile m1/gbp-worker/gbp_worker.py
+          bash -n scripts/install-gbp-worker-m1.sh
+          python - <<'PY'
+          import plistlib
+          with open('m1/gbp-worker/com.themountingman.gbp-worker.plist', 'rb') as handle:
+              plistlib.load(handle)
+          PY
