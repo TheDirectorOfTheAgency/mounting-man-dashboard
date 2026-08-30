@@ -306,6 +306,7 @@ test('the runner envelope returns the approved seed and photo, and no secrets', 
   assert.equal(res.body.image.sha256, IMAGE.sha256);
   assert.equal(res.body.image.hostedUrl, IMAGE.hostedUrl);
   assert.equal(res.body.artMode, 'never');
+  assert.ok(Array.isArray(res.body.postedDestinations));
 
   const serialized = JSON.stringify(res.body);
   for (const forbidden of ['ORDER-ABC-123', 'PAY-XYZ-789', '4821', RUNNER_SECRET, SESSION_SECRET]) {

@@ -479,6 +479,10 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
     tvSizes: ['65"'],
     tvLines: [{ name: '65 Inch TV Mounting', size: '65"' }],
     serviceLines: [],
+    publisher: 'cloud-runner',
+    photoPresent: false,
+    deskAction: 'request_photo',
+    doNotRun: ['publish_one.py', 'go.py'],
   });
   const serialized = JSON.stringify(payload);
   for (const forbidden of ['Test Customer', '123 Main', '55401', 'customer@example.com', '+16125550123', 'kronkite-sender-key']) {

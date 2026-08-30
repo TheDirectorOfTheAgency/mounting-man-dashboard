@@ -1,9 +1,9 @@
 # Cloud installation-post runner.
 #
-# Triggered only by the Publish tap on the phone card, which dispatches this
-# workflow with an opaque job id and the approved revision. No installation
-# facts, customer data, or credentials appear in the inputs or the logs — the
-# runner fetches the approved envelope from a signed internal endpoint.
+# Triggered by the phone Publish tap or by Square+photo auto-dispatch. Both
+# send only an opaque job id and the approved revision. No installation facts,
+# customer data, or credentials appear in the inputs or the logs — the runner
+# fetches the approved envelope from a signed internal endpoint.
 #
 # This job holds the Webflow publishing token, so its supply chain is immutable:
 # actions are pinned to commit SHAs (a tag can be moved) and dependencies are
@@ -64,4 +64,13 @@ jobs:
           INSTALL_POST_API_BASE: ${{ vars.INSTALL_POST_API_BASE }}
           INSTALL_POST_RUNNER_SECRET: ${{ secrets.INSTALL_POST_RUNNER_SECRET }}
           WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKEN }}
+          FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
+          FACEBOOK_PAGE_ACCESS_TOKEN: ${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN }}
+          INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
+          LINKEDIN_ACCESS_TOKEN: ${{ secrets.LINKEDIN_ACCESS_TOKEN }}
+          LINKEDIN_AUTHOR_URN: ${{ secrets.LINKEDIN_AUTHOR_URN }}
+          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
+          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
+          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
+          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
         run: python runner.py

@@ -51,6 +51,17 @@ export function createRunnerEnvelopeHandler({ store, runnerSecret, now = Date.no
       return res.status(409).json({ error: 'photo_required' });
     }
 
+    const postedDestinations = Array.isArray(record.result?.destinations)
+      ? record.result.destinations
+        .filter((entry) => entry && typeof entry === 'object')
+        .map((entry) => ({
+          name: String(entry.name || ''),
+          status: String(entry.status || ''),
+          detail: String(entry.detail || ''),
+        }))
+        .filter((entry) => entry.name)
+      : [];
+
     return res.status(200).json({
       jobId: record.jobId,
       revision: record.revision,
@@ -63,6 +74,7 @@ export function createRunnerEnvelopeHandler({ store, runnerSecret, now = Date.no
         hostedUrl: record.image.hostedUrl,
         assetId: record.image.assetId || '',
       },
+      postedDestinations,
       // The cloud path never generates TV art; it publishes the real photo.
       artMode: 'never',
     });

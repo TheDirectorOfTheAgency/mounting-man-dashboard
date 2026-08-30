@@ -131,6 +131,27 @@ test('every workflow action is pinned to an immutable commit SHA', () => {
   }
 });
 
+test('cloud runner and workflow never mention Reddit or GBP browser', () => {
+  const workflow = read('.github/workflows/publish-install-post.yml');
+  const runner = read('cloud/install-post-runner/runner.py');
+  const social = read('cloud/install-post-runner/publisher/social.py');
+  const notify = read('lib/notify-install-post.mjs');
+  for (const [name, source] of [
+    ['workflow', workflow],
+    ['runner', runner],
+    ['social', social],
+    ['notify', notify],
+  ]) {
+    assert.doesNotMatch(source, /reddit\.com/i, `${name} calls Reddit`);
+    assert.doesNotMatch(source, /old\.reddit|oauth\.reddit/i, `${name} calls Reddit`);
+  }
+  assert.match(social, /Never Reddit/);
+  assert.match(social, /MountingManTV/);
+  assert.match(notify, /publish_one\.py/);
+  assert.match(notify, /go\.py/);
+  assert.doesNotMatch(workflow, /playwright|puppeteer|chromium/i);
+});
+
 test('runner dependencies are hash-pinned and installed in hash-checking mode', () => {
   const workflow = read('.github/workflows/publish-install-post.yml');
   assert.match(workflow, /pip install[^\n]*--require-hashes/, 'pip must run in hash-checking mode');
