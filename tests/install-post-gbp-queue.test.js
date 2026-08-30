@@ -9,6 +9,9 @@ import {
   buildGbpCaption,
   createGbpQueue,
   enqueueGbpAfterPublish,
+  GBP_ITEM_LOCK_PREFIX,
+  GBP_PENDING_INDEX_KEY,
+  gbpItemKey,
   gbpPayloadFromRecord,
   gbpSurfacesComplete,
   sanitizeGbpItem,
@@ -54,15 +57,29 @@ const IMAGE = {
 function createFakeKv() {
   const values = new Map();
   const sets = new Map();
+  const setCalls = [];
+  const evalCalls = [];
   return {
     values,
+    sets,
+    setCalls,
+    evalCalls,
     async get(key) { return values.has(key) ? values.get(key) : null; },
     async set(key, value, options = {}) {
+      setCalls.push({ key, value, options });
       if (options.nx && values.has(key)) return null;
       values.set(key, value);
       return 'OK';
     },
     async del(key) { values.delete(key); return 1; },
+    async eval(script, keys, args) {
+      evalCalls.push({ script, keys, args });
+      const [key] = keys;
+      const [token] = args;
+      if (values.get(key) !== token) return 0;
+      values.delete(key);
+      return 1;
+    },
     async sadd(key, member) {
       if (!sets.has(key)) sets.set(key, new Set());
       sets.get(key).add(member);
@@ -174,7 +191,7 @@ test('caption uses house copy and keeps the CTA on cta_url', () => {
   assert.doesNotMatch(caption, /reddit/i);
 });
 
-test('sanitize rejects a non-installation URL and a Reddit field', () => {
+test('sanitize rejects a non-installation URL, Reddit, and unknown schemas', () => {
   assert.equal(sanitizeGbpItem({
     slug: '65-inch-samsung-edina',
     live_url: 'https://old.reddit.com/r/something',
@@ -185,11 +202,18 @@ test('sanitize rejects a non-installation URL and a Reddit field', () => {
     live_url: 'https://www.themountingman.com/tv-mounting/minneapolis',
     caption: 'nope',
   }), null);
+  assert.equal(sanitizeGbpItem({
+    schemaVersion: 999,
+    slug: '65-inch-samsung-edina',
+    live_url: 'https://www.themountingman.com/installations/65-inch-samsung-edina',
+    caption: 'unknown schema',
+  }), null);
 });
 
 test('shouldEnqueueGbp skips an item that is already queued', () => {
   const item = gbpPayloadFromRecord({
     jobId: 'job_1',
+    revision: 'b'.repeat(64),
     seed: SEED,
     image: IMAGE,
     result: publishedResult(),
@@ -217,7 +241,11 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
   assert.equal(pending[0].live_url, 'https://www.themountingman.com/installations/65-inch-samsung-edina');
   assert.equal(pending[0].cta_url, pending[0].live_url);
   assert.equal(pending[0].image_url, IMAGE.hostedUrl);
+  assert.equal(pending[0].image_sha256, IMAGE.sha256);
   assert.equal(pending[0].image_path, null);
+  assert.equal(pending[0].jobId, record.jobId);
+  assert.equal(pending[0].revision, record.revision);
+  assert.equal(pending[0].schemaVersion, 2);
   assert.deepEqual(pending[0].required_surfaces, ['update', 'photos']);
   assert.equal(pending[0].skip_photos_when_update_pending, false);
   assert.equal(pending[0].surfaces.update.status, 'pending');
@@ -299,95 +327,238 @@ test('the M1 worker can pull caption, live_url, image URL, and slug', async () =
   assert.equal(res.body.latest.skip_photos_when_update_pending, false);
 });
 
-test('legacy complete without a surface records Update only and keeps Photos pending', async () => {
-  const { gbp, gbpQueue, record } = await publishedSetup();
-  await enqueueGbpAfterPublish({
-    queue: gbpQueue,
-    record: { ...record, result: publishedResult() },
-  });
+test('claim and concurrent per-surface completions use token-owned locks without losing data', async () => {
+  const { kv, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
 
-  const claimed = createResponse();
-  await gbp(gbpRequest('POST', { body: { action: 'claim', slug: '65-inch-samsung-edina' } }), claimed);
-  assert.equal(claimed.statusCode, 200);
-  assert.equal(claimed.body.item.status, 'claimed');
+  const [updateClaim, photosClaim] = await Promise.all([
+    gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW }),
+    gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW }),
+  ]);
+  assert.equal(updateClaim.ok, true);
+  assert.equal(photosClaim.ok, true);
+  assert.notEqual(updateClaim.leaseToken, photosClaim.leaseToken);
 
-  const updateOnly = createResponse();
-  await gbp(gbpRequest('POST', { body: { action: 'complete', slug: '65-inch-samsung-edina' } }), updateOnly);
-  assert.equal(updateOnly.statusCode, 200);
-  assert.equal(updateOnly.body.item.status, 'pending');
-  assert.equal(updateOnly.body.item.surfaces.update.status, 'posted');
-  assert.equal(updateOnly.body.item.surfaces.photos.status, 'pending');
-  assert.equal((await gbpQueue.listPending()).length, 1);
-  assert.equal(gbpSurfacesComplete(updateOnly.body.item.surfaces), false);
+  const [updateDone, photosDone] = await Promise.all([
+    gbpQueue.complete(SEED.slug, {
+      surface: 'update', status: 'posted', proof: { matching_card: true }, leaseToken: updateClaim.leaseToken, now: NOW + 1,
+    }),
+    gbpQueue.complete(SEED.slug, {
+      surface: 'photos', status: 'posted', proof: { gallery_confirmed: true }, leaseToken: photosClaim.leaseToken, now: NOW + 1,
+    }),
+  ]);
+  assert.equal(updateDone.ok, true);
+  assert.equal(photosDone.ok, true);
+  const item = await gbpQueue.loadItem(SEED.slug);
+  assert.equal(item.surfaces.update.status, 'posted');
+  assert.equal(item.surfaces.photos.status, 'posted');
+  assert.equal(item.status, 'posted');
 
-  const again = await enqueueGbpAfterPublish({
-    queue: gbpQueue,
-    record: { ...record, result: publishedResult() },
-  });
-  assert.equal(again.queued, false);
-  assert.equal(again.reason, 'already_queued');
+  const lockSets = kv.setCalls.filter((call) => call.key.startsWith(GBP_ITEM_LOCK_PREFIX));
+  assert.ok(lockSets.length >= 4);
+  assert.ok(lockSets.every((call) => call.options.nx === true && Number.isInteger(call.options.px)));
+  assert.ok(kv.evalCalls.length >= 4);
+  assert.ok(kv.evalCalls.every((call) => call.keys.length === 1 && call.args.length === 1));
 });
 
-test('pending-review Update never skips the independent Photos upload', async () => {
-  const { gbp, gbpQueue, record } = await publishedSetup();
-  await enqueueGbpAfterPublish({
-    queue: gbpQueue,
-    record: { ...record, result: publishedResult() },
-  });
+test('a live lease blocks a second claim and an expired lease is reclaimed with retained attempt history', async () => {
+  const { gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
 
-  const review = createResponse();
-  await gbp(gbpRequest('POST', {
-    body: {
-      action: 'complete',
-      slug: '65-inch-samsung-edina',
-      surface: 'update',
-      status: 'pending_review',
-      id: 'update-pending-1',
-    },
-  }), review);
-  assert.equal(review.statusCode, 200);
-  assert.equal(review.body.item.status, 'pending');
-  assert.equal(review.body.item.surfaces.update.status, 'pending_review');
-  assert.equal(review.body.item.surfaces.photos.status, 'pending');
-  assert.equal(review.body.item.skip_photos_when_update_pending, false);
-  assert.equal((await gbpQueue.listPending()).length, 1);
+  const first = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW });
+  await gbpQueue.complete(SEED.slug, {
+    surface: 'update', status: 'retryable_failure', error: { reason_code: 'dialog_closed', retryable: true },
+    leaseToken: first.leaseToken, now: NOW + 1,
+  });
+  const second = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW + 2 });
+  assert.equal(second.item.surfaces.update.attempts, 2);
+  assert.deepEqual(second.item.surfaces.update.lastError, { reason_code: 'dialog_closed', retryable: true });
+
+  const blocked = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-b', now: NOW + 3 });
+  assert.deepEqual(blocked, { ok: false, reason: 'lease_active' });
+
+  const reclaimed = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-b', now: NOW + 5 * 60_000 + 3 });
+  assert.equal(reclaimed.ok, true);
+  assert.notEqual(reclaimed.leaseToken, second.leaseToken);
+  assert.equal(reclaimed.item.surfaces.update.attempts, 3);
+  assert.deepEqual(reclaimed.item.surfaces.update.lastError, { reason_code: 'dialog_closed', retryable: true });
 });
 
-test('the M1 worker can mark a slug posted only after Update AND Photos', async () => {
-  const { gbp, gbpQueue, record } = await publishedSetup();
-  await enqueueGbpAfterPublish({
-    queue: gbpQueue,
-    record: { ...record, result: publishedResult() },
+test('completion rejects a missing, wrong, or expired lease token', async () => {
+  const { gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+  const claim = await gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW });
+  const report = { surface: 'photos', status: 'posted', proof: { gallery_confirmed: true } };
+
+  assert.equal((await gbpQueue.complete(SEED.slug, { ...report, now: NOW + 1 })).reason, 'lease_token_required');
+  assert.equal((await gbpQueue.complete(SEED.slug, { ...report, leaseToken: 'wrong', now: NOW + 1 })).reason, 'lease_token_mismatch');
+  assert.equal((await gbpQueue.complete(SEED.slug, {
+    ...report, leaseToken: claim.leaseToken, now: NOW + 5 * 60_000 + 1,
+  })).reason, 'lease_expired');
+  assert.equal((await gbpQueue.loadItem(SEED.slug)).surfaces.photos.status, 'claimed');
+});
+
+test('completion validates surface-specific outcomes and posted proof strictly', async () => {
+  const { gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+  const update = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW });
+  const photos = await gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW });
+
+  for (const status of ['pending', 'claimed', 'unknown']) {
+    assert.equal((await gbpQueue.complete(SEED.slug, {
+      surface: 'update', status, leaseToken: update.leaseToken, now: NOW + 1,
+    })).reason, 'invalid_status');
+  }
+  assert.equal((await gbpQueue.complete(SEED.slug, {
+    surface: 'photos', status: 'pending_review', proof: { pending_review: true }, leaseToken: photos.leaseToken, now: NOW + 1,
+  })).reason, 'invalid_status');
+  assert.equal((await gbpQueue.complete(SEED.slug, {
+    surface: 'update', status: 'posted', leaseToken: update.leaseToken, now: NOW + 1,
+  })).reason, 'proof_required');
+  assert.equal((await gbpQueue.complete(SEED.slug, {
+    surface: 'photos', status: 'posted', leaseToken: photos.leaseToken, now: NOW + 1,
+  })).reason, 'proof_required');
+});
+
+test('Update and Photos accept exactly their documented completion outcomes', async () => {
+  const allowed = {
+    update: ['posted', 'pending_review', 'retryable_failure', 'indeterminate'],
+    photos: ['posted', 'retryable_failure', 'indeterminate'],
+  };
+  for (const [surface, statuses] of Object.entries(allowed)) {
+    for (const status of statuses) {
+      const { gbpQueue, record } = await publishedSetup();
+      await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+      const claim = await gbpQueue.claim(SEED.slug, { surface, workerId: 'm1-a', now: NOW });
+      const result = await gbpQueue.complete(SEED.slug, {
+        surface,
+        status,
+        proof: status === 'posted' || status === 'pending_review'
+          ? (surface === 'update' ? { matching_card: true } : { gallery_confirmed: true })
+          : {},
+        error: status.endsWith('failure') || status === 'indeterminate'
+          ? { reason_code: 'reconcile_required', retryable: status.endsWith('failure') }
+          : null,
+        leaseToken: claim.leaseToken,
+        now: NOW + 1,
+      });
+      assert.equal(result.ok, true, `${surface} ${status}`);
+      assert.equal(result.item.surfaces[surface].status, status);
+    }
+  }
+});
+
+test('pending index remains until both surfaces complete and listPending removes stale members', async () => {
+  const { kv, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+  const update = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW });
+  await gbpQueue.complete(SEED.slug, {
+    surface: 'update', status: 'pending_review', proof: { pending_review: true }, leaseToken: update.leaseToken, now: NOW + 1,
   });
+  assert.ok(kv.sets.get(GBP_PENDING_INDEX_KEY).has(SEED.slug));
+
+  const photos = await gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW + 2 });
+  await gbpQueue.complete(SEED.slug, {
+    surface: 'photos', status: 'posted', proof: { gallery_confirmed: true }, leaseToken: photos.leaseToken, now: NOW + 3,
+  });
+  assert.equal(kv.sets.get(GBP_PENDING_INDEX_KEY).has(SEED.slug), false);
+
+  await kv.sadd(GBP_PENDING_INDEX_KEY, SEED.slug);
+  await kv.sadd(GBP_PENDING_INDEX_KEY, 'missing-item');
+  assert.deepEqual(await gbpQueue.listPending(), []);
+  assert.deepEqual(await kv.smembers(GBP_PENDING_INDEX_KEY), []);
+});
+
+test('heartbeat stores and returns only safe worker identity, version, and timestamp', async () => {
+  const kv = createFakeKv();
+  const queue = createGbpQueue(kv);
+  const heartbeat = await queue.heartbeat({
+    workerId: 'm1-primary', version: '2026.08.30', now: NOW,
+    secret: 'must-not-store', customer: { phone: '555-0100' },
+  });
+  assert.deepEqual(heartbeat, {
+    ok: true,
+    heartbeat: { workerId: 'm1-primary', version: '2026.08.30', seenAt: new Date(NOW).toISOString() },
+  });
+  const storedHeartbeat = [...kv.values.entries()].find(([key]) => key.includes(':heartbeat:'));
+  assert.ok(storedHeartbeat);
+  assert.deepEqual(Object.keys(JSON.parse(storedHeartbeat[1])).sort(), ['seenAt', 'version', 'workerId']);
+
+  const handler = createGbpHandler({ queue, workerSecret: GBP_SECRET });
+  const res = createResponse();
+  await handler(gbpRequest('POST', {
+    body: { action: 'heartbeat', workerId: 'm1-primary', version: '2026.08.30', secret: 'nope' },
+  }), res);
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(Object.keys(res.body.heartbeat).sort(), ['seenAt', 'version', 'workerId']);
+});
+
+test('new-schema API completion cannot use the legacy tokenless Update path', async () => {
+  const { gbp, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+  const res = createResponse();
+  await gbp(gbpRequest('POST', { body: { action: 'complete', slug: SEED.slug } }), res);
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.body.error, 'surface_required');
+  assert.equal((await gbpQueue.loadItem(SEED.slug)).surfaces.update.status, 'pending');
+});
+
+test('API claim returns a lease token and complete requires that exact token', async () => {
+  const { gbp, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
 
   const claimed = createResponse();
-  await gbp(gbpRequest('POST', { body: { action: 'claim', slug: '65-inch-samsung-edina' } }), claimed);
+  await gbp(gbpRequest('POST', {
+    body: { action: 'claim', slug: SEED.slug, surface: 'update', workerId: 'm1-primary' },
+  }), claimed);
   assert.equal(claimed.statusCode, 200);
-  assert.equal(claimed.body.item.status, 'claimed');
+  assert.ok(claimed.body.leaseToken);
+  assert.equal(claimed.body.item.surfaces.update.status, 'claimed');
+  assert.equal(claimed.body.item.surfaces.update.lease.workerId, 'm1-primary');
+  assert.equal(claimed.body.item.surfaces.update.lease.token, undefined);
 
-  const done = createResponse();
+  const completed = createResponse();
   await gbp(gbpRequest('POST', {
     body: {
-      action: 'complete',
-      slug: '65-inch-samsung-edina',
-      surfaces: {
-        update: { status: 'posted', id: 'local-post-1' },
-        photos: { status: 'posted', id: 'photo-1' },
-      },
+      action: 'complete', slug: SEED.slug, surface: 'update', status: 'pending_review',
+      proof: { pending_review: true, customer_phone: '555-0100' },
+      leaseToken: claimed.body.leaseToken,
     },
-  }), done);
-  assert.equal(done.statusCode, 200);
-  assert.equal(done.body.item.status, 'posted');
-  assert.equal(done.body.item.surfaces.update.status, 'posted');
-  assert.equal(done.body.item.surfaces.photos.status, 'posted');
-  assert.equal((await gbpQueue.listPending()).length, 0);
+  }), completed);
+  assert.equal(completed.statusCode, 200);
+  assert.equal(completed.body.item.surfaces.update.status, 'pending_review');
+  assert.deepEqual(completed.body.item.surfaces.update.proof, { pending_review: true });
+  assert.equal(completed.body.item.surfaces.photos.status, 'pending');
+});
 
-  const again = await enqueueGbpAfterPublish({
-    queue: gbpQueue,
-    record: { ...record, result: publishedResult() },
-  });
-  assert.equal(again.queued, false);
-  assert.equal(again.reason, 'already_posted');
+test('legacy tokenless complete remains Update-only and historical posted rows are cleaned without invented receipts', async () => {
+  const kv = createFakeKv();
+  const queue = createGbpQueue(kv);
+  const legacy = {
+    slug: SEED.slug,
+    caption: 'Legacy item',
+    live_url: publishedResult().liveUrl,
+    image_url: IMAGE.hostedUrl,
+    status: 'pending',
+    queuedAt: new Date(NOW).toISOString(),
+  };
+  kv.values.set(gbpItemKey(SEED.slug), JSON.stringify(legacy));
+  await kv.sadd(GBP_PENDING_INDEX_KEY, SEED.slug);
+
+  const result = await queue.complete(SEED.slug, {});
+  assert.equal(result.ok, true);
+  assert.equal(result.item.surfaces.update.status, 'posted');
+  assert.equal(result.item.surfaces.update.legacy, true);
+  assert.equal(result.item.surfaces.photos.status, 'pending');
+  assert.equal(gbpSurfacesComplete(result.item.surfaces), false);
+
+  const historicalSlug = 'historical-posted';
+  kv.values.set(gbpItemKey(historicalSlug), JSON.stringify({ ...legacy, slug: historicalSlug, status: 'posted' }));
+  await kv.sadd(GBP_PENDING_INDEX_KEY, historicalSlug);
+  await queue.listPending();
+  assert.equal(kv.sets.get(GBP_PENDING_INDEX_KEY).has(historicalSlug), false);
+  const historical = await queue.loadItem(historicalSlug);
+  assert.equal(historical.surfaces, undefined);
 });
 
 test('the GBP pull API refuses a missing or wrong secret', async () => {

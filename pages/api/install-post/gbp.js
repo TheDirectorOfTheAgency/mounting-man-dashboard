@@ -5,8 +5,9 @@
 // GET  /api/install-post/gbp
 //   → { pending, latest, count } — caption, live_url, cta_url, image_url, slug
 // POST /api/install-post/gbp
-//   { action: "claim", slug }     → mark in-progress
-//   { action: "complete", slug, surface?, surfaces?, status?, id? }
+//   { action: "claim", slug, surface, workerId } → token-bound surface lease
+//   { action: "complete", slug, surface, status, proof, leaseToken, error? }
+//   { action: "heartbeat", workerId, version } → sanitized liveness only
 //     Update and Photos are independent. Pending-review Update still
 //     requires Photos. A body with no surface records Update only.
 //     Item stays pending until both required surfaces are done.
@@ -63,21 +64,35 @@ export function createGbpHandler({ queue, workerSecret } = {}) {
     }
 
     const action = String(req.body?.action || '').trim().toLowerCase();
+    if (action === 'heartbeat') {
+      const result = await queue.heartbeat({
+        workerId: req.body?.workerId,
+        version: req.body?.version,
+      });
+      if (!result.ok) return res.status(400).json({ error: result.reason });
+      return res.status(200).json(result);
+    }
+
     const slug = String(req.body?.slug || '').trim();
     if (!slug) return res.status(400).json({ error: 'slug_required' });
 
     if (action === 'claim') {
-      const result = await queue.claim(slug);
+      const result = await queue.claim(slug, {
+        surface: req.body?.surface,
+        workerId: req.body?.workerId,
+      });
       if (!result.ok) return res.status(result.reason === 'not_found' ? 404 : 409).json({ error: result.reason });
-      return res.status(200).json({ ok: true, item: result.item });
+      return res.status(200).json({ ok: true, item: result.item, leaseToken: result.leaseToken });
     }
 
     if (action === 'complete') {
       const result = await queue.complete(slug, {
         surface: req.body?.surface,
-        surfaces: req.body?.surfaces,
         status: req.body?.status,
         id: req.body?.id,
+        proof: req.body?.proof,
+        error: req.body?.error,
+        leaseToken: req.body?.leaseToken,
       });
       if (!result.ok) return res.status(result.reason === 'not_found' ? 404 : 409).json({ error: result.reason });
       return res.status(200).json({ ok: true, item: result.item });
