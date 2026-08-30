@@ -22,6 +22,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 sys.path.insert(0, str(RUNNER_DIR / "publisher"))
 
 import runner as R  # noqa: E402
+from social import SocialPublisher  # noqa: E402
 from webflow import BoundAsset, WebflowError  # noqa: E402
 
 API_BASE = "https://dashboard.example.com"
@@ -391,3 +392,71 @@ def test_asset_binding_uses_the_approved_asset_id():
     asset = webflow.created[0]["asset"]
     assert isinstance(asset, BoundAsset)
     assert asset.asset_id == "asset-1"
+
+
+def test_social_run_never_calls_reddit_and_skips_already_posted():
+    class RecordingSocial(SocialPublisher):
+        def __init__(self):
+            super().__init__(env={}, http=None)
+            self.seen = []
+
+        def publish(self, **kwargs):
+            self.seen.append(kwargs)
+            assert "reddit" not in str(kwargs).lower()
+            return [
+                {"name": "instagram", "status": "PUBLISHED", "detail": "skipped: already posted for slug"},
+                {"name": "facebook", "status": "PUBLISHED", "detail": "fb-1"},
+                {"name": "linkedin", "status": "SKIPPED", "detail": "credentials unset"},
+                {"name": "x", "status": "PUBLISHED", "detail": "https://x.com/MountingManTV/status/1"},
+            ]
+
+    api, webflow = FakeApi(), FakeWebflow()
+    social = RecordingSocial()
+    result = R.run(
+        job_id=JOB_ID,
+        revision=REVISION,
+        dispatch_id="dispatch-1",
+        api_base=API_BASE,
+        runner_secret=RUNNER_SECRET,
+        http=api,
+        webflow=webflow,
+        fetch_image=lambda url, timeout=None: FakeResponse(status_code=200, content=IMAGE_BYTES, url=url),
+        social=social,
+    ).result
+
+    names = {entry["name"] for entry in result["destinations"]}
+    assert "website" in names
+    assert "reddit" not in names
+    assert "gbp" not in names
+    assert len(social.seen) == 1
+    assert "reddit" not in str(result).lower()
+
+
+def test_wrong_x_account_blocks_x_without_creating_a_second_webflow_item():
+    class WrongAccountSocial:
+        def publish(self, **kwargs):
+            return [{"name": "x", "status": "BLOCKED", "detail": "expected @MountingManTV"}]
+
+    existing = {
+        "id": "item-existing",
+        "fieldData": {"slug": "reused-slug", "main-image": {"url": "https://cdn.example.com/photo.webp"}},
+    }
+    api, webflow = FakeApi(), FakeWebflow(existing=existing)
+    result = R.run(
+        job_id=JOB_ID,
+        revision=REVISION,
+        dispatch_id="dispatch-1",
+        api_base=API_BASE,
+        runner_secret=RUNNER_SECRET,
+        http=api,
+        webflow=webflow,
+        fetch_image=lambda url, timeout=None: FakeResponse(status_code=200, content=IMAGE_BYTES, url=url),
+        social=WrongAccountSocial(),
+    ).result
+
+    assert webflow.created == [], "must not create a second item for the same photo"
+    assert result["itemId"] == "item-existing"
+    x_dest = next(entry for entry in result["destinations"] if entry["name"] == "x")
+    assert x_dest["status"] == "BLOCKED"
+    assert "MountingManTV" in x_dest["detail"]
+    assert "reddit" not in str(result).lower()

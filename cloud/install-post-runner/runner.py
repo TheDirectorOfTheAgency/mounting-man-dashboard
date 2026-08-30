@@ -40,6 +40,7 @@ from seed import (  # noqa: E402
     _get_nearby_cities,
     normalize_seed_post_data,
 )
+from social import SocialPublisher, publish_socials  # noqa: E402
 from webflow import BoundAsset, WebflowError, WebflowPublisher  # noqa: E402
 
 ENVELOPE_PATH = "/api/install-post/runner/envelope"
@@ -191,18 +192,36 @@ def _signed_post(http, *, api_base: str, path: str, body: dict, secret: str, tim
 # ---------------------------------------------------------------------------
 
 
-def _result(status: str, *, message: str = "", **fields) -> dict:
+def _website_destination(status: str, payload: dict) -> dict:
+    return {
+        "name": "website",
+        "status": status,
+        "detail": redact(payload.get("liveUrl") or payload.get("message") or ""),
+    }
+
+
+def _result(status: str, *, message: str = "", destinations=None, **fields) -> dict:
     payload = {"status": status}
     if message:
         payload["message"] = redact(message)
     payload.update({key: value for key, value in fields.items() if value not in (None, "", [])})
-    payload["destinations"] = [
-        {
-            "name": "website",
-            "status": status,
-            "detail": redact(payload.get("liveUrl") or payload.get("message") or ""),
-        }
-    ]
+    dests = [_website_destination(status, payload)]
+    for entry in destinations or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip().lower()
+        if name in ("website", "reddit", "gbp", "google-business-profile"):
+            continue
+        dests.append({
+            "name": name,
+            "status": redact(entry.get("status") or ""),
+            "detail": redact(entry.get("detail") or ""),
+        })
+    payload["destinations"] = dests
+    if any(entry.get("status") == STATUS_RETRYABLE for entry in dests if entry.get("name") != "website"):
+        if status == STATUS_PUBLISHED:
+            payload["status"] = STATUS_INDETERMINATE
+            payload.setdefault("message", redact("Website is live; a social destination still needs a retry"))
     return {key: payload[key] for key in RESULT_FIELDS if key in payload}
 
 
@@ -248,7 +267,7 @@ def _build_post_data(seed: dict) -> dict:
     return enrich_post_data(post_data, location_map)
 
 
-def _publish(*, job_id, revision, api_base, runner_secret, http, webflow, fetch_image):
+def _publish(*, job_id, revision, api_base, runner_secret, http, webflow, fetch_image, social=None):
     # ---- 1. approved envelope ----
     response = _signed_post(
         http, api_base=api_base, path=ENVELOPE_PATH, secret=runner_secret,
@@ -308,6 +327,18 @@ def _publish(*, job_id, revision, api_base, runner_secret, http, webflow, fetch_
         # The item exists; we simply cannot confirm the public page yet.
         raise WebflowError(str(exc), indeterminate=True) from _Carrier(item_id, slug)
 
+    social_destinations = []
+    if social is not None:
+        social_destinations = publish_socials(
+            post_data=post_data,
+            live_url=verification.get("live_url", ""),
+            image_url=verification.get("image_url", "") or hosted_url,
+            image_bytes=photo.content,
+            slug=slug,
+            posted_destinations=env.get("postedDestinations") or [],
+            publisher=social,
+        )
+
     return _result(
         STATUS_PUBLISHED,
         liveUrl=verification.get("live_url", ""),
@@ -316,6 +347,7 @@ def _publish(*, job_id, revision, api_base, runner_secret, http, webflow, fetch_
         slug=slug,
         publicStatus=verification.get("public_status", 0),
         message="Reused the existing post for this photo" if reused else "",
+        destinations=social_destinations,
     )
 
 
@@ -335,14 +367,14 @@ class RunOutcome(NamedTuple):
     callback_delivered: bool
 
 
-def run(*, job_id, revision, dispatch_id, api_base, runner_secret, http=None, webflow=None, fetch_image=None):
+def run(*, job_id, revision, dispatch_id, api_base, runner_secret, http=None, webflow=None, fetch_image=None, social=None):
     http = http or requests
     fetch_image = fetch_image or requests.get
 
     try:
         result = _publish(
             job_id=job_id, revision=revision, api_base=api_base, runner_secret=runner_secret,
-            http=http, webflow=webflow, fetch_image=fetch_image,
+            http=http, webflow=webflow, fetch_image=fetch_image, social=social,
         )
     except BlockedError as exc:
         result = _result(STATUS_BLOCKED, message=str(exc))
@@ -406,6 +438,7 @@ def main() -> int:
         job_id=job_id, revision=revision, dispatch_id=dispatch_id,
         api_base=api_base, runner_secret=runner_secret,
         webflow=WebflowPublisher(webflow_token),
+        social=SocialPublisher(env=os.environ),
     )
     print(json.dumps(outcome.result))
     if not outcome.callback_delivered:
