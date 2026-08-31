@@ -350,13 +350,14 @@ test('reconcile keeps published social destinations after result is cleared', ()
         { name: 'website', status: 'PUBLISHED', detail: 'https://www.themountingman.com/installations/x' },
         { name: 'instagram', status: 'PUBLISHED', detail: 'ig-1' },
         { name: 'facebook', status: 'RETRYABLE_FAILURE', detail: 'HTTP 503' },
+        { name: 'linkedin', status: 'INDETERMINATE', detail: 'create outcome unknown' },
       ],
     },
   }).record;
 
   assert.deepEqual(
     indeterminate.postedDestinations.map((entry) => entry.name).sort(),
-    ['instagram', 'website'],
+    ['instagram', 'linkedin', 'website'],
   );
 
   const reconciled = transitionRecord(indeterminate, {
@@ -369,13 +370,17 @@ test('reconcile keeps published social destinations after result is cleared', ()
   assert.equal(reconciled.result, null);
   assert.deepEqual(
     reconciled.postedDestinations.map((entry) => entry.name).sort(),
-    ['instagram', 'website'],
+    ['instagram', 'linkedin', 'website'],
   );
   assert.deepEqual(
     collectPostedDestinations(reconciled.postedDestinations, reconciled.result?.destinations)
       .map((entry) => entry.name)
       .sort(),
-    ['instagram', 'website'],
+    ['instagram', 'linkedin', 'website'],
+  );
+  assert.equal(
+    reconciled.postedDestinations.find((entry) => entry.name === 'linkedin').status,
+    'INDETERMINATE',
   );
 });
 

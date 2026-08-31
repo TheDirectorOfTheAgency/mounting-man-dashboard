@@ -69,3 +69,24 @@ test('release CI covers Node, build, cloud runner, and M1 worker with immutable 
     assert.match(action, /^[^@\s]+@[0-9a-f]{40}$/i, `${action} is not pinned to a commit SHA`);
   }
 });
+
+test('publisher workflow checks out the immutable cloud deployment commit', () => {
+  const workflow = source('.github/workflows/publish-install-post.yml');
+  assert.match(workflow, /source_commit:/);
+  assert.match(workflow, /ref:\s*\$\{\{\s*inputs\.source_commit\s*\}\}/);
+  assert.match(workflow, /SOURCE_COMMIT:\s*\$\{\{\s*inputs\.source_commit\s*\}\}/);
+  assert.doesNotMatch(workflow, /ref:\s*(?:main|master)\s*$/m);
+});
+
+test('M1 installer stamps the immutable build SHA into launchd', () => {
+  const installer = source('scripts/install-gbp-worker-m1.sh');
+  const plist = source('m1/gbp-worker/com.themountingman.gbp-worker.plist');
+  assert.match(plist, /<key>INSTALL_POST_GBP_BUILD_SHA<\/key>/);
+  assert.match(plist, /__INSTALL_POST_GBP_BUILD_SHA__/);
+  assert.match(installer, /git[^\n]*rev-parse HEAD/);
+  assert.match(installer, /INSTALL_POST_GBP_BUILD_SHA/);
+  assert.match(installer, /PlistBuddy[^\n]*EnvironmentVariables:INSTALL_POST_GBP_BUILD_SHA/);
+  assert.match(installer, /releases\/\$build_sha/);
+  assert.match(installer, /restore_backup/);
+  assert.match(installer, /bootstrap[^\n]*PLIST_DEST/);
+});

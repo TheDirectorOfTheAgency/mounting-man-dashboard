@@ -156,6 +156,16 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn(self.secret, str(caught.exception))
         self.assertNotIn(self.secret, output.getvalue())
 
+    def test_reason_codes_accept_only_safe_machine_tokens(self):
+        self.assertEqual(
+            "session_account_unverified",
+            gbp.safe_reason_code(gbp.BlockedError("session_account_unverified"), "blocked"),
+        )
+        self.assertEqual(
+            "blocked",
+            gbp.safe_reason_code(gbp.BlockedError(self.secret), "blocked"),
+        )
+
     def test_pull_retries_only_bounded_retryable_statuses(self):
         sleeps = []
         payload = {"pending": [], "latest": None, "count": 0}
@@ -170,6 +180,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([], client.pull())
         self.assertEqual(3, len(session.calls))
         self.assertEqual([1.0, 2.0], sleeps)
+
+    def test_pull_quarantines_one_incompatible_row_without_blocking_valid_work(self):
+        legacy = {**valid_item(), "schemaVersion": 1}
+        current = valid_item(slug="second-install")
+        payload = {"pending": [legacy, current], "latest": legacy, "count": 2}
+        client, _ = self.client([FakeResponse(payload=payload)])
+        self.assertEqual([current], client.pull())
 
     def test_auth_failures_are_blocked_without_retry(self):
         for status_code in (401, 403):
@@ -244,21 +261,25 @@ class ClientTests(unittest.TestCase):
             session.calls[0][2]["json"],
         )
 
-    def test_heartbeat_contains_only_worker_and_version(self):
+    def test_heartbeat_contains_worker_version_and_installed_build_sha(self):
+        build_sha = "b" * 40
         heartbeat = {
             "workerId": "m1-gbp-01",
             "version": gbp.WORKER_VERSION,
+            "buildSha": build_sha,
             "seenAt": "2026-08-30T16:00:00.000Z",
         }
         client, session = self.client(
             [FakeResponse(payload={"ok": True, "heartbeat": heartbeat})]
         )
-        self.assertEqual(heartbeat, client.heartbeat())
+        with mock.patch.dict(os.environ, {"INSTALL_POST_GBP_BUILD_SHA": build_sha}):
+            self.assertEqual(heartbeat, client.heartbeat())
         self.assertEqual(
             {
                 "action": "heartbeat",
                 "workerId": "m1-gbp-01",
                 "version": gbp.WORKER_VERSION,
+                "buildSha": build_sha,
             },
             session.calls[0][2]["json"],
         )
@@ -430,13 +451,32 @@ class StateTests(unittest.TestCase):
         )
         self.assertIsNone(gbp.next_missing_surface(item))
 
-    def test_claimed_and_unknown_statuses_fail_closed(self):
-        for status_value in ("claimed", "mystery"):
-            item = valid_item(
-                surfaces={"update": surface(status_value), "photos": surface("pending")}
+    def test_live_claim_is_skipped_but_expired_claim_is_reclaimable(self):
+        live = surface("claimed") | {
+            "lease": {"workerId": "m1-old", "expiresAt": "2026-08-30T16:05:00.000Z"}
+        }
+        expired = surface("claimed") | {
+            "lease": {"workerId": "m1-old", "expiresAt": "2026-08-30T15:55:00.000Z"}
+        }
+        self.assertIsNone(
+            gbp.next_missing_surface(
+                valid_item(surfaces={"update": live, "photos": surface("pending")}),
+                now="2026-08-30T16:00:00.000Z",
             )
-            with self.subTest(status=status_value), self.assertRaises(gbp.SchemaError):
-                gbp.next_missing_surface(item)
+        )
+        self.assertEqual(
+            "update",
+            gbp.next_missing_surface(
+                valid_item(surfaces={"update": expired, "photos": surface("pending")}),
+                now="2026-08-30T16:00:00.000Z",
+            ),
+        )
+        with self.assertRaises(gbp.SchemaError):
+            gbp.next_missing_surface(
+                valid_item(
+                    surfaces={"update": surface("mystery"), "photos": surface("pending")}
+                )
+            )
 
 
 class EvidenceTests(unittest.TestCase):
@@ -486,6 +526,16 @@ class EvidenceTests(unittest.TestCase):
         )
         self.assertEqual("indeterminate", gbp.classify_update_evidence(evidence))
 
+    def test_reconciliation_cannot_fabricate_update_form_preconditions(self):
+        evidence = self.valid_update(
+            reconciliation_only=True,
+            caption_exact=False,
+            bound_image_preview_visible=False,
+            cta_url_exact=False,
+            matching_published_card=True,
+        )
+        self.assertEqual("indeterminate", gbp.classify_update_evidence(evidence))
+
     def test_update_post_click_timeout_is_indeterminate(self):
         evidence = self.valid_update(
             matching_published_card=False, timed_out_after_click=True
@@ -513,20 +563,23 @@ class EvidenceTests(unittest.TestCase):
         evidence = {
             "account_verified": True,
             "location_verified": True,
-            "bound_image_preview_visible": True,
+            "file_selection_attempted": True,
             "upload_triggered": True,
             "matching_gallery_item": True,
             "gallery_item_pending": False,
             "failure_toast": False,
-            "blank_dialog_after_upload": False,
             "timed_out_after_upload": False,
             "unrelated_image_only": False,
         }
         evidence.update(overrides)
         return evidence
 
-    def test_photo_preview_is_required_before_upload(self):
-        evidence = self.valid_photo(bound_image_preview_visible=False, upload_triggered=False)
+    def test_photo_is_retryable_only_before_file_selection_is_attempted(self):
+        evidence = self.valid_photo(
+            file_selection_attempted=False,
+            upload_triggered=False,
+            matching_gallery_item=False,
+        )
         self.assertEqual("retryable_failure", gbp.classify_photos_evidence(evidence))
 
     def test_file_selection_blank_dialog_and_unrelated_image_are_not_success(self):
@@ -555,6 +608,14 @@ class EvidenceTests(unittest.TestCase):
             upload_triggered=False,
         )
         self.assertEqual("indeterminate", gbp.classify_photos_evidence(evidence))
+
+    def test_reconciliation_settles_only_an_exact_perceptual_gallery_match(self):
+        evidence = self.valid_photo(
+            reconciliation_only=True,
+            matching_gallery_item=True,
+            upload_triggered=False,
+        )
+        self.assertEqual("posted", gbp.classify_photos_evidence(evidence))
 
 
 class FakeAccountLocator:
@@ -664,6 +725,78 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn(str(root), repr(proof))
 
 
+class GalleryEvidenceTests(unittest.TestCase):
+    def test_perceptual_match_accepts_recompression_and_center_crop_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "source.jpg"
+            related = io.BytesIO()
+            unrelated = io.BytesIO()
+            patterned = Image.new("RGB", (800, 600))
+            pixels = patterned.load()
+            self.assertIsNotNone(pixels)
+            for y in range(600):
+                for x in range(800):
+                    pixels[x, y] = (
+                        (x * 7) % 256,
+                        (y * 11) % 256,
+                        ((x + y) * 13) % 256,
+                    )
+            patterned.save(source, format="JPEG", quality=95)
+            patterned.crop((100, 0, 700, 600)).resize((281, 281)).save(
+                related, format="JPEG", quality=72
+            )
+            Image.new("RGB", (281, 281), (240, 20, 90)).save(
+                unrelated, format="JPEG", quality=90
+            )
+
+            self.assertEqual(
+                0,
+                gbp.matching_gallery_image_index(
+                    source, [related.getvalue(), unrelated.getvalue()]
+                ),
+            )
+            self.assertIsNone(
+                gbp.matching_gallery_image_index(source, [unrelated.getvalue()])
+            )
+
+    def test_upload_photo_baselines_then_selects_once_without_upload_button(self):
+        page = mock.Mock()
+        image = mock.Mock(upload_path=Path("/safe/upload.jpg"), source_sha256="a" * 64)
+        exact = {
+            "account_verified": True,
+            "location_verified": True,
+            "matching_gallery_item": True,
+            "gallery_item_pending": False,
+            "failure_toast": False,
+            "unrelated_image_only": False,
+            "reconciliation_only": False,
+            "_mask": (),
+        }
+        with mock.patch.object(
+            gbp, "_gallery_source_snapshot", return_value=("existing",), create=True
+        ) as baseline, mock.patch.object(
+            gbp, "_select_photo_file", return_value=mock.Mock(), create=True
+        ) as select, mock.patch.object(
+            gbp, "reconcile_photos", return_value=exact
+        ) as reconcile:
+            result = gbp.upload_photo(
+                page, valid_item(), image, account_verified=True
+            )
+        baseline.assert_called_once_with(page, account_verified=True)
+        select.assert_called_once_with(page, image.upload_path)
+        reconcile.assert_called_once_with(
+            page,
+            mock.ANY,
+            image,
+            account_verified=True,
+            submitted_this_run=True,
+            baseline_sources=("existing",),
+        )
+        self.assertTrue(result["file_selection_attempted"])
+        self.assertTrue(result["matching_gallery_item"])
+        page.get_by_role.assert_not_called()
+
+
 class ModeTests(unittest.TestCase):
     def config(self, root):
         return gbp.WorkerConfig(
@@ -732,8 +865,30 @@ class ModeTests(unittest.TestCase):
             gbp, "check_session", return_value=gbp.SessionEvidence(True, True, True, "update")
         ) as check, mock.patch.object(gbp, "create_client") as create_client:
             self.assertEqual(0, gbp.main(["--check-session", "--headless"]))
-        check.assert_called_once()
+        check.assert_called_once_with(mock.ANY, surface="update")
         create_client.assert_not_called()
+
+    def test_heartbeat_mode_never_pulls_or_opens_browser(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def heartbeat(self):
+                self.calls.append("heartbeat")
+                return {}
+
+            def pull(self):
+                raise AssertionError("heartbeat-only mode must not pull")
+
+        with tempfile.TemporaryDirectory() as root:
+            client = Client()
+            with mock.patch.object(gbp, "create_client", return_value=client), mock.patch.object(
+                gbp, "check_session"
+            ) as check, mock.patch.object(gbp, "process_surface") as process:
+                self.assertEqual(0, gbp.run_heartbeat(self.config(root)))
+        self.assertEqual(["heartbeat"], client.calls)
+        check.assert_not_called()
+        process.assert_not_called()
 
     def test_one_invocation_processes_at_most_one_surface(self):
         class Client:
@@ -754,6 +909,32 @@ class ModeTests(unittest.TestCase):
                 self.assertEqual(0, gbp.run_once(self.config(root)))
         process.assert_called_once()
         self.assertEqual("update", process.call_args.args[2])
+
+    def test_first_actionable_skips_bad_or_live_claimed_rows(self):
+        live = surface("claimed") | {
+            "lease": {"workerId": "m1-old", "expiresAt": "2999-01-01T00:00:00.000Z"}
+        }
+        malformed = {**valid_item(), "schemaVersion": 1}
+        actionable = valid_item(slug="second-install")
+        selected = gbp._first_actionable(
+            [
+                malformed,
+                valid_item(
+                    surfaces={"update": live, "photos": surface("pending")}
+                ),
+                actionable,
+            ]
+        )
+        self.assertEqual("second-install", selected[0]["slug"])
+        self.assertEqual("update", selected[1])
+
+    def test_lease_conflict_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(
+            gbp, "load_config", return_value=self.config(root)
+        ), mock.patch.object(
+            gbp, "run_once", side_effect=gbp.LeaseConflict("expired")
+        ):
+            self.assertNotEqual(0, gbp.main(["--once", "--headless"]))
 
 
 class SourceGuardTests(unittest.TestCase):
@@ -804,6 +985,7 @@ class SourceGuardTests(unittest.TestCase):
         self.assertIn("--rollback", installer)
         self.assertIn("--check-session", installer)
         self.assertIn("--dry-run", installer)
+        self.assertIn("--heartbeat", installer)
         self.assertNotRegex(installer, r"INSTALL_POST_GBP_WORKER_SECRET=['\"]")
         self.assertNotRegex(installer, r"launchctl\s+kickstart(?!.*ALLOW_LIVE_KICKSTART)")
 

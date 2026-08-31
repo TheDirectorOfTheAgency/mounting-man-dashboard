@@ -365,3 +365,29 @@ def test_linkedin_legacy_activity_receipt_is_preserved_without_reposting():
     linkedin = next(entry for entry in results if entry["name"] == "linkedin")
     assert linkedin == {"name": "linkedin", "status": "PUBLISHED", "detail": legacy}
     assert not any("linkedin.com/rest" in call["url"] for call in http.calls)
+
+
+def test_linkedin_indeterminate_create_is_a_no_retry_barrier():
+    http = RecordingHttp()
+    results = SocialPublisher(
+        env={
+            "LINKEDIN_ACCESS_TOKEN": "token",
+            "LINKEDIN_AUTHOR_URN": "urn:li:person:123",
+        },
+        http=http,
+    ).publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+        posted_destinations=[{
+            "name": "linkedin",
+            "status": "INDETERMINATE",
+            "detail": "prior create outcome unknown",
+        }],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin["status"] == "INDETERMINATE"
+    assert "manual reconciliation" in linkedin["detail"].lower()
+    assert not any("linkedin.com/rest" in call["url"] for call in http.calls)

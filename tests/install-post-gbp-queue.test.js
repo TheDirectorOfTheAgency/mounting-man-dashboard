@@ -74,6 +74,30 @@ function createFakeKv() {
     async del(key) { values.delete(key); return 1; },
     async eval(script, keys, args) {
       evalCalls.push({ script, keys, args });
+      if (keys.length === 2) {
+        const [itemKey, indexKey] = keys;
+        const [value, member] = args;
+        if (values.has(itemKey)) {
+          if (!sets.has(indexKey)) sets.set(indexKey, new Set());
+          sets.get(indexKey).add(member);
+          return 0;
+        }
+        values.set(itemKey, value);
+        if (!sets.has(indexKey)) sets.set(indexKey, new Set());
+        sets.get(indexKey).add(member);
+        return 1;
+      }
+      if (keys.length === 3) {
+        const [lockKey, itemKey, indexKey] = keys;
+        const [token, value, member, pending] = args;
+        if (values.get(lockKey) !== token) return 0;
+        values.set(itemKey, value);
+        if (!sets.has(indexKey)) sets.set(indexKey, new Set());
+        if (pending === '1') sets.get(indexKey).add(member);
+        else sets.get(indexKey).delete(member);
+        values.delete(lockKey);
+        return 1;
+      }
       const [key] = keys;
       const [token] = args;
       if (values.get(key) !== token) return 0;
@@ -87,6 +111,26 @@ function createFakeKv() {
     },
     async srem(key, member) { sets.get(key)?.delete(member); return 1; },
     async smembers(key) { return [...(sets.get(key) || [])]; },
+  };
+}
+
+function completionProof(surface, overrides = {}) {
+  return {
+    account_verified: true,
+    location_verified: true,
+    surface_verified: true,
+    caption_exact: surface === 'update',
+    bound_image_preview_visible: surface === 'update',
+    cta_verified: surface === 'update',
+    matching_card: true,
+    pending_review: false,
+    gallery_confirmed: surface === 'photos',
+    image_sha256: IMAGE.sha256,
+    observed_at: new Date(NOW).toISOString(),
+    worker_version: '1.0.0',
+    artifact_id: 'abcdef1234567890',
+    screenshot_sha256: 'b'.repeat(64),
+    ...overrides,
   };
 }
 
@@ -172,13 +216,14 @@ async function publishedSetup() {
   };
 }
 
-function gbpRequest(method, { body, secret = GBP_SECRET } = {}) {
+function gbpRequest(method, { body, query, secret = GBP_SECRET } = {}) {
   return {
     method,
     headers: {
-      authorization: secret ? `Bearer ${secret}` : '',
+      authorization: secret && `Bearer ${secret}`,
     },
     body,
+    query,
   };
 }
 
@@ -257,6 +302,41 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
 
   const gbpDest = res.body.job.result.destinations.find((entry) => entry.name === 'gbp');
   assert.equal(gbpDest.status, 'QUEUED');
+});
+
+test('callback refuses to settle a published result until GBP intent is durable', async () => {
+  const { store, record, dispatchId } = await publishedSetup();
+  const callback = createRunnerCallbackHandler({
+    store, gbpQueue: null, runnerSecret: RUNNER_SECRET, now: () => NOW,
+  });
+  const res = createResponse();
+  await callback(signedCallback({
+    jobId: record.jobId,
+    revision: record.revision,
+    dispatchId,
+    result: publishedResult(),
+  }), res);
+
+  assert.equal(res.statusCode, 503);
+  const persisted = await store.loadRecord(record.jobId);
+  assert.equal(persisted.result, null);
+  assert.equal(persisted.lease.dispatchId, dispatchId);
+});
+
+test('enqueue atomically creates the item and pending-index membership', async () => {
+  const kv = createFakeKv();
+  const queue = createGbpQueue(kv);
+  const item = gbpPayloadFromRecord({
+    jobId: 'job_atomic', revision: 'c'.repeat(64), seed: SEED, image: IMAGE, result: publishedResult(),
+  });
+  const originalEval = kv.eval;
+  kv.eval = async () => { throw new Error('atomic write unavailable'); };
+  await assert.rejects(queue.enqueue(item), /atomic write unavailable/);
+  assert.equal(kv.values.has(gbpItemKey(SEED.slug)), false);
+  assert.deepEqual(await kv.smembers(GBP_PENDING_INDEX_KEY), []);
+  kv.eval = originalEval;
+  assert.equal((await queue.enqueue(item)).queued, true);
+  assert.equal((await queue.listPending()).length, 1);
 });
 
 test('a second publish of the same slug does not queue GBP again', async () => {
@@ -341,10 +421,10 @@ test('claim and concurrent per-surface completions use token-owned locks without
 
   const [updateDone, photosDone] = await Promise.all([
     gbpQueue.complete(SEED.slug, {
-      surface: 'update', status: 'posted', proof: { matching_card: true }, leaseToken: updateClaim.leaseToken, now: NOW + 1,
+      surface: 'update', status: 'posted', proof: completionProof('update'), leaseToken: updateClaim.leaseToken, now: NOW + 1,
     }),
     gbpQueue.complete(SEED.slug, {
-      surface: 'photos', status: 'posted', proof: { gallery_confirmed: true }, leaseToken: photosClaim.leaseToken, now: NOW + 1,
+      surface: 'photos', status: 'posted', proof: completionProof('photos'), leaseToken: photosClaim.leaseToken, now: NOW + 1,
     }),
   ]);
   assert.equal(updateDone.ok, true);
@@ -358,7 +438,27 @@ test('claim and concurrent per-surface completions use token-owned locks without
   assert.ok(lockSets.length >= 4);
   assert.ok(lockSets.every((call) => call.options.nx === true && Number.isInteger(call.options.px)));
   assert.ok(kv.evalCalls.length >= 4);
-  assert.ok(kv.evalCalls.every((call) => call.keys.length === 1 && call.args.length === 1));
+  assert.ok(kv.evalCalls.some((call) => call.keys.length === 3 && call.args.length === 5));
+});
+
+test('a stale lock owner cannot overwrite state after its fencing token is replaced', async () => {
+  const { kv, gbpQueue, record } = await publishedSetup();
+  await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
+  const originalGet = kv.get;
+  let stoleLock = false;
+  kv.get = async (key) => {
+    const value = await originalGet(key);
+    if (!stoleLock && key === gbpItemKey(SEED.slug)) {
+      stoleLock = true;
+      const lockKey = [...kv.values.keys()].find((candidate) => candidate.startsWith(GBP_ITEM_LOCK_PREFIX));
+      kv.values.set(lockKey, 'new-owner-token');
+    }
+    return value;
+  };
+
+  const result = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW });
+  assert.deepEqual(result, { ok: false, reason: 'lock_lost' });
+  assert.equal((await gbpQueue.loadItem(SEED.slug)).surfaces.update.status, 'pending');
 });
 
 test('a live lease blocks a second claim and an expired lease is reclaimed with retained attempt history', async () => {
@@ -388,7 +488,7 @@ test('completion rejects a missing, wrong, or expired lease token', async () => 
   const { gbpQueue, record } = await publishedSetup();
   await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
   const claim = await gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW });
-  const report = { surface: 'photos', status: 'posted', proof: { gallery_confirmed: true } };
+  const report = { surface: 'photos', status: 'posted', proof: completionProof('photos') };
 
   assert.equal((await gbpQueue.complete(SEED.slug, { ...report, now: NOW + 1 })).reason, 'lease_token_required');
   assert.equal((await gbpQueue.complete(SEED.slug, { ...report, leaseToken: 'wrong', now: NOW + 1 })).reason, 'lease_token_mismatch');
@@ -418,6 +518,14 @@ test('completion validates surface-specific outcomes and posted proof strictly',
   assert.equal((await gbpQueue.complete(SEED.slug, {
     surface: 'photos', status: 'posted', leaseToken: photos.leaseToken, now: NOW + 1,
   })).reason, 'proof_required');
+  for (const [surfaceName, claim, proof] of [
+    ['update', update, { matching_card: true }],
+    ['photos', photos, { gallery_confirmed: false }],
+  ]) {
+    assert.equal((await gbpQueue.complete(SEED.slug, {
+      surface: surfaceName, status: 'posted', proof, leaseToken: claim.leaseToken, now: NOW + 1,
+    })).reason, 'invalid_proof');
+  }
 });
 
 test('Update and Photos accept exactly their documented completion outcomes', async () => {
@@ -434,7 +542,7 @@ test('Update and Photos accept exactly their documented completion outcomes', as
         surface,
         status,
         proof: status === 'posted' || status === 'pending_review'
-          ? (surface === 'update' ? { matching_card: true } : { gallery_confirmed: true })
+          ? completionProof(surface, status === 'pending_review' ? { pending_review: true } : {})
           : {},
         error: status.endsWith('failure') || status === 'indeterminate'
           ? { reason_code: 'reconcile_required', retryable: status.endsWith('failure') }
@@ -453,13 +561,13 @@ test('pending index remains until both surfaces complete and listPending removes
   await enqueueGbpAfterPublish({ queue: gbpQueue, record: { ...record, result: publishedResult() } });
   const update = await gbpQueue.claim(SEED.slug, { surface: 'update', workerId: 'm1-a', now: NOW });
   await gbpQueue.complete(SEED.slug, {
-    surface: 'update', status: 'pending_review', proof: { pending_review: true }, leaseToken: update.leaseToken, now: NOW + 1,
+    surface: 'update', status: 'pending_review', proof: completionProof('update', { pending_review: true }), leaseToken: update.leaseToken, now: NOW + 1,
   });
   assert.ok(kv.sets.get(GBP_PENDING_INDEX_KEY).has(SEED.slug));
 
   const photos = await gbpQueue.claim(SEED.slug, { surface: 'photos', workerId: 'm1-a', now: NOW + 2 });
   await gbpQueue.complete(SEED.slug, {
-    surface: 'photos', status: 'posted', proof: { gallery_confirmed: true }, leaseToken: photos.leaseToken, now: NOW + 3,
+    surface: 'photos', status: 'posted', proof: completionProof('photos'), leaseToken: photos.leaseToken, now: NOW + 3,
   });
   assert.equal(kv.sets.get(GBP_PENDING_INDEX_KEY).has(SEED.slug), false);
 
@@ -469,28 +577,55 @@ test('pending index remains until both surfaces complete and listPending removes
   assert.deepEqual(await kv.smembers(GBP_PENDING_INDEX_KEY), []);
 });
 
-test('heartbeat stores and returns only safe worker identity, version, and timestamp', async () => {
+test('heartbeat stores a readable worker build identity and no caller-supplied data', async () => {
   const kv = createFakeKv();
   const queue = createGbpQueue(kv);
   const heartbeat = await queue.heartbeat({
-    workerId: 'm1-primary', version: '2026.08.30', now: NOW,
+    workerId: 'm1-primary', version: '2026.08.30', buildSha: 'a'.repeat(40), now: NOW,
     secret: 'must-not-store', customer: { phone: '555-0100' },
   });
   assert.deepEqual(heartbeat, {
     ok: true,
-    heartbeat: { workerId: 'm1-primary', version: '2026.08.30', seenAt: new Date(NOW).toISOString() },
+    heartbeat: {
+      workerId: 'm1-primary', version: '2026.08.30', buildSha: 'a'.repeat(40), seenAt: new Date(NOW).toISOString(),
+    },
   });
   const storedHeartbeat = [...kv.values.entries()].find(([key]) => key.includes(':heartbeat:'));
   assert.ok(storedHeartbeat);
-  assert.deepEqual(Object.keys(JSON.parse(storedHeartbeat[1])).sort(), ['seenAt', 'version', 'workerId']);
+  assert.deepEqual(Object.keys(JSON.parse(storedHeartbeat[1])).sort(), ['buildSha', 'seenAt', 'version', 'workerId']);
+  assert.deepEqual(await queue.getHeartbeat('m1-primary'), heartbeat);
 
   const handler = createGbpHandler({ queue, workerSecret: GBP_SECRET });
   const res = createResponse();
   await handler(gbpRequest('POST', {
-    body: { action: 'heartbeat', workerId: 'm1-primary', version: '2026.08.30', secret: 'nope' },
+    body: {
+      action: 'heartbeat', workerId: 'm1-primary', version: '2026.08.30', buildSha: 'a'.repeat(40), secret: 'nope',
+    },
   }), res);
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(Object.keys(res.body.heartbeat).sort(), ['seenAt', 'version', 'workerId']);
+  assert.deepEqual(Object.keys(res.body.heartbeat).sort(), ['buildSha', 'seenAt', 'version', 'workerId']);
+
+  const read = createResponse();
+  await handler(gbpRequest('GET', { query: { heartbeat: 'm1-primary' } }), read);
+  assert.deepEqual(read.body, res.body);
+});
+
+test('legacy pending rows are quarantined instead of poisoning the schema-v2 pull', async () => {
+  const kv = createFakeKv();
+  const queue = createGbpQueue(kv);
+  const legacySlug = 'legacy-pending';
+  kv.values.set(gbpItemKey(legacySlug), JSON.stringify({
+    slug: legacySlug,
+    caption: 'Legacy item',
+    live_url: 'https://www.themountingman.com/installations/legacy-pending',
+    image_url: IMAGE.hostedUrl,
+    status: 'pending',
+    queuedAt: new Date(NOW).toISOString(),
+  }));
+  await kv.sadd(GBP_PENDING_INDEX_KEY, legacySlug);
+
+  assert.deepEqual(await queue.listPending(), []);
+  assert.equal((await kv.smembers(GBP_PENDING_INDEX_KEY)).includes(legacySlug), false);
 });
 
 test('new-schema API completion cannot use the legacy tokenless Update path', async () => {
@@ -521,13 +656,17 @@ test('API claim returns a lease token and complete requires that exact token', a
   await gbp(gbpRequest('POST', {
     body: {
       action: 'complete', slug: SEED.slug, surface: 'update', status: 'pending_review',
-      proof: { pending_review: true, customer_phone: '555-0100' },
+      proof: { ...completionProof('update', { pending_review: true }), customer_phone: '555-0100' },
       leaseToken: claimed.body.leaseToken,
     },
   }), completed);
   assert.equal(completed.statusCode, 200);
   assert.equal(completed.body.item.surfaces.update.status, 'pending_review');
-  assert.deepEqual(completed.body.item.surfaces.update.proof, { pending_review: true });
+  assert.deepEqual(
+    completed.body.item.surfaces.update.proof,
+    completionProof('update', { pending_review: true }),
+  );
+  assert.equal(completed.body.item.surfaces.update.proof.customer_phone, undefined);
   assert.equal(completed.body.item.surfaces.photos.status, 'pending');
 });
 

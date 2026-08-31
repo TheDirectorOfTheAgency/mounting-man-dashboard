@@ -55,6 +55,14 @@ export function createGbpHandler({ queue, workerSecret } = {}) {
     }
 
     if (req.method === 'GET') {
+      const heartbeatWorker = String(req.query?.heartbeat || '').trim();
+      if (heartbeatWorker) {
+        const result = await queue.getHeartbeat(heartbeatWorker);
+        if (!result.ok) {
+          return res.status(result.reason === 'heartbeat_not_found' ? 404 : 400).json({ error: result.reason });
+        }
+        return res.status(200).json(result);
+      }
       const pending = await queue.listPending();
       return res.status(200).json({
         pending,
@@ -68,6 +76,7 @@ export function createGbpHandler({ queue, workerSecret } = {}) {
       const result = await queue.heartbeat({
         workerId: req.body?.workerId,
         version: req.body?.version,
+        buildSha: req.body?.buildSha,
       });
       if (!result.ok) return res.status(400).json({ error: result.reason });
       return res.status(200).json(result);

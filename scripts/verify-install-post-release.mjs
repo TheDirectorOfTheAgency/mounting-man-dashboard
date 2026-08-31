@@ -21,8 +21,8 @@ function validateOptions(options) {
   }
 
   const expectedCommit = requiredText(options.expectedCommit, 'expected commit');
-  if (!/^[0-9a-f]{7,40}$/i.test(expectedCommit)) {
-    throw new Error('expected commit must be a 7-40 character Git SHA');
+  if (!/^[0-9a-f]{40}$/i.test(expectedCommit)) {
+    throw new Error('expected commit must be a full 40-character Git SHA');
   }
 
   const workerSecret = requiredText(options.workerSecret, 'worker secret');
@@ -45,6 +45,10 @@ function validateOptions(options) {
     workerVersion,
     repository,
     githubToken: String(options.githubToken || '').trim(),
+    now: Number.isFinite(options.now) ? options.now : Date.now(),
+    maxHeartbeatAgeMs: Number.isFinite(options.maxHeartbeatAgeMs)
+      ? options.maxHeartbeatAgeMs
+      : 20 * 60 * 1000,
   };
 }
 
@@ -135,15 +139,10 @@ export async function verifyInstallPostRelease(options = {}) {
 
   const heartbeatResponse = await expectStatus(
     fetchImpl,
-    `${config.baseUrl}/api/install-post/gbp`,
+    `${config.baseUrl}/api/install-post/gbp?heartbeat=${encodeURIComponent(config.workerId)}`,
     {
-      method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'heartbeat',
-        workerId: config.workerId,
-        version: config.workerVersion,
-      }),
+      method: 'GET',
+      headers: authHeaders,
     },
     200,
     'GBP heartbeat',
@@ -153,9 +152,19 @@ export async function verifyInstallPostRelease(options = {}) {
     heartbeat?.ok !== true
     || heartbeat?.heartbeat?.workerId !== config.workerId
     || heartbeat?.heartbeat?.version !== config.workerVersion
-    || !heartbeat?.heartbeat?.seenAt
   ) {
     throw new Error('GBP heartbeat returned an invalid receipt');
+  }
+  if (String(heartbeat.heartbeat.buildSha || '').toLowerCase() !== config.expectedCommit.toLowerCase()) {
+    throw new Error('GBP heartbeat build does not match the deployment commit');
+  }
+  const heartbeatAt = Date.parse(heartbeat.heartbeat.seenAt || '');
+  if (
+    !Number.isFinite(heartbeatAt)
+    || heartbeatAt > config.now + 60_000
+    || config.now - heartbeatAt > config.maxHeartbeatAgeMs
+  ) {
+    throw new Error('GBP heartbeat stale or malformed');
   }
 
   return {

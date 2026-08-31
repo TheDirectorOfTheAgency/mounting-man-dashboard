@@ -18,6 +18,7 @@ const OPTIONS = {
   workerId: 'm1-gbp-01',
   workerVersion: 'the188-test',
   repository: 'TheDirectorOfTheAgency/mounting-man-dashboard',
+  now: Date.parse('2026-08-30T17:05:00.000Z'),
 };
 
 function fakeFetch(calls) {
@@ -33,21 +34,16 @@ function fakeFetch(calls) {
     if (String(url).includes('/actions/workflows/publish-install-post.yml')) {
       return response(200, { state: 'active', path: '.github/workflows/publish-install-post.yml' });
     }
-    if (String(url).endsWith('/api/install-post/gbp') && !options.headers?.Authorization) {
+    if (String(url).includes('/api/install-post/gbp') && !options.headers?.Authorization) {
       return response(401, { error: 'Unauthorized' });
     }
-    if (String(url).endsWith('/api/install-post/gbp') && options.method === 'POST') {
-      const body = JSON.parse(options.body);
-      assert.deepEqual(body, {
-        action: 'heartbeat',
-        workerId: 'm1-gbp-01',
-        version: 'the188-test',
-      });
+    if (String(url).includes('/api/install-post/gbp?heartbeat=')) {
       return response(200, {
         ok: true,
         heartbeat: {
-          workerId: body.workerId,
-          version: body.version,
+          workerId: 'm1-gbp-01',
+          version: 'the188-test',
+          buildSha: OPTIONS.expectedCommit,
           seenAt: '2026-08-30T17:00:00.000Z',
         },
       });
@@ -71,11 +67,48 @@ test('release verifier checks deployment, auth boundary, pull, workflow, and hea
     authenticatedPull: true,
     heartbeat: true,
   });
-  assert.equal(calls.filter((call) => call.options.method === 'POST').length, 1);
+  assert.equal(calls.filter((call) => call.options.method === 'POST').length, 0);
   assert.ok(calls.every((call) => !call.url.includes(OPTIONS.workerSecret)));
   assert.ok(calls.every((call) => !String(call.options.body || '').includes(OPTIONS.workerSecret)));
   assert.ok(calls.every((call) => !String(call.options.body || '').includes('claim')));
   assert.ok(calls.every((call) => !String(call.options.body || '').includes('complete')));
+});
+
+test('release verifier rejects stale or deployment-skewed real worker heartbeats', async () => {
+  for (const heartbeat of [
+    {
+      workerId: OPTIONS.workerId,
+      version: OPTIONS.workerVersion,
+      buildSha: 'deadbeef0000000000000000000000000000000000',
+      seenAt: '2026-08-30T17:00:00.000Z',
+    },
+    {
+      workerId: OPTIONS.workerId,
+      version: OPTIONS.workerVersion,
+      buildSha: OPTIONS.expectedCommit,
+      seenAt: '2026-08-30T16:00:00.000Z',
+    },
+  ]) {
+    await assert.rejects(
+      verifyInstallPostRelease({
+        ...OPTIONS,
+        fetchImpl: async (url, options = {}) => {
+          if (String(url).endsWith('/api/health')) {
+            return response(200, {
+              status: 'ok', gitCommit: OPTIONS.expectedCommit.slice(0, 12), environment: 'production',
+            });
+          }
+          if (String(url).includes('/actions/workflows/')) {
+            return response(200, { state: 'active', path: '.github/workflows/publish-install-post.yml' });
+          }
+          if (String(url).includes('?heartbeat=')) return response(200, { ok: true, heartbeat });
+          if (!options.headers?.Authorization) return response(401, { error: 'Unauthorized' });
+          return response(200, { pending: [], latest: null, count: 0 });
+        },
+      }),
+      /heartbeat (?:build|stale)/i,
+    );
+  }
 });
 
 test('release verifier fails closed on deployment skew before touching GBP', async () => {

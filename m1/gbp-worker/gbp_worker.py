@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 import warnings
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 from urllib.parse import urlsplit
 
 import requests
-from PIL import Image
+from PIL import Image, ImageChops, ImageOps, ImageStat
 
 
 WORKER_VERSION = "1.0.0"
@@ -49,6 +50,8 @@ SURFACE_STATUSES = frozenset(
 )
 OPAQUE_ID_RE = re.compile(r"^[a-f0-9]{8,64}$")
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+BUILD_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class WorkerError(RuntimeError):
@@ -399,11 +402,16 @@ class DashboardQueueClient:
             or (payload["latest"] is not None and not isinstance(payload["latest"], dict))
         ):
             raise SchemaError("pull response schema is invalid")
-        validated = [validate_queue_item(item) for item in pending]
-        if validated and payload["latest"] != pending[0]:
+        if pending and payload["latest"] != pending[0]:
             raise SchemaError("pull latest item is inconsistent")
-        if not validated and payload["latest"] is not None:
+        if not pending and payload["latest"] is not None:
             raise SchemaError("pull latest item is inconsistent")
+        validated = []
+        for item in pending:
+            try:
+                validated.append(validate_queue_item(item))
+            except SchemaError:
+                sanitized_log("queue_item_skipped", status="schema_mismatch")
         return validated
 
     def claim(self, slug: str, surface: str) -> ClaimedSurface:
@@ -467,12 +475,16 @@ class DashboardQueueClient:
         return validate_queue_item(payload["item"])
 
     def heartbeat(self) -> Dict[str, Any]:
+        build_sha = str(os.environ.get("INSTALL_POST_GBP_BUILD_SHA") or "").strip().lower()
+        if not BUILD_SHA_RE.fullmatch(build_sha):
+            raise ConfigError("INSTALL_POST_GBP_BUILD_SHA must be the installed 40-hex commit")
         payload = self._request(
             "POST",
             {
                 "action": "heartbeat",
                 "workerId": self.worker_id,
                 "version": WORKER_VERSION,
+                "buildSha": build_sha,
             },
             safe_to_retry=True,
         )
@@ -480,9 +492,13 @@ class DashboardQueueClient:
         heartbeat = payload["heartbeat"]
         if payload["ok"] is not True or not isinstance(heartbeat, dict):
             raise SchemaError("heartbeat response is invalid")
-        if set(heartbeat) != {"workerId", "version", "seenAt"}:
+        if set(heartbeat) != {"workerId", "version", "buildSha", "seenAt"}:
             raise SchemaError("heartbeat fields are invalid")
-        if heartbeat["workerId"] != self.worker_id or heartbeat["version"] != WORKER_VERSION:
+        if (
+            heartbeat["workerId"] != self.worker_id
+            or heartbeat["version"] != WORKER_VERSION
+            or heartbeat["buildSha"] != build_sha
+        ):
             raise SchemaError("heartbeat identity is invalid")
         if not isinstance(heartbeat["seenAt"], str) or not heartbeat["seenAt"]:
             raise SchemaError("heartbeat timestamp is invalid")
@@ -649,25 +665,111 @@ def download_bound_image(
                 close()
 
 
+def _normalized_square_image(source: Any) -> Image.Image:
+    with Image.open(source) as image:
+        return ImageOps.fit(
+            ImageOps.exif_transpose(image).convert("RGB"),
+            (64, 64),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        ).copy()
+
+
+def _perceptual_image_hash(source: Any) -> int:
+    with Image.open(source) as image:
+        normalized = ImageOps.fit(
+            ImageOps.exif_transpose(image).convert("L"),
+            (33, 32),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+        pixels = list(normalized.tobytes())
+    value = 0
+    for row in range(32):
+        offset = row * 33
+        for column in range(32):
+            value = (value << 1) | int(
+                pixels[offset + column] > pixels[offset + column + 1]
+            )
+    return value
+
+
+def matching_gallery_image_index(
+    source_path: Path,
+    candidate_images: Sequence[bytes],
+    *,
+    maximum_hash_distance: int = 400,
+    maximum_pixel_distance: float = 28.0,
+) -> Optional[int]:
+    source_hash = _perceptual_image_hash(str(source_path))
+    source_pixels = _normalized_square_image(str(source_path))
+    distances = []
+    for index, candidate in enumerate(candidate_images):
+        try:
+            candidate_buffer = io.BytesIO(candidate)
+            candidate_hash = _perceptual_image_hash(candidate_buffer)
+            candidate_buffer.seek(0)
+            candidate_pixels = _normalized_square_image(candidate_buffer)
+        except Exception:
+            continue
+        channel_distances = ImageStat.Stat(
+            ImageChops.difference(source_pixels, candidate_pixels)
+        ).mean
+        pixel_distance = sum(channel_distances) / len(channel_distances)
+        hash_distance = (source_hash ^ candidate_hash).bit_count()
+        if (
+            hash_distance <= maximum_hash_distance
+            and pixel_distance <= maximum_pixel_distance
+        ):
+            distances.append((pixel_distance, hash_distance, index))
+    if not distances:
+        return None
+    return min(distances)[2]
+
+
 def validate_remote_image(item: Mapping[str, Any]) -> None:
     downloaded = download_bound_image(item)
     downloaded.cleanup()
 
 
-def next_missing_surface(item: Mapping[str, Any]) -> Optional[str]:
+def _claimed_surface_expired(
+    item: Mapping[str, Any], surface: str, now: Optional[object]
+) -> bool:
+    surface_record = item.get("surfaces", {}).get(surface)
+    lease = surface_record.get("lease") if isinstance(surface_record, Mapping) else None
+    expires_at = lease.get("expiresAt") if isinstance(lease, Mapping) else None
+    if not isinstance(expires_at, str):
+        raise SchemaError("claimed surface lease is invalid")
+    try:
+        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        current = (
+            datetime.now(timezone.utc)
+            if now is None
+            else datetime.fromisoformat(str(now).replace("Z", "+00:00"))
+        )
+        if expires.tzinfo is None or current.tzinfo is None:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise SchemaError("claimed surface lease is invalid") from None
+    return expires <= current
+
+
+def next_missing_surface(
+    item: Mapping[str, Any], now: Optional[object] = None
+) -> Optional[str]:
     validate_queue_item(dict(item))
     update_status = _surface_status(item, "update")
     photos_status = _surface_status(item, "photos")
     if update_status in {"pending", "retryable_failure", "indeterminate"}:
         return "update"
     if update_status == "claimed":
-        raise SchemaError("claimed update cannot be selected")
+        return "update" if _claimed_surface_expired(item, "update", now) else None
     if update_status not in {"posted", "pending_review"}:
         raise SchemaError("update state cannot advance")
     if photos_status in {"pending", "retryable_failure", "indeterminate"}:
         return "photos"
     if photos_status == "claimed":
-        raise SchemaError("claimed photos cannot be selected")
+        return "photos" if _claimed_surface_expired(item, "photos", now) else None
     if photos_status == "posted":
         return None
     raise SchemaError("photos state cannot advance")
@@ -679,6 +781,8 @@ def requires_reconciliation(item: Mapping[str, Any], surface: str) -> bool:
 
 
 def classify_update_evidence(evidence: Mapping[str, Any]) -> str:
+    if evidence.get("reconciliation_only") is True:
+        return "indeterminate"
     preconditions = (
         evidence.get("account_verified") is True,
         evidence.get("location_verified") is True,
@@ -703,30 +807,24 @@ def classify_update_evidence(evidence: Mapping[str, Any]) -> str:
 
 
 def classify_photos_evidence(evidence: Mapping[str, Any]) -> str:
-    if evidence.get("reconciliation_only") is True:
-        if (
-            evidence.get("matching_gallery_item") is True
-            and evidence.get("unrelated_image_only") is not True
-        ):
-            return "posted"
-        return "indeterminate"
-    if (
-        evidence.get("account_verified") is not True
-        or evidence.get("location_verified") is not True
-        or evidence.get("bound_image_preview_visible") is not True
-        or evidence.get("upload_triggered") is not True
+    attempted = (
+        evidence.get("file_selection_attempted") is True
+        or evidence.get("reconciliation_only") is True
+    )
+    if not (
+        evidence.get("account_verified") is True
+        and evidence.get("location_verified") is True
     ):
-        return "retryable_failure"
+        return "indeterminate" if attempted else "retryable_failure"
     if (
-        evidence.get("failure_toast") is True
-        or evidence.get("blank_dialog_after_upload") is True
-        or evidence.get("timed_out_after_upload") is True
-        or evidence.get("gallery_item_pending") is True
+        evidence.get("matching_gallery_item") is True
+        and evidence.get("unrelated_image_only") is not True
+        and evidence.get("gallery_item_pending") is not True
     ):
-        return "indeterminate"
-    if evidence.get("matching_gallery_item") is True and evidence.get("unrelated_image_only") is not True:
         return "posted"
-    return "indeterminate"
+    if attempted:
+        return "indeterminate"
+    return "retryable_failure"
 
 
 def classify_session_file_shape(path: Path) -> Dict[str, object]:
@@ -766,7 +864,7 @@ def is_login_wall(url: str, visible_text: str) -> bool:
 
 def verify_expected_account(page: Any) -> bool:
     try:
-        controls = page.locator('button[aria-label^="Google Account:"]')
+        controls = page.locator('[aria-label^="Google Account:"][role="button"]')
         count = controls.count()
         if count != 1:
             return False
@@ -789,6 +887,18 @@ def _surface_url(surface: str, add: bool = True) -> str:
     return "https://www.google.com" + path
 
 
+def _profile_url() -> str:
+    return f"https://business.google.com/n/{EXPECTED_LOCATION_ID}/profile"
+
+
+def _verify_profile_identity(page: Any) -> bool:
+    try:
+        title = str(page.title()).strip()
+        return verify_expected_account(page) and EXPECTED_BUSINESS_NAME in title
+    except Exception:
+        return False
+
+
 def _url_matches_surface(url: str, surface: str, allow_list: bool = False) -> bool:
     parsed = urlsplit(url)
     expected = urlsplit(_surface_url(surface, add=not allow_list))
@@ -802,27 +912,18 @@ def _url_matches_surface(url: str, surface: str, allow_list: bool = False) -> bo
 
 def verify_expected_location(page: Any, surface: str, allow_list: bool = False) -> bool:
     try:
-        if not _url_matches_surface(str(page.url), surface, allow_list=allow_list):
-            return False
-        business = page.get_by_role("heading", name=EXPECTED_BUSINESS_NAME, exact=True)
-        return business.count() == 1 and business.is_visible()
+        return _url_matches_surface(str(page.url), surface, allow_list=allow_list)
     except Exception:
         return False
 
 
 def _surface_ui_visible(page: Any, surface: str) -> bool:
-    names = (
-        ("Add update", "Create post")
-        if surface == "update"
-        else ("Add photos", "Upload photos")
-    )
     try:
-        count = 0
-        for name in names:
-            locator = page.get_by_role("heading", name=name, exact=True)
-            if locator.count() == 1 and locator.is_visible():
-                count += 1
-        return count == 1
+        if surface == "update":
+            control = page.locator("textarea")
+            return control.count() == 1 and control.is_visible()
+        control = page.locator('input[type="file"]')
+        return control.count() == 1
     except Exception:
         return False
 
@@ -856,8 +957,14 @@ def _browser_page(config: WorkerConfig):
                 browser.close()
 
 
-def _session_evidence(page: Any, surface: str) -> SessionEvidence:
-    account = verify_expected_account(page)
+def _session_evidence(
+    page: Any, surface: str, *, account_verified: Optional[bool] = None
+) -> SessionEvidence:
+    account = (
+        verify_expected_account(page)
+        if account_verified is None
+        else account_verified
+    )
     location = verify_expected_location(page, surface)
     ui = _surface_ui_visible(page, surface)
     return SessionEvidence(account, location, ui, surface)
@@ -866,15 +973,29 @@ def _session_evidence(page: Any, surface: str) -> SessionEvidence:
 def check_session(config: WorkerConfig, surface: str = "update") -> SessionEvidence:
     shape = classify_session_file_shape(config.storage_state_path)
     if shape["valid"] is not True:
-        raise BlockedError("browser session file is invalid")
+        raise BlockedError("session_file_invalid")
     with _browser_page(config) as page:
+        page.goto(_profile_url(), wait_until="domcontentloaded")
+        if is_login_wall(str(page.url), ""):
+            raise BlockedError("session_sign_in_required")
+        if not _verify_profile_identity(page):
+            raise BlockedError("session_account_unverified")
         page.goto(_surface_url(surface), wait_until="domcontentloaded")
         if is_login_wall(str(page.url), ""):
-            raise BlockedError("browser session requires sign in")
-        evidence = _session_evidence(page, surface)
+            raise BlockedError("session_sign_in_required")
+        evidence = _session_evidence(page, surface, account_verified=True)
         if not evidence.ok:
-            raise BlockedError("browser session evidence failed")
+            if not evidence.account_verified:
+                raise BlockedError("session_account_unverified")
+            if not evidence.location_verified:
+                raise BlockedError("session_location_unverified")
+            raise BlockedError("session_surface_unverified")
         return evidence
+
+
+def safe_reason_code(error: BaseException, fallback: str) -> str:
+    candidate = str(error).strip().lower()
+    return candidate if REASON_CODE_RE.fullmatch(candidate) else fallback
 
 
 def _timestamp() -> str:
@@ -904,51 +1025,86 @@ def masked_screenshot(
 
 
 def _active_dialog(page: Any, surface: str) -> Any:
-    name = "Add update" if surface == "update" else "Add photos"
-    dialog = page.get_by_role("dialog", name=name, exact=True)
+    if surface not in SURFACES:
+        raise SchemaError("surface is invalid")
+    dialog = page.locator('[role="dialog"]')
     if dialog.count() != 1 or not dialog.is_visible():
         raise RetryableError("expected surface dialog is unavailable")
     return dialog
 
 
-def _set_scoped_image(dialog: Any, upload_path: Path) -> Any:
-    chooser_button = dialog.get_by_role("button", name="Add photos", exact=True)
-    if chooser_button.count() != 1:
-        chooser_button = dialog.get_by_role("button", name="Choose photos", exact=True)
-    if chooser_button.count() != 1:
-        raise RetryableError("scoped image chooser is unavailable")
-    page = dialog.page
-    with page.expect_file_chooser() as chooser_info:
-        chooser_button.click()
-    chooser_info.value.set_files(str(upload_path))
-    preview = dialog.locator('img[data-source="selected-upload"]')
-    return preview
+def _set_scoped_image(dialog: Any, upload_path: Path) -> tuple:
+    file_input = dialog.locator('input[type="file"]')
+    if file_input.count() != 1:
+        raise RetryableError("scoped image input is unavailable")
+    visible_images = dialog.locator("img:visible")
+    before_count = visible_images.count()
+    file_input.set_input_files(str(upload_path))
+    dialog.page.wait_for_timeout(1_000)
+    selected = file_input.evaluate(
+        """(element, expected) => {
+            const files = element.files;
+            return files && files.length === 1
+                && files[0].name === expected.name
+                && files[0].size === expected.size
+                && files[0].type === 'image/jpeg';
+        }""",
+        {"name": upload_path.name, "size": upload_path.stat().st_size},
+    )
+    visible_images = dialog.locator("img:visible")
+    preview = visible_images.last
+    preview_visible = (
+        selected is True
+        and visible_images.count() > before_count
+        and preview.is_visible()
+    )
+    return preview, preview_visible
 
 
-def fill_update_form(page: Any, item: Mapping[str, Any], image: DownloadedImage) -> Dict[str, Any]:
+def fill_update_form(
+    page: Any,
+    item: Mapping[str, Any],
+    image: DownloadedImage,
+    *,
+    account_verified: bool,
+) -> Dict[str, Any]:
     dialog = _active_dialog(page, "update")
-    caption = dialog.get_by_role("textbox", name="Post description", exact=True)
-    if caption.count() != 1:
+    caption = dialog.locator("textarea")
+    if caption.count() != 1 or not caption.is_visible():
         raise RetryableError("post description control is unavailable")
     caption.fill(item["caption"])
-    preview = _set_scoped_image(dialog, image.upload_path)
-    button_menu = dialog.get_by_role("combobox", name="Add a button", exact=True)
+    preview, preview_visible = _set_scoped_image(dialog, image.upload_path)
+    add_links = dialog.get_by_role("button", name="Add link fields", exact=True)
+    if add_links.count() != 1:
+        raise RetryableError("CTA controls are unavailable")
+    add_links.click()
+    button_menu = dialog.get_by_role("button", name="None", exact=True)
     if button_menu.count() != 1:
         raise RetryableError("CTA selector is unavailable")
-    button_menu.select_option(label="Learn more")
-    cta = dialog.get_by_role("textbox", name="Link for your button", exact=True)
-    if cta.count() != 1:
+    button_menu.click()
+    learn_more = page.get_by_role("menuitem", name="Learn more", exact=True)
+    if learn_more.count() != 1:
+        raise RetryableError("Learn more CTA option is unavailable")
+    learn_more.click()
+    selected_cta = dialog.get_by_role("button", name="Learn more", exact=True)
+    cta = dialog.locator('input[type="url"]')
+    if selected_cta.count() != 1 or cta.count() != 1 or not cta.is_visible():
         raise RetryableError("CTA URL control is unavailable")
     cta.fill(item["cta_url"])
     return {
-        "account_verified": verify_expected_account(page),
+        "account_verified": account_verified,
         "location_verified": verify_expected_location(page, "update"),
         "caption_exact": caption.input_value() == item["caption"],
-        "bound_image_preview_visible": preview.count() == 1 and preview.is_visible(),
-        "cta_type": "LEARN_MORE" if button_menu.input_value() == "LEARN_MORE" else "",
+        "bound_image_preview_visible": preview_visible,
+        "cta_type": "LEARN_MORE",
         "cta_url_exact": cta.input_value() == item["cta_url"],
         "submission_clicked": False,
-        "_mask": (caption, cta, preview, page.locator('button[aria-label^="Google Account:"]')),
+        "_mask": (
+            caption,
+            cta,
+            preview,
+            page.locator('[aria-label^="Google Account:"][role="button"]'),
+        ),
     }
 
 
@@ -960,10 +1116,12 @@ def _has_failure_alert(page: Any) -> bool:
         return False
 
 
-def reconcile_update(page: Any, item: Mapping[str, Any]) -> Dict[str, Any]:
+def reconcile_update(
+    page: Any, item: Mapping[str, Any], *, account_verified: bool
+) -> Dict[str, Any]:
     page.goto(_surface_url("update", add=False), wait_until="domcontentloaded")
     evidence: Dict[str, Any] = {
-        "account_verified": verify_expected_account(page),
+        "account_verified": account_verified,
         "location_verified": verify_expected_location(page, "update", allow_list=True),
         "matching_pending_card": False,
         "matching_published_card": False,
@@ -979,7 +1137,6 @@ def reconcile_update(page: Any, item: Mapping[str, Any]) -> Dict[str, Any]:
                 (pending.count() == 1 and pending.is_visible())
                 or (review.count() == 1 and review.is_visible())
             )
-            evidence["matching_published_card"] = not evidence["matching_pending_card"]
     except Exception:
         pass
     return evidence
@@ -1006,71 +1163,183 @@ def submit_update(page: Any, item: Mapping[str, Any], evidence: Dict[str, Any]) 
     result = dict(evidence, submission_clicked=True)
     try:
         submit.click()
-        reconciled = reconcile_update(page, item)
+        reconciled = reconcile_update(
+            page,
+            item,
+            account_verified=evidence.get("account_verified") is True,
+        )
         result.update(reconciled)
     except Exception:
         result["timed_out_after_click"] = True
     return result
 
 
-def _photo_preview(page: Any, image: DownloadedImage) -> Any:
+def _open_photo_gallery(page: Any, *, account_verified: bool) -> tuple:
+    page.goto(_profile_url(), wait_until="domcontentloaded")
+    if is_login_wall(str(page.url), ""):
+        raise BlockedError("session_sign_in_required")
+    if account_verified is not True or not _verify_profile_identity(page):
+        raise BlockedError("session_account_unverified")
+    photos = page.get_by_role("button", name="Photos", exact=True)
+    try:
+        photos.wait_for(state="visible", timeout=15_000)
+    except Exception:
+        raise RetryableError("photo manager control is unavailable") from None
+    if photos.count() != 1 or not photos.is_visible():
+        raise RetryableError("photo manager control is unavailable")
+    photos.click()
+    page.wait_for_timeout(2_000)
+    for frame in page.frames:
+        try:
+            marker = frame.get_by_text("View all photos", exact=True)
+            raw_cards = frame.locator("img.NLtKhb")
+            rendered_indices = raw_cards.evaluate_all(
+                """(elements) => elements.flatMap((element, index) => {
+                    const box = element.getBoundingClientRect();
+                    const style = getComputedStyle(element);
+                    return box.width >= 200 && box.width <= 400
+                        && box.height >= 200 && box.height <= 400
+                        && box.top >= 0 && box.bottom <= innerHeight
+                        && box.left >= 0 && box.right <= innerWidth
+                        && style.visibility === 'visible'
+                        && style.display !== 'none' && Number(style.opacity) > 0
+                        ? [index] : [];
+                })"""
+            )
+            cards = [raw_cards.nth(index) for index in rendered_indices]
+            if marker.count() == 1 and marker.is_visible() and cards:
+                return frame, cards
+        except Exception:
+            continue
+    raise RetryableError("photo manager frame is unavailable")
+
+
+def _gallery_source_snapshot(page: Any, *, account_verified: bool) -> tuple:
+    _frame, cards = _open_photo_gallery(page, account_verified=account_verified)
+    sources = []
+    for card in cards:
+        source = card.get_attribute("src")
+        if isinstance(source, str) and source:
+            sources.append(source)
+    return tuple(sources)
+
+
+def _select_photo_file(page: Any, upload_path: Path) -> Any:
+    page.goto(_surface_url("photos"), wait_until="domcontentloaded")
+    if not verify_expected_location(page, "photos"):
+        raise BlockedError("photo_surface_unverified")
     dialog = _active_dialog(page, "photos")
-    return _set_scoped_image(dialog, image.upload_path)
+    file_input = dialog.locator('input[type="file"]')
+    if file_input.count() != 1:
+        raise RetryableError("scoped image input is unavailable")
+    with Image.open(upload_path) as image:
+        if image.format != "JPEG":
+            raise SecurityError("normalized upload is not JPEG")
+        image.verify()
+    # Google currently commits Photos on file selection. There is no safe
+    # preview/Upload-button phase, so this is the single irreversible action.
+    file_input.set_input_files(str(upload_path))
+    return file_input
+
+
+def _new_gallery_cards(
+    cards: Sequence[Any], baseline_sources: Optional[Sequence[str]]
+) -> List[Any]:
+    baseline = Counter(baseline_sources or ())
+    candidates: List[Any] = []
+    for card in cards:
+        source = card.get_attribute("src")
+        if baseline_sources is None:
+            candidates.append(card)
+        elif isinstance(source, str) and baseline[source] > 0:
+            baseline[source] -= 1
+        else:
+            candidates.append(card)
+    return candidates
 
 
 def reconcile_photos(
     page: Any,
     item: Mapping[str, Any],
     image: DownloadedImage,
+    *,
+    account_verified: bool,
     submitted_this_run: bool = False,
+    baseline_sources: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    del item, image
-    page.goto(_surface_url("photos", add=False), wait_until="domcontentloaded")
+    if image.source_sha256 != item.get("image_sha256"):
+        raise SecurityError("downloaded image binding changed")
+    _frame, cards = _open_photo_gallery(page, account_verified=account_verified)
+    candidates = _new_gallery_cards(
+        cards, baseline_sources if submitted_this_run else None
+    )
+    candidate_images: List[bytes] = []
+    rendered_candidates: List[Any] = []
+    for card in candidates:
+        try:
+            image_bytes = card.screenshot(animations="disabled")
+            if isinstance(image_bytes, bytes):
+                candidate_images.append(image_bytes)
+                rendered_candidates.append(card)
+        except Exception:
+            continue
+    match_index = matching_gallery_image_index(image.upload_path, candidate_images)
+    matching = match_index is not None
     evidence: Dict[str, Any] = {
-        "account_verified": verify_expected_account(page),
-        "location_verified": verify_expected_location(page, "photos", allow_list=True),
-        "matching_gallery_item": False,
+        "account_verified": account_verified,
+        "location_verified": True,
+        "file_selection_attempted": submitted_this_run,
+        "upload_triggered": submitted_this_run,
+        "matching_gallery_item": matching,
         "gallery_item_pending": False,
         "failure_toast": _has_failure_alert(page),
-        "unrelated_image_only": False,
+        "unrelated_image_only": bool(rendered_candidates) and not matching,
         "reconciliation_only": not submitted_this_run,
+        "_mask": tuple(
+            list(cards)
+            + [page.locator('[aria-label^="Google Account:"][role="button"]')]
+        ),
     }
-    try:
-        if submitted_this_run:
-            receipt = page.get_by_role("status", name="Photo uploaded", exact=True)
-            evidence["matching_gallery_item"] = receipt.count() == 1 and receipt.is_visible()
-        pending = page.get_by_role("status", name="Photo pending", exact=True)
-        evidence["gallery_item_pending"] = pending.count() == 1 and pending.is_visible()
-    except Exception:
-        pass
     return evidence
 
 
-def upload_photo(page: Any, item: Mapping[str, Any], image: DownloadedImage) -> Dict[str, Any]:
-    preview = _photo_preview(page, image)
+def upload_photo(
+    page: Any,
+    item: Mapping[str, Any],
+    image: DownloadedImage,
+    *,
+    account_verified: bool,
+) -> Dict[str, Any]:
+    baseline_sources = _gallery_source_snapshot(
+        page, account_verified=account_verified
+    )
     evidence: Dict[str, Any] = {
-        "account_verified": verify_expected_account(page),
-        "location_verified": verify_expected_location(page, "photos"),
-        "bound_image_preview_visible": preview.count() == 1 and preview.is_visible(),
+        "account_verified": account_verified,
+        "location_verified": True,
+        "file_selection_attempted": True,
         "upload_triggered": False,
-        "_mask": (preview, page.locator('button[aria-label^="Google Account:"]')),
+        "matching_gallery_item": False,
+        "gallery_item_pending": False,
+        "unrelated_image_only": False,
     }
-    if not all(
-        (
-            evidence["account_verified"],
-            evidence["location_verified"],
-            evidence["bound_image_preview_visible"],
-        )
-    ):
-        return evidence
-    dialog = _active_dialog(page, "photos")
-    upload = dialog.get_by_role("button", name="Upload", exact=True)
-    if upload.count() != 1 or not upload.is_enabled():
-        return evidence
-    evidence["upload_triggered"] = True
     try:
-        upload.click()
-        evidence.update(reconcile_photos(page, item, image, submitted_this_run=True))
+        _select_photo_file(page, image.upload_path)
+        evidence["upload_triggered"] = True
+    except Exception:
+        # set_input_files may commit before navigation detaches the input. Never
+        # retry blindly; reconcile the exact image against the baselined gallery.
+        evidence["timed_out_after_upload"] = True
+    try:
+        evidence.update(
+            reconcile_photos(
+                page,
+                item,
+                image,
+                account_verified=account_verified,
+                submitted_this_run=True,
+                baseline_sources=baseline_sources,
+            )
+        )
     except Exception:
         evidence["timed_out_after_upload"] = True
     return evidence
@@ -1094,6 +1363,7 @@ def _durable_proof(
         ),
         "matching_card": (
             evidence.get("matching_published_card") is True
+            or evidence.get("matching_pending_card") is True
             or evidence.get("matching_gallery_item") is True
         ),
         "pending_review": (
@@ -1101,6 +1371,11 @@ def _durable_proof(
             or evidence.get("gallery_item_pending") is True
         ),
         "gallery_confirmed": evidence.get("matching_gallery_item") is True,
+        "image_sha256": (
+            evidence.get("image_sha256")
+            if isinstance(evidence.get("image_sha256"), str)
+            else ""
+        ),
         "worker_version": WORKER_VERSION,
         "observed_at": screenshot.captured_at,
         "artifact_id": screenshot.artifact_id,
@@ -1124,40 +1399,59 @@ def process_surface(
     downloaded: Optional[DownloadedImage] = None
     claim: Optional[ClaimedSurface] = None
     with _browser_page(config) as page:
+        page.goto(_profile_url(), wait_until="domcontentloaded")
+        if is_login_wall(str(page.url), ""):
+            raise BlockedError("session_sign_in_required")
+        if not _verify_profile_identity(page):
+            raise BlockedError("session_account_unverified")
         page.goto(_surface_url(surface), wait_until="domcontentloaded")
         if is_login_wall(str(page.url), ""):
-            raise BlockedError("browser session requires sign in")
-        preflight = _session_evidence(page, surface)
+            raise BlockedError("session_sign_in_required")
+        preflight = _session_evidence(page, surface, account_verified=True)
         if not preflight.ok:
-            raise BlockedError("browser preflight evidence failed")
+            raise BlockedError("browser_preflight_unverified")
         claim = client.claim(item["slug"], surface)
         downloaded = download_bound_image(claim.item)
         try:
-            if not _session_evidence(page, surface).ok:
-                raise BlockedError("browser evidence changed after claim")
+            if not _session_evidence(
+                page, surface, account_verified=preflight.account_verified
+            ).ok:
+                raise BlockedError("browser_evidence_changed")
             if reconcile_only:
                 if surface == "update":
-                    evidence = reconcile_update(page, claim.item)
-                    evidence.update(
-                        {
-                            "caption_exact": True,
-                            "bound_image_preview_visible": True,
-                            "cta_type": "LEARN_MORE",
-                            "cta_url_exact": True,
-                            "submission_clicked": True,
-                        }
+                    evidence = reconcile_update(
+                        page,
+                        claim.item,
+                        account_verified=preflight.account_verified,
                     )
+                    evidence["reconciliation_only"] = True
                     status_value = classify_update_evidence(evidence)
                 else:
-                    evidence = reconcile_photos(page, claim.item, downloaded)
+                    evidence = reconcile_photos(
+                        page,
+                        claim.item,
+                        downloaded,
+                        account_verified=preflight.account_verified,
+                    )
                     status_value = classify_photos_evidence(evidence)
             elif surface == "update":
-                evidence = fill_update_form(page, claim.item, downloaded)
+                evidence = fill_update_form(
+                    page,
+                    claim.item,
+                    downloaded,
+                    account_verified=preflight.account_verified,
+                )
                 evidence = submit_update(page, claim.item, evidence)
                 status_value = classify_update_evidence(evidence)
             else:
-                evidence = upload_photo(page, claim.item, downloaded)
+                evidence = upload_photo(
+                    page,
+                    claim.item,
+                    downloaded,
+                    account_verified=preflight.account_verified,
+                )
                 status_value = classify_photos_evidence(evidence)
+            evidence["image_sha256"] = claim.item["image_sha256"]
             artifact_id = uuid.uuid4().hex[:16]
             mask = evidence.pop("_mask", ())
             screenshot = masked_screenshot(
@@ -1182,7 +1476,11 @@ def process_surface(
 
 def _first_actionable(items: Sequence[Dict[str, Any]]) -> Optional[tuple]:
     for item in items:
-        selected = next_missing_surface(item)
+        try:
+            selected = next_missing_surface(item)
+        except SchemaError:
+            sanitized_log("queue_item_skipped", status="schema_mismatch")
+            continue
         if selected is not None:
             return item, selected
     return None
@@ -1210,12 +1508,21 @@ def run_once(config: WorkerConfig, *, dry_run: bool = False) -> int:
     return 0
 
 
+def run_heartbeat(config: WorkerConfig) -> int:
+    client = create_client(config)
+    client.heartbeat()
+    sanitized_log("heartbeat_complete", status="reported")
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Remote GBP surface queue adapter")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check-session", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--once", action="store_true")
+    mode.add_argument("--heartbeat", action="store_true")
+    parser.add_argument("--surface", choices=sorted(SURFACES), default="update")
     display = parser.add_mutually_exclusive_group()
     display.add_argument("--headed", action="store_true")
     display.add_argument("--headless", action="store_true")
@@ -1231,19 +1538,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         elif args.headless:
             config = replace(config, headed=False)
         if args.check_session:
-            evidence = check_session(config)
+            evidence = check_session(config, surface=args.surface)
             sanitized_log(
                 "session_check",
                 status="valid" if evidence.ok else "blocked",
                 surface=evidence.surface,
             )
             return 0 if evidence.ok else 2
+        if args.heartbeat:
+            return run_heartbeat(config)
         return run_once(config, dry_run=args.dry_run)
     except LeaseConflict:
         sanitized_log("worker_exit", status="conflict", reason_code="lease_conflict")
-        return 0
-    except BlockedError:
-        sanitized_log("worker_exit", status="blocked", reason_code="blocked")
+        return 3
+    except BlockedError as error:
+        sanitized_log(
+            "worker_exit",
+            status="blocked",
+            reason_code=safe_reason_code(error, "blocked"),
+        )
         return 2
     except RetryableError:
         sanitized_log("worker_exit", status="retryable_failure", reason_code="retryable")

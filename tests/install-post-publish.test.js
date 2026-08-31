@@ -90,6 +90,11 @@ async function setup({ withPhoto = true, dispatcherOptions } = {}) {
   }
 
   const dispatcher = createFakeDispatcher(dispatcherOptions);
+  const gbpQueue = {
+    async enqueue(item) {
+      return { queued: true, reason: 'queued', item };
+    },
+  };
   return {
     store,
     record,
@@ -102,7 +107,9 @@ async function setup({ withPhoto = true, dispatcherOptions } = {}) {
       now: () => NOW,
     }),
     envelope: createRunnerEnvelopeHandler({ store, runnerSecret: RUNNER_SECRET, now: () => NOW }),
-    callback: createRunnerCallbackHandler({ store, runnerSecret: RUNNER_SECRET, now: () => NOW }),
+    callback: createRunnerCallbackHandler({
+      store, runnerSecret: RUNNER_SECRET, gbpQueue, now: () => NOW,
+    }),
   };
 }
 
@@ -482,9 +489,20 @@ test('a replayed callback cannot resurrect a published job', async () => {
     jobId: record.jobId,
     revision: record.revision,
     dispatchId,
-    result: { status: 'PUBLISHED', liveUrl: 'https://www.themountingman.com/installations/x', publicStatus: 200 },
+    result: {
+      status: 'PUBLISHED',
+      liveUrl: 'https://www.themountingman.com/installations/x',
+      publicStatus: 200,
+      slug: 'x',
+    },
   };
-  await callback(signedRunnerRequest({ path, body: success }), createResponse());
+  const first = createResponse();
+  await callback(signedRunnerRequest({ path, body: success }), first);
+  assert.equal(first.statusCode, 200);
+  const settled = await store.loadRecord(record.jobId);
+  assert.equal(settled.state, INSTALL_POST_STATES.PUBLISHED);
+  assert.equal(settled.approval, null);
+  assert.equal(settled.lease, null);
 
   const replay = createResponse();
   await callback(signedRunnerRequest({
@@ -508,6 +526,7 @@ test('createGithubDispatcher sends only opaque references to the workflow', asyn
     repo: 'mounting-man-dashboard',
     workflowFile: 'publish-install-post.yml',
     ref: 'main',
+    sourceCommit: 'a'.repeat(40),
     httpClient: {
       async post(url, payload, options) {
         posts.push({ url, payload, options });
@@ -522,7 +541,9 @@ test('createGithubDispatcher sends only opaque references to the workflow', asyn
   assert.match(posts[0].url, /workflows\/publish-install-post\.yml\/dispatches$/);
   assert.deepEqual(posts[0].payload, {
     ref: 'main',
-    inputs: { job_id: 'job_abc', revision: 'rev123', dispatch_id: 'd1' },
+    inputs: {
+      job_id: 'job_abc', revision: 'rev123', dispatch_id: 'd1', source_commit: 'a'.repeat(40),
+    },
   });
   assert.ok(!JSON.stringify(posts[0].payload).includes('ghp_test'));
 });
@@ -530,4 +551,15 @@ test('createGithubDispatcher sends only opaque references to the workflow', asyn
 test('createGithubDispatcher refuses to run unconfigured', async () => {
   const dispatcher = createGithubDispatcher({ token: '', owner: 'o', repo: 'r' });
   await assert.rejects(dispatcher.dispatch({ jobId: 'j', revision: 'r', dispatchId: 'd' }), /not configured/i);
+});
+
+test('createGithubDispatcher refuses a mutable or malformed runner revision', async () => {
+  const dispatcher = createGithubDispatcher({
+    token: 'token', owner: 'o', repo: 'r', sourceCommit: 'main',
+    httpClient: { async post() { throw new Error('must not dispatch'); } },
+  });
+  await assert.rejects(
+    dispatcher.dispatch({ jobId: 'j', revision: 'r', dispatchId: 'd' }),
+    /source commit/i,
+  );
 });

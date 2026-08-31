@@ -159,6 +159,18 @@ def already_posted_detail(name: str, posted_destinations) -> str | None:
     return None
 
 
+def prior_linkedin_indeterminate(posted_destinations) -> bool:
+    for entry in posted_destinations or []:
+        if not isinstance(entry, dict):
+            continue
+        if (
+            str(entry.get("name") or "").strip().lower() == "linkedin"
+            and str(entry.get("status") or "") == STATUS_INDETERMINATE
+        ):
+            return True
+    return False
+
+
 def already_posted(name: str, posted_destinations) -> bool:
     return already_posted_detail(name, posted_destinations) is not None
 
@@ -300,6 +312,13 @@ class SocialPublisher:
         results = []
         for name in SOCIAL_DESTINATIONS:
             refuse_forbidden_destination(name)
+            if name == "linkedin" and prior_linkedin_indeterminate(posted_destinations):
+                results.append(_destination(
+                    name,
+                    STATUS_INDETERMINATE,
+                    "LinkedIn prior create outcome requires manual reconciliation; automatic retry refused",
+                ))
+                continue
             posted_detail = already_posted_detail(name, posted_destinations)
             if posted_detail is not None:
                 detail = posted_detail if name == "linkedin" else f"skipped: already posted for {slug}"

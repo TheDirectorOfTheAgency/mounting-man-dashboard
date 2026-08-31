@@ -19,6 +19,8 @@
     <string>https://mounting-man-dashboard.vercel.app</string>
     <key>INSTALL_POST_GBP_WORKER_ID</key>
     <string>m1-gbp-01</string>
+    <key>INSTALL_POST_GBP_BUILD_SHA</key>
+    <string>__INSTALL_POST_GBP_BUILD_SHA__</string>
     <key>INSTALL_POST_GBP_SECRET_FILE</key>
     <string>/Users/thedirector/.config/themountingman/gbp-worker/worker-secret</string>
     <key>INSTALL_POST_GBP_STORAGE_STATE</key>

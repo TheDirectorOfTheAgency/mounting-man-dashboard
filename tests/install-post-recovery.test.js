@@ -107,6 +107,11 @@ async function setup({ now = createClock() } = {}) {
   await store.saveRecord(record);
 
   const dispatcher = createFakeDispatcher();
+  const gbpQueue = {
+    async enqueue(item) {
+      return { queued: true, reason: 'queued', item };
+    },
+  };
   return {
     kv,
     store,
@@ -118,7 +123,7 @@ async function setup({ now = createClock() } = {}) {
     }),
     publish: createPublishHandler({ store, sessionSecret: CAPABILITY_SECRET, dispatcher, now }),
     mobile: createMobileJobHandler({ store, sessionSecret: CAPABILITY_SECRET, now }),
-    callback: createRunnerCallbackHandler({ store, runnerSecret: RUNNER_SECRET, now }),
+    callback: createRunnerCallbackHandler({ store, runnerSecret: RUNNER_SECRET, gbpQueue, now }),
   };
 }
 
@@ -251,6 +256,7 @@ test('a reconcile run can finish the job as published', async () => {
       liveUrl: 'https://www.themountingman.com/installations/65-inch-samsung',
       publicStatus: 200,
       itemId: 'item-1',
+      slug: '65-inch-samsung',
     },
   }), done);
 
@@ -464,7 +470,12 @@ test('a lease is never left behind when the approval is refused under the lock',
     jobId: context.record.jobId,
     revision: context.record.revision,
     dispatchId,
-    result: { status: 'PUBLISHED', liveUrl: 'https://x/y', publicStatus: 200 },
+    result: {
+      status: 'PUBLISHED',
+      liveUrl: 'https://www.themountingman.com/installations/terminal-test',
+      publicStatus: 200,
+      slug: 'terminal-test',
+    },
   }), createResponse());
 
   const res = createResponse();
@@ -472,6 +483,7 @@ test('a lease is never left behind when the approval is refused under the lock',
   assert.equal(res.statusCode, 409);
   assert.equal(res.body.error, 'already_published');
   assert.equal(context.dispatcher.dispatches.length, 1);
+  assert.equal((await context.store.loadRecord(context.record.jobId)).lease, null);
 });
 
 // ---------------------------------------------------------------------------
