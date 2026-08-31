@@ -73,29 +73,42 @@ export function createRunnerCallbackHandler({ store, runnerSecret, gbpQueue, now
         refusal = transition.reason;
         return null;
       }
-      // Website is the first asset. GBP is the second — enqueue for the M1
-      // worker after Webflow is live. Never post GBP (or Reddit) from here.
+      // Website is the first asset. GBP is the second — establish durable GBP
+      // intent before this callback persists the terminal website result.
       let record = transition.record;
-      try {
-        const enqueued = await enqueueGbpAfterPublish({
-          queue: gbpQueue,
-          record,
-          at: new Date(now()).toISOString(),
-        });
-        if (enqueued.item || enqueued.reason === 'already_queued' || enqueued.reason === 'already_posted') {
-          record = attachGbpQueuedDestination(record, {
-            slug: enqueued.item?.slug || record.result?.slug,
-            reason: enqueued.queued ? 'queued' : enqueued.reason,
-          });
+      if (record.state === INSTALL_POST_STATES.PUBLISHED) {
+        if (!gbpQueue) {
+          refusal = 'gbp_queue_unavailable';
+          return null;
         }
-      } catch (err) {
-        console.error('[install-post-gbp] enqueue failed:', err?.message || err);
+        let enqueued;
+        try {
+          enqueued = await enqueueGbpAfterPublish({
+            queue: gbpQueue,
+            record,
+            at: new Date(now()).toISOString(),
+          });
+        } catch {
+          refusal = 'gbp_enqueue_failed';
+          return null;
+        }
+        if (!enqueued.item && !['already_queued', 'already_posted'].includes(enqueued.reason)) {
+          refusal = 'gbp_enqueue_failed';
+          return null;
+        }
+        record = attachGbpQueuedDestination(record, {
+          slug: enqueued.item?.slug || record.result?.slug,
+          reason: enqueued.queued ? 'queued' : enqueued.reason,
+        });
       }
       return record;
     });
 
     if (!outcome.ok) {
       const reason = refusal || outcome.reason;
+      if (reason === 'gbp_queue_unavailable' || reason === 'gbp_enqueue_failed') {
+        return res.status(503).json({ error: reason });
+      }
       return res.status(statusForReason(reason)).json({ error: reason });
     }
 

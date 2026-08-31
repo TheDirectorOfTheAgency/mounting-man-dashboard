@@ -40,7 +40,7 @@ from seed import (  # noqa: E402
     _get_nearby_cities,
     normalize_seed_post_data,
 )
-from social import SocialPublisher, publish_socials  # noqa: E402
+from social import SocialPublisher, classify_linkedin_destination, publish_socials  # noqa: E402
 from webflow import BoundAsset, WebflowError, WebflowPublisher  # noqa: E402
 
 ENVELOPE_PATH = "/api/install-post/runner/envelope"
@@ -212,13 +212,23 @@ def _result(status: str, *, message: str = "", destinations=None, **fields) -> d
         name = str(entry.get("name") or "").strip().lower()
         if name in ("website", "reddit", "gbp", "google-business-profile"):
             continue
+        dest_status = str(entry.get("status") or "")
+        dest_detail = str(entry.get("detail") or "")
+        if name == "linkedin":
+            dest_status, dest_detail = classify_linkedin_destination(dest_status, dest_detail)
         dests.append({
             "name": name,
-            "status": redact(entry.get("status") or ""),
-            "detail": redact(entry.get("detail") or ""),
+            "status": redact(dest_status),
+            "detail": redact(dest_detail),
         })
     payload["destinations"] = dests
-    if any(entry.get("status") == STATUS_RETRYABLE for entry in dests if entry.get("name") != "website"):
+    social_statuses = {
+        entry.get("status") for entry in dests if entry.get("name") != "website"
+    }
+    if STATUS_INDETERMINATE in social_statuses and status == STATUS_PUBLISHED:
+        payload["status"] = STATUS_INDETERMINATE
+        payload.setdefault("message", redact("Website is live; a social create outcome needs reconciliation"))
+    elif STATUS_RETRYABLE in social_statuses:
         if status == STATUS_PUBLISHED:
             payload["status"] = STATUS_INDETERMINATE
             payload.setdefault("message", redact("Website is live; a social destination still needs a retry"))

@@ -1,5 +1,5 @@
 # Cloud installation-post runner — runtime dependencies.
-# The phone already produced bounded WebP, so no image library is needed here.
+# Pillow decodes the bound WebP into the JPEG required by LinkedIn.
 #
 # Fully pinned and hash-checked: this runner holds a Webflow token and publishes
 # to the live site, so a compromised or re-uploaded dependency must not be able
@@ -192,3 +192,7 @@ idna==3.18 \
 urllib3==2.6.3 \
     --hash=sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed \
     --hash=sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4
+pillow==12.3.0 \
+    --hash=sha256:3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce \
+    --hash=sha256:78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91 \
+    --hash=sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7

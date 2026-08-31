@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.themountingman.gbp-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/thedirector/.local/share/themountingman/gbp-worker/venv/bin/python</string>
+    <string>/Users/thedirector/.local/share/themountingman/gbp-worker/gbp_worker.py</string>
+    <string>--once</string>
+    <string>--headless</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/thedirector</string>
+    <key>INSTALL_POST_GBP_API_BASE</key>
+    <string>https://mounting-man-dashboard.vercel.app</string>
+    <key>INSTALL_POST_GBP_WORKER_ID</key>
+    <string>m1-gbp-01</string>
+    <key>INSTALL_POST_GBP_BUILD_SHA</key>
+    <string>__INSTALL_POST_GBP_BUILD_SHA__</string>
+    <key>INSTALL_POST_GBP_SECRET_FILE</key>
+    <string>/Users/thedirector/.config/themountingman/gbp-worker/worker-secret</string>
+    <key>INSTALL_POST_GBP_STORAGE_STATE</key>
+    <string>/Users/thedirector/.hermes/credentials/gbp-playwright-session/storage_state.json</string>
+    <key>INSTALL_POST_GBP_ARTIFACT_DIR</key>
+    <string>/Users/thedirector/.local/state/themountingman/gbp-worker/artifacts</string>
+    <key>INSTALL_POST_GBP_HEADED</key>
+    <string>0</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/thedirector/.local/state/themountingman/gbp-worker/worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/thedirector/.local/state/themountingman/gbp-worker/worker.error.log</string>
+</dict>
+</plist>

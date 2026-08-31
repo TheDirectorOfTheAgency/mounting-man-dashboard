@@ -1,9 +1,16 @@
 """Social destinations for the cloud installation-post runner.
 
 Vendored from the Hermes publisher's Graph / LinkedIn / X clients (clients.py
-patterns): Instagram, Facebook, LinkedIn, and X/Twitter. Never Reddit. Never
-Google Business Profile. X fails closed unless the authenticated screen_name
-is MountingManTV.
+patterns on the M1 at ~/.hermes/skills/business-ops/
+mounting-man-installation-posts-hermes/ — not in this repo): Instagram,
+Facebook, LinkedIn, and X/Twitter. Never Reddit. Never Google Business
+Profile. X fails closed unless the authenticated screen_name is
+MountingManTV.
+
+LinkedIn uses the versioned Images and Posts APIs with a personal author
+(urn:li:person: / w_member_social). The Posts API may return either a
+urn:li:share or urn:li:ugcPost ID; both are documented success receipts.
+The write-only token must never be used for image or post GET readback.
 
 Credential names match GitHub Actions secrets / Vercel env (names only):
   FACEBOOK_PAGE_ID
@@ -22,13 +29,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import os
+import re
 import time
 import urllib.parse
 from typing import Callable
 from uuid import uuid4
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 from content import display_price_subtotal
 
@@ -40,10 +50,24 @@ STATUS_PUBLISHED = "PUBLISHED"
 STATUS_SKIPPED = "SKIPPED"
 STATUS_BLOCKED = "BLOCKED"
 STATUS_RETRYABLE = "RETRYABLE_FAILURE"
+STATUS_INDETERMINATE = "INDETERMINATE"
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
-LINKEDIN_ASSETS_URL = "https://api.linkedin.com/v2/assets?action=registerUpload"
-LINKEDIN_UGC_URL = "https://api.linkedin.com/v2/ugcPosts"
+LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
+LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
+LINKEDIN_VERSION_DEFAULT = "202608"
+LINKEDIN_RECEIPT_FAILURE = (
+    "LinkedIn success requires a Posts API x-restli-id share or ugcPost URN"
+)
+_LINKEDIN_POST_ID_RE = re.compile(r"^urn:li:(?:share|ugcPost):\d+$", re.IGNORECASE)
+_LINKEDIN_LEGACY_RECEIPT_RE = re.compile(
+    r"^(?:"
+    r"https://www\.linkedin\.com/posts/themountingman_[^\s]*-activity-\d+(?:-[A-Za-z0-9_-]+)?"
+    r"|https://www\.linkedin\.com/feed/update/urn:li:activity:\d+/?"
+    r"|urn:li:activity:\d+"
+    r")$",
+    re.IGNORECASE,
+)
 X_VERIFY_URL = "https://api.twitter.com/1.1/account/verify_credentials.json"
 X_MEDIA_UPLOAD_URL = "https://upload.twitter.com/1.1/media/upload.json"
 X_CREATE_TWEET_URL = "https://api.twitter.com/2/tweets"
@@ -69,6 +93,10 @@ class SocialRetryableError(RuntimeError):
     """Transient failure. Safe to retry; the destination was not confirmed."""
 
 
+class SocialIndeterminateError(RuntimeError):
+    """The create may have landed. Reconcile manually; never retry blindly."""
+
+
 class SocialSkip(RuntimeError):
     """Destination is not configured. Not a failure."""
 
@@ -86,13 +114,65 @@ def require_env(names: tuple[str, ...], env: dict | None = None) -> dict[str, st
     return values
 
 
-def already_posted(name: str, posted_destinations) -> bool:
+def is_linkedin_post_id(detail: object) -> bool:
+    """Return whether detail is a documented Posts API creation receipt."""
+    return bool(_LINKEDIN_POST_ID_RE.fullmatch(str(detail or "").strip()))
+
+
+def is_linkedin_post_receipt(detail: object) -> bool:
+    value = str(detail or "").strip()
+    return is_linkedin_post_id(value) or bool(_LINKEDIN_LEGACY_RECEIPT_RE.fullmatch(value))
+
+
+def classify_linkedin_destination(status: object, detail: object) -> tuple[str, str]:
+    """Fail closed unless a PUBLISHED LinkedIn result has a Posts API ID."""
+    status_text = str(status or "")
+    detail_text = str(detail or "")
+    if status_text != STATUS_PUBLISHED:
+        return status_text, detail_text
+    if is_linkedin_post_receipt(detail_text):
+        return STATUS_PUBLISHED, detail_text
+    return STATUS_RETRYABLE, LINKEDIN_RECEIPT_FAILURE
+
+
+def require_linkedin_person_author(author: object) -> str:
+    value = str(author or "").strip()
+    if not value.startswith("urn:li:person:"):
+        raise SocialBlockedError(
+            "LinkedIn token is w_member_social / person URN only; "
+            "refusing a company page. Set LINKEDIN_AUTHOR_URN to urn:li:person:..."
+        )
+    return value
+
+
+def already_posted_detail(name: str, posted_destinations) -> str | None:
     for entry in posted_destinations or []:
         if not isinstance(entry, dict):
             continue
-        if str(entry.get("name") or "").strip().lower() == name and str(entry.get("status") or "") == STATUS_PUBLISHED:
+        entry_name = str(entry.get("name") or "").strip().lower()
+        if entry_name != name or str(entry.get("status") or "") != STATUS_PUBLISHED:
+            continue
+        detail = str(entry.get("detail") or "").strip()
+        if name == "linkedin" and not is_linkedin_post_receipt(detail):
+            continue
+        return detail
+    return None
+
+
+def prior_linkedin_indeterminate(posted_destinations) -> bool:
+    for entry in posted_destinations or []:
+        if not isinstance(entry, dict):
+            continue
+        if (
+            str(entry.get("name") or "").strip().lower() == "linkedin"
+            and str(entry.get("status") or "") == STATUS_INDETERMINATE
+        ):
             return True
     return False
+
+
+def already_posted(name: str, posted_destinations) -> bool:
+    return already_posted_detail(name, posted_destinations) is not None
 
 
 def refuse_forbidden_destination(name: str) -> None:
@@ -124,6 +204,34 @@ def build_social_caption(post_data: dict, live_url: str, *, limit: int | None = 
 
 def _destination(name: str, status: str, detail: str = "") -> dict:
     return {"name": name, "status": status, "detail": str(detail or "")[:300]}
+
+
+def linkedin_jpeg_bytes(image_bytes: bytes) -> bytes:
+    """Decode the bound image and return a real RGB JPEG rendition."""
+    if not image_bytes:
+        raise SocialRetryableError("LinkedIn JPEG rendition needs the bound photo bytes")
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.load()
+            rgb_image = image.convert("RGB")
+            output = io.BytesIO()
+            rgb_image.save(output, format="JPEG", quality=90)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise SocialRetryableError(f"LinkedIn JPEG rendition failed: {exc}") from exc
+    jpeg_bytes = output.getvalue()
+    if not jpeg_bytes.startswith(b"\xff\xd8\xff"):
+        raise SocialRetryableError("LinkedIn JPEG rendition did not produce JPEG bytes")
+    return jpeg_bytes
+
+
+def _linkedin_created_post_id(response) -> str:
+    headers = getattr(response, "headers", None) or {}
+    header_id = str(headers.get("x-restli-id") or headers.get("X-RestLi-Id") or "")
+    if not is_linkedin_post_id(header_id):
+        raise SocialIndeterminateError(
+            "LinkedIn post create HTTP 201 requires x-restli-id with a share or ugcPost URN"
+        )
+    return header_id
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +312,17 @@ class SocialPublisher:
         results = []
         for name in SOCIAL_DESTINATIONS:
             refuse_forbidden_destination(name)
-            if already_posted(name, posted_destinations):
-                results.append(_destination(name, STATUS_PUBLISHED, f"skipped: already posted for {slug}"))
+            if name == "linkedin" and prior_linkedin_indeterminate(posted_destinations):
+                results.append(_destination(
+                    name,
+                    STATUS_INDETERMINATE,
+                    "LinkedIn prior create outcome requires manual reconciliation; automatic retry refused",
+                ))
+                continue
+            posted_detail = already_posted_detail(name, posted_destinations)
+            if posted_detail is not None:
+                detail = posted_detail if name == "linkedin" else f"skipped: already posted for {slug}"
+                results.append(_destination(name, STATUS_PUBLISHED, detail))
                 continue
             try:
                 detail = self._publish_one(
@@ -220,6 +337,8 @@ class SocialPublisher:
                 results.append(_destination(name, STATUS_SKIPPED, str(exc)))
             except SocialBlockedError as exc:
                 results.append(_destination(name, STATUS_BLOCKED, str(exc)))
+            except SocialIndeterminateError as exc:
+                results.append(_destination(name, STATUS_INDETERMINATE, str(exc)))
             except SocialRetryableError as exc:
                 results.append(_destination(name, STATUS_RETRYABLE, str(exc)))
             except Exception as exc:  # noqa: BLE001 — classify unexpected as retryable
@@ -283,46 +402,42 @@ class SocialPublisher:
         del image_url
         creds = require_env(LINKEDIN_ENV, self.env)
         token = creds["LINKEDIN_ACCESS_TOKEN"]
-        author = creds["LINKEDIN_AUTHOR_URN"]
+        author = require_linkedin_person_author(creds["LINKEDIN_AUTHOR_URN"])
+        linkedin_version = _env("LINKEDIN_VERSION", self.env) or LINKEDIN_VERSION_DEFAULT
         caption = build_social_caption(post_data, live_url, limit=3000)
+        jpeg_bytes = linkedin_jpeg_bytes(image_bytes)
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "Linkedin-Version": linkedin_version,
             "X-Restli-Protocol-Version": "2.0.0",
         }
         try:
-            register = self.http.post(
-                LINKEDIN_ASSETS_URL,
+            initialized = self.http.post(
+                LINKEDIN_IMAGES_URL,
                 headers=headers,
                 json={
-                    "registerUploadRequest": {
-                        "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
-                        "owner": author,
-                        "serviceRelationships": [{
-                            "relationshipType": "OWNER",
-                            "identifier": "urn:li:userGeneratedContent",
-                        }],
-                    }
+                    "initializeUploadRequest": {"owner": author}
                 },
                 timeout=45,
             )
         except requests.exceptions.RequestException as exc:
-            raise SocialRetryableError(f"LinkedIn upload register failed: {exc}") from exc
-        self._raise_http(register, "LinkedIn upload register")
-        value = (register.json() or {}).get("value") or {}
-        asset = str(value.get("asset") or "")
-        upload_url = (
-            ((value.get("uploadMechanism") or {})
-             .get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest") or {})
-            .get("uploadUrl")
-        )
-        if not asset or not upload_url:
-            raise SocialRetryableError("LinkedIn upload register returned no asset")
+            raise SocialRetryableError(f"LinkedIn image initialize failed: {exc}") from exc
+        self._raise_http(initialized, "LinkedIn image initialize")
+        value = (initialized.json() or {}).get("value") or {}
+        image_urn = str(value.get("image") or "")
+        upload_url = str(value.get("uploadUrl") or "")
+        if not image_urn.startswith("urn:li:image:") or not upload_url:
+            raise SocialRetryableError("LinkedIn image initialize returned no image or upload URL")
         try:
             uploaded = self.http.put(
                 upload_url,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "image/webp"},
-                data=image_bytes,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "image/jpeg",
+                    "Content-Disposition": 'attachment; filename="install.jpg"',
+                },
+                data=jpeg_bytes,
                 timeout=60,
             )
         except requests.exceptions.RequestException as exc:
@@ -330,31 +445,32 @@ class SocialPublisher:
         self._raise_http(uploaded, "LinkedIn image upload")
         try:
             created = self.http.post(
-                LINKEDIN_UGC_URL,
+                LINKEDIN_POSTS_URL,
                 headers=headers,
                 json={
                     "author": author,
+                    "commentary": caption,
+                    "visibility": "PUBLIC",
+                    "distribution": {"feedDistribution": "MAIN_FEED"},
+                    "content": {"media": {"id": image_urn}},
                     "lifecycleState": "PUBLISHED",
-                    "specificContent": {
-                        "com.linkedin.ugc.ShareContent": {
-                            "shareCommentary": {"text": caption},
-                            "shareMediaCategory": "IMAGE",
-                            "media": [{
-                                "status": "READY",
-                                "description": {"text": caption[:200]},
-                                "media": asset,
-                                "title": {"text": str(post_data.get("title") or "TV installation")},
-                            }],
-                        }
-                    },
-                    "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
+                    "isReshareDisabledByAuthor": False,
                 },
                 timeout=45,
             )
         except requests.exceptions.RequestException as exc:
-            raise SocialRetryableError(f"LinkedIn post create failed: {exc}") from exc
-        self._raise_http(created, "LinkedIn post create")
-        return str(created.headers.get("x-restli-id") or created.headers.get("X-RestLi-Id") or asset)
+            raise SocialIndeterminateError(
+                "LinkedIn post create outcome is unknown after a transport failure"
+            ) from exc
+        create_status = getattr(created, "status_code", 0)
+        if create_status >= 500 or 200 <= create_status < 300:
+            if create_status != 201:
+                raise SocialIndeterminateError(
+                    f"LinkedIn post create outcome is unknown after HTTP {create_status}"
+                )
+        else:
+            self._raise_http(created, "LinkedIn post create")
+        return _linkedin_created_post_id(created)
 
     def _x(self, *, post_data, live_url, image_url, image_bytes) -> str:
         del image_url

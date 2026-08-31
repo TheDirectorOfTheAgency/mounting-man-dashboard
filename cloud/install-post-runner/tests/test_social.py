@@ -6,6 +6,8 @@ X fails closed unless the verified screen_name is MountingManTV.
 
 from __future__ import annotations
 
+import base64
+import io
 import sys
 from pathlib import Path
 
@@ -15,15 +17,20 @@ RUNNER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNNER_DIR))
 sys.path.insert(0, str(RUNNER_DIR / "publisher"))
 
+import social as social_module  # noqa: E402
 from social import (  # noqa: E402
     FORBIDDEN_DESTINATIONS,
     MOUNTINGMANTV_SCREEN_NAME,
     SOCIAL_DESTINATIONS,
     SocialBlockedError,
+    SocialIndeterminateError,
     SocialPublisher,
+    SocialRetryableError,
     already_posted,
     assert_mountingmantv,
+    is_linkedin_post_receipt,
     refuse_forbidden_destination,
+    require_linkedin_person_author,
 )
 
 POST_DATA = {
@@ -35,7 +42,9 @@ POST_DATA = {
 }
 LIVE_URL = "https://www.themountingman.com/installations/65-inch-samsung-tv-installation-edina"
 IMAGE_URL = "https://cdn.example.com/photo.webp"
-IMAGE_BYTES = b"RIFF\x00\x00\x00\x00WEBP" + b"pixels" * 40
+IMAGE_BYTES = base64.b64decode(
+    "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"
+)
 
 X_ENV = {
     "TWITTER_API_KEY": "mm-key",
@@ -57,9 +66,19 @@ class FakeResponse:
 
 
 class RecordingHttp:
-    def __init__(self, verify_user=None):
+    def __init__(
+        self,
+        verify_user=None,
+        *,
+        linkedin_receipt="urn:li:ugcPost:7499800000000000000",
+        linkedin_post_status=201,
+        linkedin_post_exception=None,
+    ):
         self.calls = []
         self.verify_user = verify_user or {"screen_name": MOUNTINGMANTV_SCREEN_NAME, "id_str": "1"}
+        self.linkedin_receipt = linkedin_receipt
+        self.linkedin_post_status = linkedin_post_status
+        self.linkedin_post_exception = linkedin_post_exception
 
     def _record(self, method, url, **kwargs):
         self.calls.append({"method": method, "url": url, **kwargs})
@@ -89,19 +108,18 @@ class RecordingHttp:
             if kwargs.get("files") or data.get("published") == "false":
                 return FakeResponse(json_data={"id": "fb-unpub-1"})
             return FakeResponse(json_data={"post_id": "fb-1"})
-        if "assets" in url:
+        if url.endswith("/rest/images?action=initializeUpload"):
             return FakeResponse(json_data={
                 "value": {
-                    "asset": "urn:li:digitalmediaAsset:asset-1",
-                    "uploadMechanism": {
-                        "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest": {
-                            "uploadUrl": "https://linkedin.example/upload",
-                        }
-                    },
+                    "image": "urn:li:image:image-1",
+                    "uploadUrl": "https://linkedin.example/upload",
                 }
             })
-        if "ugcPosts" in url:
-            return FakeResponse(headers={"x-restli-id": "urn:li:share:1"})
+        if url.endswith("/rest/posts"):
+            if self.linkedin_post_exception is not None:
+                raise self.linkedin_post_exception
+            headers = {"x-restli-id": self.linkedin_receipt} if self.linkedin_receipt is not None else {}
+            return FakeResponse(status_code=self.linkedin_post_status, headers=headers)
         raise AssertionError(f"unexpected POST {url}")
 
     def put(self, url, **kwargs):
@@ -116,7 +134,7 @@ def _full_env():
         "FACEBOOK_PAGE_ACCESS_TOKEN": "page-token",
         "INSTAGRAM_BUSINESS_ACCOUNT_ID": "ig-1",
         "LINKEDIN_ACCESS_TOKEN": "li-token",
-        "LINKEDIN_AUTHOR_URN": "urn:li:organization:1",
+        "LINKEDIN_AUTHOR_URN": "urn:li:person:person-1",
     }
 
 
@@ -234,3 +252,142 @@ def test_missing_social_credentials_are_skipped_not_invented():
     )
     assert {entry["status"] for entry in results} == {"SKIPPED"}
     assert http.calls == []
+
+
+SHARE_URN = "urn:li:share:7499851525402308608"
+UGC_URN = "urn:li:ugcPost:7499800000000000000"
+
+
+def _publish_linkedin(http, env=None):
+    return SocialPublisher(env=env or _full_env(), http=http)._linkedin(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+    )
+
+
+def test_linkedin_webp_becomes_real_jpeg_bytes():
+    jpeg_bytes = social_module.linkedin_jpeg_bytes(IMAGE_BYTES)
+    assert jpeg_bytes.startswith(b"\xff\xd8\xff")
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(jpeg_bytes)) as image:
+        assert image.format == "JPEG"
+
+
+def test_linkedin_company_page_author_is_blocked():
+    with pytest.raises(SocialBlockedError, match="person"):
+        require_linkedin_person_author("urn:li:organization:1")
+    http = RecordingHttp()
+    env = _full_env()
+    env["LINKEDIN_AUTHOR_URN"] = "urn:li:organization:1"
+    with pytest.raises(SocialBlockedError, match="person"):
+        _publish_linkedin(http, env)
+    assert http.calls == []
+
+
+def test_linkedin_uses_current_images_and_posts_contract_without_readback():
+    http = RecordingHttp()
+    assert _publish_linkedin(http) == UGC_URN
+
+    assert [(call["method"], call["url"]) for call in http.calls] == [
+        ("POST", "https://api.linkedin.com/rest/images?action=initializeUpload"),
+        ("PUT", "https://linkedin.example/upload"),
+        ("POST", "https://api.linkedin.com/rest/posts"),
+    ]
+    assert not any(call["method"] == "GET" for call in http.calls)
+
+    initialize, upload, create = http.calls
+    expected_headers = {
+        "Authorization": "Bearer li-token",
+        "Content-Type": "application/json",
+        "Linkedin-Version": "202608",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+    assert initialize["headers"] == expected_headers
+    assert initialize["json"] == {
+        "initializeUploadRequest": {"owner": "urn:li:person:person-1"}
+    }
+    assert upload["headers"]["Content-Type"] == "image/jpeg"
+    assert upload["headers"]["Content-Disposition"].endswith('filename="install.jpg"')
+    assert upload["data"].startswith(b"\xff\xd8\xff")
+    assert create["headers"] == expected_headers
+    body = create["json"]
+    assert body["author"] == "urn:li:person:person-1"
+    assert body["commentary"]
+    assert body["lifecycleState"] == "PUBLISHED"
+    assert body["visibility"] == "PUBLIC"
+    assert body["distribution"] == {"feedDistribution": "MAIN_FEED"}
+    assert body["content"]["media"]["id"] == "urn:li:image:image-1"
+    assert body["isReshareDisabledByAuthor"] is False
+
+
+@pytest.mark.parametrize("receipt", [SHARE_URN, UGC_URN])
+def test_linkedin_accepts_documented_201_post_id_receipts(receipt):
+    assert _publish_linkedin(RecordingHttp(linkedin_receipt=receipt)) == receipt
+    assert already_posted("linkedin", [
+        {"name": "linkedin", "status": "PUBLISHED", "detail": receipt},
+    ]) is True
+
+
+@pytest.mark.parametrize("receipt", [None, "urn:li:image:not-a-post"])
+def test_linkedin_missing_or_malformed_201_receipt_is_indeterminate(receipt):
+    http = RecordingHttp(linkedin_receipt=receipt, linkedin_post_status=201)
+    with pytest.raises(SocialIndeterminateError, match="x-restli-id"):
+        _publish_linkedin(http)
+
+
+def test_linkedin_post_read_timeout_and_server_error_are_indeterminate():
+    timeout_http = RecordingHttp(
+        linkedin_post_exception=__import__("requests").exceptions.ReadTimeout("after send")
+    )
+    with pytest.raises(SocialIndeterminateError, match="outcome is unknown"):
+        _publish_linkedin(timeout_http)
+
+    with pytest.raises(SocialIndeterminateError, match="HTTP 503"):
+        _publish_linkedin(RecordingHttp(linkedin_post_status=503))
+
+
+def test_linkedin_legacy_activity_receipt_is_preserved_without_reposting():
+    legacy = "https://www.linkedin.com/posts/themountingman_install-activity-7499800000000000000-AbCd"
+    assert is_linkedin_post_receipt(legacy) is True
+    http = RecordingHttp()
+    results = SocialPublisher(env=_full_env(), http=http).publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+        posted_destinations=[{"name": "linkedin", "status": "PUBLISHED", "detail": legacy}],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin == {"name": "linkedin", "status": "PUBLISHED", "detail": legacy}
+    assert not any("linkedin.com/rest" in call["url"] for call in http.calls)
+
+
+def test_linkedin_indeterminate_create_is_a_no_retry_barrier():
+    http = RecordingHttp()
+    results = SocialPublisher(
+        env={
+            "LINKEDIN_ACCESS_TOKEN": "token",
+            "LINKEDIN_AUTHOR_URN": "urn:li:person:123",
+        },
+        http=http,
+    ).publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+        posted_destinations=[{
+            "name": "linkedin",
+            "status": "INDETERMINATE",
+            "detail": "prior create outcome unknown",
+        }],
+    )
+    linkedin = next(entry for entry in results if entry["name"] == "linkedin")
+    assert linkedin["status"] == "INDETERMINATE"
+    assert "manual reconciliation" in linkedin["detail"].lower()
+    assert not any("linkedin.com/rest" in call["url"] for call in http.calls)

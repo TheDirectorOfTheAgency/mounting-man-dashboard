@@ -1,2 +1,3 @@
+# Includes hash-pinned Pillow for LinkedIn WebP-to-JPEG contract tests.
 -r requirements.txt
 pytest==8.3.3
