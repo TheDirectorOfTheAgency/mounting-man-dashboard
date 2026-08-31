@@ -89,4 +89,6 @@ test('M1 installer stamps the immutable build SHA into launchd', () => {
   assert.match(installer, /releases\/\$build_sha/);
   assert.match(installer, /restore_backup/);
   assert.match(installer, /bootstrap[^\n]*PLIST_DEST/);
+  assert.match(installer, /Print :EnvironmentVariables:\$key/);
+  assert.match(plist, /<key>INSTALL_POST_GBP_BUILD_SHA<\/key>\s*<string>__INSTALL_POST_GBP_BUILD_SHA__<\/string>/);
 });

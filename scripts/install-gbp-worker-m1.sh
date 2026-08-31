@@ -23,7 +23,7 @@ usage() {
 }
 
 run_installed() {
-  local mode="$1" python_path worker_path
+  local mode="$1" python_path worker_path key value
   if [[ ! -f "$PLIST_DEST" ]]; then
     printf '%s\n' "GBP worker is not installed" >&2
     exit 2
@@ -34,6 +34,19 @@ run_installed() {
     printf '%s\n' "GBP worker is not installed" >&2
     exit 2
   fi
+  for key in \
+    HOME \
+    INSTALL_POST_GBP_API_BASE \
+    INSTALL_POST_GBP_WORKER_ID \
+    INSTALL_POST_GBP_SECRET_FILE \
+    INSTALL_POST_GBP_STORAGE_STATE \
+    INSTALL_POST_GBP_ARTIFACT_DIR \
+    INSTALL_POST_GBP_BUILD_SHA; do
+    value="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$key" "$PLIST_DEST" 2>/dev/null || true)"
+    if [[ -n "$value" ]]; then
+      export "$key=$value"
+    fi
+  done
   if [[ "$mode" == "--check-session" ]]; then
     "$python_path" "$worker_path" "$mode" --surface update --headless
     exec "$python_path" "$worker_path" "$mode" --surface photos --headless
