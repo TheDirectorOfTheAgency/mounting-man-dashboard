@@ -40,7 +40,7 @@ from uuid import uuid4
 import requests
 from PIL import Image, UnidentifiedImageError
 
-from content import display_price_subtotal
+from content import display_price_subtotal, ensure_city_stamp
 
 SOCIAL_DESTINATIONS = ("instagram", "facebook", "linkedin", "x")
 FORBIDDEN_DESTINATIONS = frozenset({"reddit", "gbp", "google-business-profile"})
@@ -186,10 +186,12 @@ def refuse_forbidden_destination(name: str) -> None:
 
 
 def build_social_caption(post_data: dict, live_url: str, *, limit: int | None = None) -> str:
-    summary = str(post_data.get("post-summary") or post_data.get("title") or "").strip()
-    if not summary:
-        city = str(post_data.get("city") or "").strip()
-        summary = f"TV installation{' in ' + city if city else ''} by The Mounting Man."
+    city = str(post_data.get("city") or "").strip()
+    summary = ensure_city_stamp(
+        str(post_data.get("post-summary") or post_data.get("title") or "").strip(),
+        city,
+        post_data,
+    )
     price = display_price_subtotal(post_data)
     parts = [summary]
     if price:

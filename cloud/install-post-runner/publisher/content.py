@@ -52,6 +52,9 @@ def _unmount_unit_label(post_data: dict) -> str:
     return label or "TV"
 
 
+MINNEAPOLIS_CITY_STAMP = "TV mounting Minneapolis by The Mounting Man."
+
+
 def _normalize_city_name(value: str) -> str:
     city = (value or "").strip()
     if not city:
@@ -69,6 +72,58 @@ def _normalize_city_name(value: str) -> str:
     if key in aliases:
         return aliases[key]
     return normalized
+
+
+def is_exact_minneapolis_city(city: str) -> bool:
+    """True only for Minneapolis proper — not metro, Twin Cities, or a suburb."""
+    return _normalize_city_name(city).lower() == "minneapolis"
+
+
+def city_mounting_stamp(city: str) -> str:
+    """One Woodward city stamp. Suburbs keep their own city; never borrow Minneapolis."""
+    place = _normalize_city_name(city)
+    if not place:
+        return "TV mounting by The Mounting Man."
+    return f"TV mounting {place} by The Mounting Man."
+
+
+def job_used_frame(post_data: dict | None) -> bool:
+    """Existing Frame tagging only — do not infer from soundbar / gallery-bracket notes."""
+    if not post_data:
+        return False
+    if post_data.get("gallery-style"):
+        return True
+    brand = str(post_data.get("tv-brand") or "").strip().lower()
+    return brand.startswith("samsung frame") or brand in {"samsung frame", "samsung frame pro"}
+
+
+def job_used_mantel(post_data: dict | None) -> bool:
+    """Existing MantelMount tagging only — do not invent a mantel job."""
+    if not post_data:
+        return False
+    if post_data.get("mantelmount"):
+        return True
+    mount = str(post_data.get("mount-type") or "").strip().lower()
+    return "mantelmount" in mount or "mantel mount" in mount
+
+
+def ensure_city_stamp(text: str, city: str, post_data: dict | None = None) -> str:
+    """Prefix the city stamp once. Frame / mantel extras stay on existing tagging."""
+    stamp = city_mounting_stamp(city)
+    value = str(text or "").strip()
+    if stamp in value:
+        return value
+    extras = []
+    if job_used_frame(post_data):
+        extras.append("Samsung Frame.")
+    if job_used_mantel(post_data):
+        extras.append("MantelMount.")
+    lead = " ".join([stamp, *extras])
+    if lead in value:
+        return value
+    if not value:
+        return lead
+    return f"{lead} {value}"
 
 
 def _build_unit_label(size: str, brand: str, include_tv_suffix: bool = True) -> str:
@@ -978,7 +1033,7 @@ def generate_post_summary(post_data: dict, city: str) -> str:
         price_display = display_price_subtotal(post_data)
         if price_display:
             summary += f" Completed for {price_display}."
-        return _strip_unit_number(summary)
+        return ensure_city_stamp(_strip_unit_number(summary), city, post_data)
     city = _normalize_city_name(city)
     size = str(post_data.get("tv-size", "TV"))
     brand = _normalized_brand(post_data)
@@ -1017,7 +1072,7 @@ def generate_post_summary(post_data: dict, city: str) -> str:
     if not performer["is_first_person"]:
         summary += f" by {performer['name']}"
     summary += "."
-    return summary + price_note
+    return ensure_city_stamp(summary + price_note, city, post_data)
 
 
 def choose_variant(seed: str, options: list[str]) -> str:
@@ -1158,7 +1213,7 @@ def _generate_unmount_post_body(post_data: dict, city: str) -> str:
         "<h2>Taking a TV Off the Wall</h2>",
         "<p>A clean unmount means supporting the TV, backing out the hardware, and walking the screen off the wall without damaging the set or the surface. This job was a take-down, not a mount.</p>",
         f"<h2>TV Mounting in {html.escape(city)}</h2>",
-        f"<p>{_service_area_paragraph(post_data, city, nearby_cities)}</p>",
+        f"<p>{ensure_city_stamp(_service_area_paragraph(post_data, city, nearby_cities), city, post_data)}</p>",
     ])
     return _strip_unit_number(body)
 
@@ -1347,7 +1402,11 @@ def generate_post_body(post_data: dict, city: str) -> str:
                 )
 
     third_heading = f"TV Mounting in {city}"
-    third_paragraph = _service_area_paragraph(post_data, city, nearby_cities)
+    third_paragraph = ensure_city_stamp(
+        _service_area_paragraph(post_data, city, nearby_cities),
+        city,
+        post_data,
+    )
 
     return "\n".join([
         build_installation_details(post_data, city),
