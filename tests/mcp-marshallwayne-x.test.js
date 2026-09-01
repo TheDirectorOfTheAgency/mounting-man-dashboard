@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 
 import {
@@ -7,12 +8,15 @@ import {
   MARSHALLWAYNE_SCREEN_NAME,
   MARSHALLWAYNE_USER_ID,
   POST_MARSHALLWAYNE_RECAP,
+  UPLOAD_MEDIA_URL,
   VERIFY_CREDENTIALS_URL,
   VERIFY_MARSHALLWAYNE,
   createMarshallWayneXClient,
 } from '../lib/marshallwayne-x.mjs';
 import { percentEncode, signOAuth1HmacSha1 } from '../lib/x-oauth1.mjs';
 import { createMarshallWayneXHandler } from '../pages/api/mcp/marshallwayne-x.js';
+
+const require = createRequire(import.meta.url);
 
 const X_ENV = {
   X_MARSHALLWAYNE_API_KEY: 'mw-api-key',
@@ -331,9 +335,13 @@ test('post_marshallwayne_recap refuses the wrong account and does not POST /2/tw
 
 test('post_marshallwayne_recap posts text verbatim and returns the permalink', async () => {
   const recap = 'Week recap: two Frames in Edina.\nNo hashtag added here.';
+  const mediaId = '1980000000000000001';
   const http = recordingHttp((config) => {
     if (config.method === 'GET' && config.url === VERIFY_CREDENTIALS_URL) {
       return { data: marshallWayneUser() };
+    }
+    if (config.method === 'POST' && config.url === UPLOAD_MEDIA_URL) {
+      return { data: { media_id_string: mediaId } };
     }
     if (config.method === 'POST' && config.url === CREATE_TWEET_URL) {
       return { data: { data: { id: '1987654321098765432', text: config.data.text } } };
@@ -355,14 +363,20 @@ test('post_marshallwayne_recap posts text verbatim and returns the permalink', a
   assert.deepEqual(res.body.result.structuredContent, {
     permalink: 'https://x.com/MarshallWayne/status/1987654321098765432',
     id: '1987654321098765432',
+    media_id: mediaId,
   });
-  assert.equal(http.calls.length, 2);
+  assert.equal(http.calls.length, 3);
   assert.equal(http.calls[0].url, VERIFY_CREDENTIALS_URL);
-  assert.deepEqual(http.calls[1].data, { text: recap });
-  assert.equal(http.calls[1].headers['Content-Type'], 'application/json');
-  assert.equal(JSON.stringify(http.calls[1].data).includes('#'), false);
+  assert.equal(http.calls[1].url, UPLOAD_MEDIA_URL);
+  assert.equal(http.calls[2].url, CREATE_TWEET_URL);
+  assert.deepEqual(http.calls[2].data, {
+    text: recap,
+    media: { media_ids: [mediaId] },
+  });
+  assert.equal(http.calls[2].headers['Content-Type'], 'application/json');
+  assert.equal(JSON.stringify(http.calls[2].data).includes('#'), false);
 
-  const oauth = parseOAuthHeader(http.calls[1].headers.Authorization);
+  const oauth = parseOAuthHeader(http.calls[2].headers.Authorization);
   const expected = independentHmacSha1(
     'POST',
     CREATE_TWEET_URL,
@@ -373,21 +387,77 @@ test('post_marshallwayne_recap posts text verbatim and returns the permalink', a
   assert.equal(oauth.oauth_signature, expected);
 });
 
+test('post_marshallwayne_recap attach_image=false posts text only and skips media upload', async () => {
+  const recap = 'Week recap: two Frames in Edina.\nNo hashtag added here.';
+  const http = recordingHttp((config) => {
+    if (config.method === 'GET' && config.url === VERIFY_CREDENTIALS_URL) {
+      return { data: marshallWayneUser() };
+    }
+    if (config.method === 'POST' && config.url === CREATE_TWEET_URL) {
+      return { data: { data: { id: '1987654321098765432', text: config.data.text } } };
+    }
+    throw new Error(`unexpected X call ${config.method} ${config.url}`);
+  });
+  const handler = handlerWithHttp(http);
+  const res = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'tools/call',
+      params: {
+        name: POST_MARSHALLWAYNE_RECAP,
+        arguments: { text: recap, attach_image: false },
+      },
+    },
+  }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.result.structuredContent, {
+    permalink: 'https://x.com/MarshallWayne/status/1987654321098765432',
+    id: '1987654321098765432',
+  });
+  assert.equal(http.calls.length, 2);
+  assert.equal(http.calls[0].url, VERIFY_CREDENTIALS_URL);
+  assert.equal(http.calls[1].url, CREATE_TWEET_URL);
+  assert.deepEqual(http.calls[1].data, { text: recap });
+  assert.equal(http.calls[1].headers['Content-Type'], 'application/json');
+  assert.equal(http.calls.some((call) => call.url === UPLOAD_MEDIA_URL), false);
+});
+
 test('POST /2/tweets JSON body is not part of the OAuth signature', async () => {
-  const signatures = [];
+  const tweetSignatures = [];
   const http = recordingHttp((config) => {
     if (config.url === VERIFY_CREDENTIALS_URL) {
       return { data: marshallWayneUser() };
     }
-    signatures.push(parseOAuthHeader(config.headers.Authorization).oauth_signature);
-    return { data: { data: { id: `id-${signatures.length}` } } };
+    if (config.url === CREATE_TWEET_URL) {
+      tweetSignatures.push(parseOAuthHeader(config.headers.Authorization).oauth_signature);
+      return { data: { data: { id: `id-${tweetSignatures.length}` } } };
+    }
+    throw new Error(`unexpected X call ${config.method} ${config.url}`);
   });
   const oauth = { nonce: 'same-nonce', timestamp: '1710000000' };
   const client = createMarshallWayneXClient({ env: X_ENV, httpClient: http, oauth });
-  await client.postMarshallWayneRecap('first recap text');
-  await client.postMarshallWayneRecap('a totally different recap body');
-  assert.equal(signatures.length, 2);
-  assert.equal(signatures[0], signatures[1]);
+  // Text-only so this test proves tweet JSON is unsigned without depending
+  // on media-upload form/OAuth (separate request, extraParams signed).
+  await client.postMarshallWayneRecap('first recap text', { attach_image: false });
+  await client.postMarshallWayneRecap('a totally different recap body', { attach_image: false });
+  assert.equal(tweetSignatures.length, 2);
+  assert.equal(tweetSignatures[0], tweetSignatures[1]);
+  assert.equal(http.calls.some((call) => call.url === UPLOAD_MEDIA_URL), false);
+});
+
+test('next.config traces recap-plate.png into the marshallwayne-x serverless bundle', () => {
+  const nextConfig = require('../next.config.js');
+  const includes = nextConfig.experimental?.outputFileTracingIncludes
+    || nextConfig.outputFileTracingIncludes
+    || {};
+  const globs = includes['/api/mcp/marshallwayne-x'] || [];
+  assert.ok(
+    globs.some((glob) => String(glob).includes('lib/assets/recap-plate.png')),
+    'outputFileTracingIncludes must ship lib/assets/recap-plate.png with /api/mcp/marshallwayne-x',
+  );
 });
 
 test('missing X_MARSHALLWAYNE_* env fails closed and ignores other Twitter vars', async () => {
