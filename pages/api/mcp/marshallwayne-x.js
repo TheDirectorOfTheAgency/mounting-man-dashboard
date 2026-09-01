@@ -24,7 +24,7 @@ import {
 
 const SERVER_INFO = {
   name: 'marshallwayne-x',
-  version: '1.0.0',
+  version: '1.1.0',
   title: 'MarshallWayne X recap',
 };
 
@@ -41,13 +41,17 @@ const TOOLS = [
   {
     name: POST_MARSHALLWAYNE_RECAP,
     description:
-      'Post the text argument VERBATIM to X as @MarshallWayne. No rewrite, no prepend, no hashtags, no truncation. Always verify_credentials first and refuse if the account is not MarshallWayne / 1395241563509252099. Empty or whitespace-only text is refused. Returns permalink and tweet id.',
+      'Post the text argument VERBATIM to X as @MarshallWayne, with a 1080x1350 Mounting Man recap card attached. No rewrite, no prepend, no hashtags, no truncation. Always verify_credentials first and refuse if the account is not MarshallWayne / 1395241563509252099. Empty or whitespace-only text is refused. Returns permalink, tweet id, and media_id. Set attach_image=false to post text only.',
     inputSchema: {
       type: 'object',
       properties: {
         text: {
           type: 'string',
           description: 'Tweet text posted exactly as provided. Do not rewrite.',
+        },
+        attach_image: {
+          type: 'boolean',
+          description: 'Attach the generated 4:5 recap card. Default true.',
         },
       },
       required: ['text'],
@@ -89,7 +93,7 @@ async function runTool(name, args, { xClient }) {
     return xClient.verifyMarshallWayne();
   }
   if (name === POST_MARSHALLWAYNE_RECAP) {
-    return xClient.postMarshallWayneRecap(args?.text);
+    return xClient.postMarshallWayneRecap(args?.text, args || {});
   }
   const error = new Error(`Unknown tool: ${name || ''}`);
   error.code = 'unknown_tool';
@@ -108,7 +112,7 @@ async function dispatchMcp(body, deps) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
       instructions:
-        'Post X recaps as @MarshallWayne only. verify_marshallwayne confirms the user tokens. post_marshallwayne_recap posts the text argument verbatim — no rewrite, no prepend, no hashtags, no truncation. Refuses empty text and any account that is not MarshallWayne / 1395241563509252099.',
+        'Post X recaps as @MarshallWayne only. verify_marshallwayne confirms the user tokens. post_marshallwayne_recap posts the text argument verbatim and attaches a 1080x1350 recap card parsed from that text — no rewrite, no prepend, no hashtags, no truncation. Set attach_image=false for text only. Refuses empty text and any account that is not MarshallWayne / 1395241563509252099.',
     });
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
