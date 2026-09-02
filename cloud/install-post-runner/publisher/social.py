@@ -61,6 +61,13 @@ IG_CONTAINER_READY = frozenset({"FINISHED", "PUBLISHED"})
 IG_CONTAINER_FAILED = frozenset({"ERROR", "EXPIRED"})
 IG_CONTAINER_POLL_ATTEMPTS = 20
 IG_CONTAINER_POLL_INTERVAL_SECONDS = 3.0
+# Wall-clock cap so stalled Graph GETs cannot burn the 10-minute workflow
+# before Facebook, LinkedIn, and X. Status GET timeout is short. A transport
+# timeout is treated as still in progress so polling continues inside the
+# deadline; exhausting the wait stays retryable, not BLOCKED.
+IG_CONTAINER_WAIT_SECONDS = 60
+IG_CONTAINER_STATUS_TIMEOUT_SECONDS = 10
+IG_CONTAINER_TRANSPORT_TIMEOUT = "TRANSPORT_TIMEOUT"
 IG_PUBLISH_ATTEMPTS = 4
 IG_PUBLISH_RETRY_WAIT_SECONDS = 5.0
 LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
@@ -363,16 +370,22 @@ class SocialPublisher:
         http=None,
         *,
         sleep: Callable[[float], None] | None = None,
+        clock: Callable[[], float] | None = None,
         ig_container_poll_attempts: int = IG_CONTAINER_POLL_ATTEMPTS,
         ig_container_poll_interval: float = IG_CONTAINER_POLL_INTERVAL_SECONDS,
+        ig_container_wait_seconds: float = IG_CONTAINER_WAIT_SECONDS,
+        ig_container_status_timeout: float = IG_CONTAINER_STATUS_TIMEOUT_SECONDS,
         ig_publish_attempts: int = IG_PUBLISH_ATTEMPTS,
         ig_publish_retry_wait: float = IG_PUBLISH_RETRY_WAIT_SECONDS,
     ):
         self.env = env if env is not None else os.environ
         self.http = http or requests
         self.sleep = sleep or time.sleep
+        self.clock = clock or time.monotonic
         self.ig_container_poll_attempts = max(1, int(ig_container_poll_attempts))
         self.ig_container_poll_interval = float(ig_container_poll_interval)
+        self.ig_container_wait_seconds = float(ig_container_wait_seconds)
+        self.ig_container_status_timeout = float(ig_container_status_timeout)
         self.ig_publish_attempts = max(1, int(ig_publish_attempts))
         self.ig_publish_retry_wait = float(ig_publish_retry_wait)
 
@@ -461,8 +474,10 @@ class SocialPublisher:
             response = self.http.get(
                 f"{GRAPH_BASE}/{creation_id}",
                 params={"fields": "status_code", "access_token": token},
-                timeout=30,
+                timeout=self.ig_container_status_timeout,
             )
+        except requests.exceptions.Timeout:
+            return IG_CONTAINER_TRANSPORT_TIMEOUT
         except requests.exceptions.RequestException as exc:
             raise SocialRetryableError(f"Instagram media status failed: {exc}") from exc
         self._raise_http(response, "Instagram media status")
@@ -471,16 +486,25 @@ class SocialPublisher:
 
     def _wait_for_instagram_container(self, creation_id: str, token: str) -> str:
         """Poll until FINISHED. ERROR/EXPIRED is a refusal. Timeout does not hang."""
+        deadline = self.clock() + self.ig_container_wait_seconds
         last_status = ""
         attempts = self.ig_container_poll_attempts
         for attempt in range(attempts):
+            if attempt and self.clock() >= deadline:
+                break
             last_status = self._instagram_container_status(creation_id, token)
             if last_status in IG_CONTAINER_READY:
                 return last_status
             if last_status in IG_CONTAINER_FAILED:
                 raise SocialBlockedError(f"Instagram media container {last_status}")
-            if attempt + 1 < attempts:
-                self.sleep(self.ig_container_poll_interval)
+            if last_status == IG_CONTAINER_TRANSPORT_TIMEOUT:
+                last_status = "IN_PROGRESS"
+            if attempt + 1 >= attempts:
+                break
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                break
+            self.sleep(min(self.ig_container_poll_interval, remaining))
         raise SocialRetryableError(
             f"Instagram media container not ready after {attempts} polls "
             f"(last status={last_status or 'unknown'})"
