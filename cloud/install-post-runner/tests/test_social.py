@@ -28,6 +28,7 @@ from social import (  # noqa: E402
     SocialRetryableError,
     already_posted,
     assert_mountingmantv,
+    is_instagram_media_not_ready,
     is_linkedin_post_receipt,
     refuse_forbidden_destination,
     require_linkedin_person_author,
@@ -65,6 +66,29 @@ class FakeResponse:
         return self._json
 
 
+IG_9007_ERROR = {
+    "error": {
+        "message": "Media ID is not available",
+        "type": "OAuthException",
+        "code": 9007,
+        "error_subcode": 2207027,
+        "error_user_title": "Cannot Publish",
+    }
+}
+IG_9007_TEXT = (
+    '{"error":{"message":"Media ID is not available","type":"OAuthException",'
+    '"code":9007,"error_subcode":2207027,"error_user_title":"Cannot Publish"}}'
+)
+
+
+def _ig_9007():
+    return FakeResponse(status_code=400, json_data=IG_9007_ERROR, text=IG_9007_TEXT)
+
+
+def _ig_published(media_id="ig-media-1"):
+    return FakeResponse(json_data={"id": media_id})
+
+
 class RecordingHttp:
     def __init__(
         self,
@@ -74,6 +98,8 @@ class RecordingHttp:
         linkedin_post_status=201,
         linkedin_post_exception=None,
         instagram_lookup_images=None,
+        instagram_statuses=None,
+        instagram_publish_responses=None,
     ):
         self.calls = []
         self.verify_user = verify_user or {"screen_name": MOUNTINGMANTV_SCREEN_NAME, "id_str": "1"}
@@ -81,9 +107,24 @@ class RecordingHttp:
         self.linkedin_post_status = linkedin_post_status
         self.linkedin_post_exception = linkedin_post_exception
         self.instagram_lookup_images = instagram_lookup_images
+        self.instagram_statuses = list(instagram_statuses) if instagram_statuses is not None else ["FINISHED"]
+        self.instagram_status_index = 0
+        self.instagram_publish_responses = (
+            list(instagram_publish_responses) if instagram_publish_responses is not None else None
+        )
+        self.instagram_publish_index = 0
 
     def _record(self, method, url, **kwargs):
         self.calls.append({"method": method, "url": url, **kwargs})
+
+    def _next_ig_status(self):
+        if not self.instagram_statuses:
+            return "IN_PROGRESS"
+        if self.instagram_status_index < len(self.instagram_statuses):
+            status = self.instagram_statuses[self.instagram_status_index]
+            self.instagram_status_index += 1
+            return status
+        return self.instagram_statuses[-1]
 
     def get(self, url, **kwargs):
         self._record("GET", url, **kwargs)
@@ -94,6 +135,8 @@ class RecordingHttp:
             if images is None:
                 images = [{"source": "https://scontent.xx.fbcdn.net/install.jpg"}]
             return FakeResponse(json_data={"images": images})
+        if "graph.facebook.com" in url:
+            return FakeResponse(json_data={"status_code": self._next_ig_status()})
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, **kwargs):
@@ -105,6 +148,12 @@ class RecordingHttp:
         if url.endswith("/media"):
             return FakeResponse(json_data={"id": "ig-container-1"})
         if url.endswith("/media_publish"):
+            if self.instagram_publish_responses is not None:
+                if self.instagram_publish_index >= len(self.instagram_publish_responses):
+                    raise AssertionError("unexpected extra Instagram media_publish")
+                response = self.instagram_publish_responses[self.instagram_publish_index]
+                self.instagram_publish_index += 1
+                return response
             return FakeResponse(json_data={"id": "ig-media-1"})
         if url.endswith("/photos"):
             data = kwargs.get("data") or {}
@@ -319,6 +368,145 @@ def test_instagram_jpeg_lookup_miss_is_retryable(images):
     assert body.startswith(b"\xff\xd8\xff")
     facebook = next(entry for entry in results if entry["name"] == "facebook")
     assert facebook["status"] == "PUBLISHED"
+
+
+def _publisher(http, **overrides):
+    slept = []
+    defaults = {
+        "ig_container_poll_interval": 0,
+        "ig_publish_retry_wait": 0,
+    }
+    defaults.update(overrides)
+    publisher = SocialPublisher(
+        env=_full_env(),
+        http=http,
+        sleep=slept.append,
+        **defaults,
+    )
+    return publisher, slept
+
+
+def _publish(publisher):
+    return publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+
+
+def _calls_ending(http, suffix):
+    return [call for call in http.calls if str(call.get("url", "")).endswith(suffix)]
+
+
+def test_instagram_media_not_ready_detects_9007_and_2207027():
+    assert is_instagram_media_not_ready(_ig_9007()) is True
+    assert is_instagram_media_not_ready(FakeResponse(status_code=400, json_data={"error": {"code": 10}})) is False
+    assert is_instagram_media_not_ready(FakeResponse(json_data={"id": "ig-media-1"})) is False
+
+
+def test_instagram_waits_for_finished_then_publishes():
+    http = RecordingHttp(instagram_statuses=["IN_PROGRESS", "FINISHED"])
+    publisher, slept = _publisher(http, ig_container_poll_interval=3)
+    results = _publish(publisher)
+
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    assert instagram["detail"] == "ig-media-1"
+
+    status_gets = _calls_ending(http, "/ig-container-1")
+    assert [call["method"] for call in status_gets] == ["GET", "GET"]
+    assert all((call.get("params") or {}).get("fields") == "status_code" for call in status_gets)
+    publish_calls = _calls_ending(http, "/media_publish")
+    assert len(publish_calls) == 1
+    first_status = next(
+        index for index, call in enumerate(http.calls)
+        if call["method"] == "GET" and str(call.get("url", "")).endswith("/ig-container-1")
+    )
+    first_publish = next(
+        index for index, call in enumerate(http.calls)
+        if str(call.get("url", "")).endswith("/media_publish")
+    )
+    assert first_status < first_publish
+    assert slept == [3]
+
+    filename, body, content_type = _instagram_host_upload(http)["files"]["source"]
+    assert filename == "install.jpg"
+    assert content_type == "image/jpeg"
+    assert body.startswith(b"\xff\xd8\xff")
+
+
+def test_instagram_9007_retries_publish_then_succeeds():
+    http = RecordingHttp(
+        instagram_statuses=["FINISHED"],
+        instagram_publish_responses=[_ig_9007(), _ig_published()],
+    )
+    publisher, slept = _publisher(http, ig_publish_attempts=4, ig_publish_retry_wait=7)
+    results = _publish(publisher)
+
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    assert instagram["detail"] == "ig-media-1"
+    publish_calls = _calls_ending(http, "/media_publish")
+    assert len(publish_calls) == 2
+    assert all((call.get("data") or {}).get("creation_id") == "ig-container-1" for call in publish_calls)
+    assert slept == [7]
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"
+    filename, body, content_type = _instagram_host_upload(http)["files"]["source"]
+    assert content_type == "image/jpeg"
+    assert body.startswith(b"\xff\xd8\xff")
+
+
+def test_instagram_container_error_does_not_hang_and_others_still_publish():
+    http = RecordingHttp(instagram_statuses=["IN_PROGRESS", "ERROR"])
+    publisher, slept = _publisher(http, ig_container_poll_attempts=8, ig_container_poll_interval=2)
+    results = _publish(publisher)
+
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "BLOCKED"
+    assert "ERROR" in instagram["detail"]
+    assert _calls_ending(http, "/media_publish") == []
+    assert slept == [2]
+    assert {entry["name"]: entry["status"] for entry in results} == {
+        "instagram": "BLOCKED",
+        "facebook": "PUBLISHED",
+        "linkedin": "PUBLISHED",
+        "x": "PUBLISHED",
+    }
+
+
+def test_instagram_container_timeout_does_not_hang():
+    http = RecordingHttp(instagram_statuses=["IN_PROGRESS"])
+    publisher, slept = _publisher(http, ig_container_poll_attempts=3, ig_container_poll_interval=2)
+    results = _publish(publisher)
+
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "RETRYABLE_FAILURE"
+    assert "not ready after 3 polls" in instagram["detail"]
+    assert len(_calls_ending(http, "/ig-container-1")) == 3
+    assert slept == [2, 2]
+    assert _calls_ending(http, "/media_publish") == []
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"
+
+
+def test_instagram_9007_exhausted_stays_blocked():
+    http = RecordingHttp(
+        instagram_publish_responses=[_ig_9007(), _ig_9007(), _ig_9007()],
+    )
+    publisher, slept = _publisher(http, ig_publish_attempts=3, ig_publish_retry_wait=1)
+    results = _publish(publisher)
+
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "BLOCKED"
+    assert "9007" in instagram["detail"] or "2207027" in instagram["detail"]
+    assert len(_calls_ending(http, "/media_publish")) == 3
+    assert slept == [1, 1]
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
 
 
 def test_missing_social_credentials_are_skipped_not_invented():
