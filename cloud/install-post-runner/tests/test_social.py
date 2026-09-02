@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import requests
 
 RUNNER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RUNNER_DIR))
@@ -377,10 +378,11 @@ def _publisher(http, **overrides):
         "ig_publish_retry_wait": 0,
     }
     defaults.update(overrides)
+    sleep = defaults.pop("sleep", slept.append)
     publisher = SocialPublisher(
         env=_full_env(),
         http=http,
-        sleep=slept.append,
+        sleep=sleep,
         **defaults,
     )
     return publisher, slept
@@ -488,6 +490,92 @@ def test_instagram_container_timeout_does_not_hang():
     assert "not ready after 3 polls" in instagram["detail"]
     assert len(_calls_ending(http, "/ig-container-1")) == 3
     assert slept == [2, 2]
+    assert _calls_ending(http, "/media_publish") == []
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"
+
+
+class FakeClock:
+    def __init__(self, start=0.0):
+        self.now = start
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += float(seconds)
+
+
+class StatusStallHttp(RecordingHttp):
+    def __init__(self, clock, *, stall_seconds=30, raise_timeout=False, **kwargs):
+        super().__init__(**kwargs)
+        self.clock = clock
+        self.stall_seconds = stall_seconds
+        self.raise_timeout = raise_timeout
+
+    def get(self, url, **kwargs):
+        params = kwargs.get("params") or {}
+        if str(params.get("fields") or "") == "status_code":
+            self.clock.now += self.stall_seconds
+            if self.raise_timeout:
+                self._record("GET", url, **kwargs)
+                raise requests.exceptions.Timeout("graph status stalled")
+        return super().get(url, **kwargs)
+
+
+def test_instagram_status_transport_timeout_stops_polling():
+    clock = FakeClock()
+    http = StatusStallHttp(
+        clock,
+        stall_seconds=30,
+        raise_timeout=True,
+        instagram_statuses=["IN_PROGRESS"],
+    )
+    publisher, _slept = _publisher(
+        http,
+        clock=clock,
+        sleep=clock.sleep,
+        ig_container_poll_attempts=20,
+        ig_container_wait_seconds=60,
+        ig_container_status_timeout=10,
+        ig_container_poll_interval=3,
+    )
+    results = _publish(publisher)
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    assert len(_calls_ending(http, "/ig-container-1")) == 1
+    assert len(_calls_ending(http, "/media_publish")) == 1
+    assert clock.now < 60
+    assert _calls_ending(http, "/ig-container-1")[0]["timeout"] == 10
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"
+
+
+def test_instagram_status_poll_deadline_does_not_consume_the_workflow():
+    clock = FakeClock()
+    http = StatusStallHttp(
+        clock,
+        stall_seconds=30,
+        instagram_statuses=["IN_PROGRESS"],
+    )
+    publisher, _slept = _publisher(
+        http,
+        clock=clock,
+        sleep=clock.sleep,
+        ig_container_poll_attempts=20,
+        ig_container_wait_seconds=60,
+        ig_container_status_timeout=10,
+        ig_container_poll_interval=3,
+    )
+    results = _publish(publisher)
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "RETRYABLE_FAILURE"
+    assert "not ready" in instagram["detail"]
+    assert len(_calls_ending(http, "/ig-container-1")) < 20
+    assert len(_calls_ending(http, "/ig-container-1")) <= 3
+    assert clock.now <= 60 + 30
     assert _calls_ending(http, "/media_publish") == []
     assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
     assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
