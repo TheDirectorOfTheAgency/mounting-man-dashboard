@@ -1,5 +1,5 @@
 # Cloud installation-post runner — runtime dependencies.
-# Pillow decodes the bound WebP into the JPEG required by LinkedIn.
+# Pillow decodes the bound WebP into the JPEG required by LinkedIn and Instagram.
 #
 # Fully pinned and hash-checked: this runner holds a Webflow token and publishes
 # to the live site, so a compromised or re-uploaded dependency must not be able

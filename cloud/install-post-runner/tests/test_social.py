@@ -73,12 +73,14 @@ class RecordingHttp:
         linkedin_receipt="urn:li:ugcPost:7499800000000000000",
         linkedin_post_status=201,
         linkedin_post_exception=None,
+        instagram_lookup_images=None,
     ):
         self.calls = []
         self.verify_user = verify_user or {"screen_name": MOUNTINGMANTV_SCREEN_NAME, "id_str": "1"}
         self.linkedin_receipt = linkedin_receipt
         self.linkedin_post_status = linkedin_post_status
         self.linkedin_post_exception = linkedin_post_exception
+        self.instagram_lookup_images = instagram_lookup_images
 
     def _record(self, method, url, **kwargs):
         self.calls.append({"method": method, "url": url, **kwargs})
@@ -88,9 +90,10 @@ class RecordingHttp:
         if "verify_credentials" in url:
             return FakeResponse(json_data=self.verify_user)
         if "fb-unpub-1" in url:
-            return FakeResponse(json_data={
-                "images": [{"source": "https://scontent.xx.fbcdn.net/install.jpg"}],
-            })
+            images = self.instagram_lookup_images
+            if images is None:
+                images = [{"source": "https://scontent.xx.fbcdn.net/install.jpg"}]
+            return FakeResponse(json_data={"images": images})
         raise AssertionError(f"unexpected GET {url}")
 
     def post(self, url, **kwargs):
@@ -216,6 +219,15 @@ def test_already_posted_requires_published_status():
     assert already_posted("x", [{"name": "instagram", "status": "PUBLISHED"}]) is False
 
 
+def _instagram_host_upload(http):
+    return next(
+        call for call in http.calls
+        if call["method"] == "POST"
+        and str(call.get("url", "")).endswith("/photos")
+        and call.get("files")
+    )
+
+
 def test_instagram_uses_a_jpeg_rendition_not_the_webp_asset():
     http = RecordingHttp()
     publisher = SocialPublisher(env=_full_env(), http=http)
@@ -237,7 +249,76 @@ def test_instagram_uses_a_jpeg_rendition_not_the_webp_asset():
     assert sent_url == "https://scontent.xx.fbcdn.net/install.jpg"
     assert "webp" not in sent_url.lower()
     assert sent_url != IMAGE_URL
-    assert any(call.get("files") for call in http.calls if str(call.get("url", "")).endswith("/photos"))
+    host = _instagram_host_upload(http)
+    filename, body, content_type = host["files"]["source"]
+    assert filename == "install.jpg"
+    assert content_type == "image/jpeg"
+    assert body.startswith(b"\xff\xd8\xff")
+    assert body != IMAGE_BYTES
+
+
+def test_instagram_jpeg_host_needs_bound_photo_bytes():
+    http = RecordingHttp()
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    with pytest.raises(SocialRetryableError, match="Instagram JPEG rendition needs the bound photo bytes"):
+        publisher._host_jpeg_rendition(
+            page_id="page-1",
+            token="page-token",
+            image_bytes=b"",
+            fallback_url=IMAGE_URL,
+        )
+    assert http.calls == []
+
+
+def test_instagram_host_uploads_actual_jpeg_bytes():
+    jpeg_bytes = social_module.instagram_jpeg_bytes(IMAGE_BYTES)
+    assert jpeg_bytes.startswith(b"\xff\xd8\xff")
+    from PIL import Image
+    with Image.open(io.BytesIO(jpeg_bytes)) as image:
+        assert image.format == "JPEG"
+
+    http = RecordingHttp()
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    filename, body, content_type = _instagram_host_upload(http)["files"]["source"]
+    assert filename == "install.jpg"
+    assert content_type == "image/jpeg"
+    assert body == jpeg_bytes
+    assert not IMAGE_BYTES.startswith(b"\xff\xd8\xff")
+
+
+@pytest.mark.parametrize("images", [
+    [],
+    [{"source": "https://scontent.xx.fbcdn.net/v/t39.30808-6/photo.webp"}],
+    [{"source": "https://scontent.xx.fbcdn.net/v/t39.30808-6/photo.WEBP?_nc_cat=1"}],
+])
+def test_instagram_jpeg_lookup_miss_is_retryable(images):
+    http = RecordingHttp(instagram_lookup_images=images)
+    publisher = SocialPublisher(env=_full_env(), http=http)
+    results = publisher.publish(
+        post_data=POST_DATA,
+        live_url=LIVE_URL,
+        image_url=IMAGE_URL,
+        image_bytes=IMAGE_BYTES,
+        slug=POST_DATA["slug"],
+    )
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "RETRYABLE_FAILURE"
+    assert instagram["detail"] == "Instagram JPEG lookup returned no JPEG URL"
+    filename, body, content_type = _instagram_host_upload(http)["files"]["source"]
+    assert filename == "install.jpg"
+    assert content_type == "image/jpeg"
+    assert body.startswith(b"\xff\xd8\xff")
+    facebook = next(entry for entry in results if entry["name"] == "facebook")
+    assert facebook["status"] == "PUBLISHED"
 
 
 def test_missing_social_credentials_are_skipped_not_invented():
