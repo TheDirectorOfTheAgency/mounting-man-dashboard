@@ -70,12 +70,20 @@ test('release CI covers Node, build, cloud runner, and M1 worker with immutable 
   }
 });
 
-test('publisher workflow checks out the immutable cloud deployment commit', () => {
+test('publisher workflow checks out the dispatched GitHub main SHA', () => {
   const workflow = source('.github/workflows/publish-install-post.yml');
   assert.match(workflow, /source_commit:/);
   assert.match(workflow, /ref:\s*\$\{\{\s*inputs\.source_commit\s*\}\}/);
   assert.match(workflow, /SOURCE_COMMIT:\s*\$\{\{\s*inputs\.source_commit\s*\}\}/);
   assert.doesNotMatch(workflow, /ref:\s*(?:main|master)\s*$/m);
+  assert.doesNotMatch(workflow, /VERCEL_GIT_COMMIT_SHA/);
+});
+
+test('configured dispatcher pins source_commit to GitHub main, never a Vercel SHA', () => {
+  const dispatch = source('lib/install-post-dispatch.mjs');
+  assert.doesNotMatch(dispatch, /VERCEL_GIT_COMMIT_SHA/);
+  assert.match(dispatch, /git\/ref\/heads\/main/);
+  assert.doesNotMatch(dispatch, /[?&]path=/);
 });
 
 test('M1 installer stamps the immutable build SHA into launchd', () => {
