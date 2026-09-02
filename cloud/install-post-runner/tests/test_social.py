@@ -508,23 +508,54 @@ class FakeClock:
 
 
 class StatusStallHttp(RecordingHttp):
-    def __init__(self, clock, *, stall_seconds=30, raise_timeout=False, **kwargs):
+    def __init__(self, clock, *, stall_seconds=30, raise_timeout=False, timeout_indices=None, **kwargs):
         super().__init__(**kwargs)
         self.clock = clock
         self.stall_seconds = stall_seconds
         self.raise_timeout = raise_timeout
+        self.timeout_indices = set(timeout_indices or [])
+        self.status_gets = 0
 
     def get(self, url, **kwargs):
         params = kwargs.get("params") or {}
         if str(params.get("fields") or "") == "status_code":
             self.clock.now += self.stall_seconds
-            if self.raise_timeout:
+            self.status_gets += 1
+            if self.raise_timeout or self.status_gets in self.timeout_indices:
                 self._record("GET", url, **kwargs)
                 raise requests.exceptions.Timeout("graph status stalled")
         return super().get(url, **kwargs)
 
 
-def test_instagram_status_transport_timeout_stops_polling():
+def test_instagram_status_transport_timeout_keeps_polling_then_publishes():
+    clock = FakeClock()
+    http = StatusStallHttp(
+        clock,
+        stall_seconds=0,
+        timeout_indices={1},
+        instagram_statuses=["FINISHED"],
+    )
+    publisher, _slept = _publisher(
+        http,
+        clock=clock,
+        sleep=clock.sleep,
+        ig_container_poll_attempts=20,
+        ig_container_wait_seconds=60,
+        ig_container_status_timeout=10,
+        ig_container_poll_interval=3,
+    )
+    results = _publish(publisher)
+    instagram = next(entry for entry in results if entry["name"] == "instagram")
+    assert instagram["status"] == "PUBLISHED"
+    assert len(_calls_ending(http, "/ig-container-1")) == 2
+    assert len(_calls_ending(http, "/media_publish")) == 1
+    assert _calls_ending(http, "/ig-container-1")[0]["timeout"] == 10
+    assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
+    assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"
+
+
+def test_instagram_status_timeouts_until_deadline_stay_retryable():
     clock = FakeClock()
     http = StatusStallHttp(
         clock,
@@ -543,11 +574,11 @@ def test_instagram_status_transport_timeout_stops_polling():
     )
     results = _publish(publisher)
     instagram = next(entry for entry in results if entry["name"] == "instagram")
-    assert instagram["status"] == "PUBLISHED"
-    assert len(_calls_ending(http, "/ig-container-1")) == 1
-    assert len(_calls_ending(http, "/media_publish")) == 1
-    assert clock.now < 60
-    assert _calls_ending(http, "/ig-container-1")[0]["timeout"] == 10
+    assert instagram["status"] == "RETRYABLE_FAILURE"
+    assert "not ready" in instagram["detail"]
+    assert len(_calls_ending(http, "/ig-container-1")) < 20
+    assert len(_calls_ending(http, "/ig-container-1")) <= 3
+    assert _calls_ending(http, "/media_publish") == []
     assert next(entry for entry in results if entry["name"] == "facebook")["status"] == "PUBLISHED"
     assert next(entry for entry in results if entry["name"] == "linkedin")["status"] == "PUBLISHED"
     assert next(entry for entry in results if entry["name"] == "x")["status"] == "PUBLISHED"

@@ -62,8 +62,9 @@ IG_CONTAINER_FAILED = frozenset({"ERROR", "EXPIRED"})
 IG_CONTAINER_POLL_ATTEMPTS = 20
 IG_CONTAINER_POLL_INTERVAL_SECONDS = 3.0
 # Wall-clock cap so stalled Graph GETs cannot burn the 10-minute workflow
-# before Facebook, LinkedIn, and X. Status GET timeout is short; a transport
-# timeout stops polling and proceeds to publish / 9007 retry.
+# before Facebook, LinkedIn, and X. Status GET timeout is short. A transport
+# timeout is treated as still in progress so polling continues inside the
+# deadline; exhausting the wait stays retryable, not BLOCKED.
 IG_CONTAINER_WAIT_SECONDS = 60
 IG_CONTAINER_STATUS_TIMEOUT_SECONDS = 10
 IG_CONTAINER_TRANSPORT_TIMEOUT = "TRANSPORT_TIMEOUT"
@@ -497,7 +498,7 @@ class SocialPublisher:
             if last_status in IG_CONTAINER_FAILED:
                 raise SocialBlockedError(f"Instagram media container {last_status}")
             if last_status == IG_CONTAINER_TRANSPORT_TIMEOUT:
-                return "IN_PROGRESS"
+                last_status = "IN_PROGRESS"
             if attempt + 1 >= attempts:
                 break
             remaining = deadline - self.clock()
