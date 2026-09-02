@@ -53,6 +53,16 @@ STATUS_RETRYABLE = "RETRYABLE_FAILURE"
 STATUS_INDETERMINATE = "INDETERMINATE"
 
 GRAPH_BASE = "https://graph.facebook.com/v21.0"
+IG_MEDIA_NOT_READY_CODE = 9007
+IG_MEDIA_NOT_READY_SUBCODE = 2207027
+IG_CONTAINER_READY = frozenset({"FINISHED", "PUBLISHED"})
+IG_CONTAINER_FAILED = frozenset({"ERROR", "EXPIRED"})
+# Meta processes the container after /media create. Publishing before FINISHED
+# is OAuthException 9007 / 2207027 "Media ID is not available".
+IG_CONTAINER_POLL_ATTEMPTS = 20
+IG_CONTAINER_POLL_INTERVAL_SECONDS = 3.0
+IG_PUBLISH_ATTEMPTS = 5
+IG_PUBLISH_RETRY_INTERVAL_SECONDS = 3.0
 LINKEDIN_IMAGES_URL = "https://api.linkedin.com/rest/images?action=initializeUpload"
 LINKEDIN_POSTS_URL = "https://api.linkedin.com/rest/posts"
 LINKEDIN_VERSION_DEFAULT = "202608"
@@ -173,6 +183,54 @@ def prior_linkedin_indeterminate(posted_destinations) -> bool:
 
 def already_posted(name: str, posted_destinations) -> bool:
     return already_posted_detail(name, posted_destinations) is not None
+
+
+def instagram_error_from_response(response) -> dict:
+    """Return Meta's error object from a Graph response, if present."""
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return error
+    text = str(getattr(response, "text", "") or "")
+    if (
+        str(IG_MEDIA_NOT_READY_CODE) in text
+        or str(IG_MEDIA_NOT_READY_SUBCODE) in text
+        or "Media ID is not available" in text
+    ):
+        return {
+            "code": IG_MEDIA_NOT_READY_CODE,
+            "error_subcode": IG_MEDIA_NOT_READY_SUBCODE,
+            "message": text[:200],
+        }
+    return {}
+
+
+def is_instagram_media_not_ready(response) -> bool:
+    """True when Meta 9007 / 2207027 says the container is not publishable yet."""
+    error = instagram_error_from_response(response)
+    if not error:
+        return False
+    code = _int_or_none(error.get("code"))
+    subcode = _int_or_none(error.get("error_subcode"))
+    message = str(error.get("message") or "")
+    return (
+        code == IG_MEDIA_NOT_READY_CODE
+        or subcode == IG_MEDIA_NOT_READY_SUBCODE
+        or "Media ID is not available" in message
+    )
+
+
+def _int_or_none(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def refuse_forbidden_destination(name: str) -> None:
@@ -307,9 +365,24 @@ def assert_mountingmantv(user: dict) -> dict:
 class SocialPublisher:
     """One run: Instagram, Facebook, LinkedIn, X. Never Reddit. Never GBP."""
 
-    def __init__(self, env: dict | None = None, http=None):
+    def __init__(
+        self,
+        env: dict | None = None,
+        http=None,
+        *,
+        sleep: Callable[[float], None] | None = None,
+        ig_container_poll_attempts: int = IG_CONTAINER_POLL_ATTEMPTS,
+        ig_container_poll_interval: float = IG_CONTAINER_POLL_INTERVAL_SECONDS,
+        ig_publish_attempts: int = IG_PUBLISH_ATTEMPTS,
+        ig_publish_retry_interval: float = IG_PUBLISH_RETRY_INTERVAL_SECONDS,
+    ):
         self.env = env if env is not None else os.environ
         self.http = http or requests
+        self.sleep = sleep or time.sleep
+        self.ig_container_poll_attempts = max(1, int(ig_container_poll_attempts))
+        self.ig_container_poll_interval = float(ig_container_poll_interval)
+        self.ig_publish_attempts = max(1, int(ig_publish_attempts))
+        self.ig_publish_retry_interval = float(ig_publish_retry_interval)
 
     def publish(
         self,
@@ -387,12 +460,63 @@ class SocialPublisher:
         creation_id = str(created.get("id") or "")
         if not creation_id:
             raise SocialRetryableError("Instagram media create returned no id")
-        published = self._graph_post(
-            f"{GRAPH_BASE}/{ig_id}/media_publish",
-            data={"creation_id": creation_id, "access_token": token},
-            action="Instagram media publish",
-        )
-        return str(published.get("id") or creation_id)
+        # Do not call media_publish until the container is FINISHED. Immediate
+        # publish is Meta 9007 / 2207027. If Meta still races, retry publish.
+        self._wait_for_instagram_container(creation_id, token)
+        return self._publish_instagram_container(ig_id, creation_id, token)
+
+    def _instagram_container_status(self, creation_id: str, token: str) -> str:
+        try:
+            response = self.http.get(
+                f"{GRAPH_BASE}/{creation_id}",
+                params={"fields": "status_code", "access_token": token},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException:
+            return "IN_PROGRESS"
+        status = getattr(response, "status_code", 0)
+        if not (200 <= status < 300):
+            return "IN_PROGRESS"
+        try:
+            payload = response.json() or {}
+        except Exception:  # noqa: BLE001
+            return "IN_PROGRESS"
+        return str(payload.get("status_code") or "").strip().upper()
+
+    def _wait_for_instagram_container(self, creation_id: str, token: str) -> str:
+        last_status = ""
+        for attempt in range(self.ig_container_poll_attempts):
+            last_status = self._instagram_container_status(creation_id, token)
+            if last_status in IG_CONTAINER_READY:
+                return last_status
+            if last_status in IG_CONTAINER_FAILED:
+                raise SocialBlockedError(f"Instagram media container {last_status}")
+            if attempt + 1 < self.ig_container_poll_attempts:
+                self.sleep(self.ig_container_poll_interval)
+        return last_status or "IN_PROGRESS"
+
+    def _publish_instagram_container(self, ig_id: str, creation_id: str, token: str) -> str:
+        last_response = None
+        for attempt in range(self.ig_publish_attempts):
+            try:
+                response = self.http.post(
+                    f"{GRAPH_BASE}/{ig_id}/media_publish",
+                    data={"creation_id": creation_id, "access_token": token},
+                    timeout=45,
+                )
+            except requests.exceptions.RequestException as exc:
+                raise SocialRetryableError(f"Instagram media publish failed: {exc}") from exc
+            last_response = response
+            status = getattr(response, "status_code", 0)
+            if 200 <= status < 300:
+                published = response.json() or {}
+                return str(published.get("id") or creation_id)
+            if is_instagram_media_not_ready(response) and attempt + 1 < self.ig_publish_attempts:
+                self.sleep(self.ig_publish_retry_interval)
+                continue
+            self._raise_http(response, "Instagram media publish")
+        self._raise_http(last_response, "Instagram media publish")
+        raise SocialBlockedError("Instagram media publish failed: Media ID is not available")
 
     def _facebook(self, *, post_data, live_url, image_url, image_bytes) -> str:
         del image_bytes
