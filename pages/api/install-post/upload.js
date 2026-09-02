@@ -14,68 +14,22 @@
 //
 // Auth is the operator session cookie alone; the URL carries nothing.
 
-import { randomBytes } from 'node:crypto';
-
-import axios from 'axios';
-
 import { autoDispatchIfPhotoBound } from '../../../lib/install-post-auto-publish.mjs';
 import { createConfiguredDispatcher } from '../../../lib/install-post-dispatch.mjs';
 import {
-  publicJobView,
-  statusForReason,
-  transitionRecord,
-} from '../../../lib/install-post-queue.mjs';
+  ALLOWED_PHONE_CONTENT_TYPES,
+  MAX_UPLOAD_BYTES,
+  MD5_RE,
+  SHA256_RE,
+  commitUploadSession,
+  createWebflowUploadClient,
+  signAndStoreUpload,
+} from '../../../lib/install-post-photo-bind.mjs';
+import { publicJobView } from '../../../lib/install-post-queue.mjs';
 import { guardOperatorRequest } from '../../../lib/install-post-session.mjs';
 import { getInstallPostStore } from '../../../lib/install-post-store.mjs';
 
-export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-const ALLOWED_CONTENT_TYPES = new Set(['image/webp']);
-const SHA256_RE = /^[0-9a-f]{64}$/;
-const MD5_RE = /^[0-9a-f]{32}$/;
-
-const WEBFLOW_SITE_ID =
-  process.env.WEBFLOW_SITE_ID || process.env.NEXT_PUBLIC_WEBFLOW_SITE_ID;
-const WEBFLOW_TOKEN =
-  process.env.WEBFLOW_TOKEN || process.env.NEXT_PUBLIC_WEBFLOW_TOKEN;
-
-function slugPart(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/"/g, '-inch')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-/** Descriptive but PII-free asset name: no customer, no street number. */
-function assetFileName(record) {
-  const seed = record.seed || {};
-  const parts = [
-    slugPart(seed['tv-size']),
-    slugPart(seed['tv-brand']),
-    seed['job-type'] === 'unmount' ? 'tv-unmounting' : 'tv-installation',
-    slugPart(seed.city),
-  ].filter(Boolean);
-  return `${parts.join('-')}-${String(record.revision).slice(0, 8)}.webp`;
-}
-
-function createWebflowUploadClient({ httpClient = axios, siteId = WEBFLOW_SITE_ID, token = WEBFLOW_TOKEN } = {}) {
-  return {
-    async createSignedUpload({ fileName, fileHash }) {
-      const response = await httpClient.post(
-        `https://api.webflow.com/v2/sites/${siteId}/assets`,
-        { fileName, fileHash },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 30000 },
-      );
-      const asset = response.data || {};
-      return {
-        assetId: asset.id,
-        hostedUrl: asset.hostedUrl,
-        uploadUrl: asset.uploadUrl,
-        uploadDetails: asset.uploadDetails,
-      };
-    },
-  };
-}
+export { MAX_UPLOAD_BYTES };
 
 export function createUploadHandler({ store, sessionSecret, webflow, dispatcher, now = Date.now } = {}) {
   return async function handler(req, res) {
@@ -96,7 +50,7 @@ export function createUploadHandler({ store, sessionSecret, webflow, dispatcher,
 
   async function init(req, res, jobId, body) {
     const contentType = String(body.contentType || '').toLowerCase();
-    if (!ALLOWED_CONTENT_TYPES.has(contentType)) {
+    if (!ALLOWED_PHONE_CONTENT_TYPES.has(contentType)) {
       return res.status(400).json({ error: 'unsupported_content_type' });
     }
     const bytes = Number(body.bytes || 0);
@@ -115,33 +69,22 @@ export function createUploadHandler({ store, sessionSecret, webflow, dispatcher,
       return res.status(409).json({ error: 'stale_revision' });
     }
 
-    let signed;
-    try {
-      signed = await webflow.createSignedUpload({
-        fileName: assetFileName(record),
-        fileHash: md5,
-      });
-    } catch (err) {
-      console.error('[install-post-upload] signed upload failed:', err.response?.status || err.message);
-      return res.status(502).json({ error: 'upload_signing_failed' });
-    }
-
-    const uploadId = randomBytes(16).toString('hex');
-    await store.saveUploadSession({
-      uploadId,
-      jobId,
-      revision: record.revision,
+    const signed = await signAndStoreUpload({
+      store,
+      webflow,
+      record,
       sha256,
       md5,
-      bytes,
-      contentType,
-      assetId: signed.assetId,
-      hostedUrl: signed.hostedUrl,
-      createdAt: new Date(now()).toISOString(),
+      byteLength: bytes,
+      now,
     });
+    if (!signed.ok) {
+      const status = signed.reason === 'upload_signing_failed' ? 502 : 400;
+      return res.status(status).json({ error: signed.reason });
+    }
 
     return res.status(200).json({
-      uploadId,
+      uploadId: signed.uploadId,
       uploadUrl: signed.uploadUrl,
       uploadDetails: signed.uploadDetails,
       maxBytes: MAX_UPLOAD_BYTES,
@@ -149,43 +92,15 @@ export function createUploadHandler({ store, sessionSecret, webflow, dispatcher,
   }
 
   async function commit(req, res, jobId, body) {
-    const session = await store.loadUploadSession(body.uploadId);
-    if (!session || session.jobId !== jobId) {
-      return res.status(409).json({ error: 'upload_not_found' });
-    }
-    if (String(body.sha256 || '').toLowerCase() !== session.sha256) {
-      return res.status(409).json({ error: 'digest_mismatch' });
-    }
-
-    let refusal = null;
-    const outcome = await store.withRecordLock(jobId, async (current) => {
-      if (session.revision !== current.revision) {
-        refusal = 'stale_revision';
-        return null;
-      }
-      const transition = transitionRecord(current, {
-        type: 'photo',
-        image: {
-          sha256: session.sha256,
-          bytes: session.bytes,
-          contentType: session.contentType,
-          assetId: session.assetId,
-          hostedUrl: session.hostedUrl,
-        },
-      });
-      if (!transition.ok) {
-        refusal = transition.reason;
-        return null;
-      }
-      return transition.record;
+    const outcome = await commitUploadSession({
+      store,
+      jobId,
+      uploadId: body.uploadId,
+      sha256: body.sha256,
     });
-
     if (!outcome.ok) {
-      const reason = refusal || outcome.reason;
-      return res.status(statusForReason(reason)).json({ error: reason });
+      return res.status(outcome.status || 409).json({ error: outcome.reason });
     }
-
-    await store.deleteUploadSession(body.uploadId);
 
     // Square already staged the job. Once the photo is bound, the cloud runner
     // is the publisher — no Woodward/Q Python, no second desk hop.
