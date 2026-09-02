@@ -208,10 +208,10 @@ def _destination(name: str, status: str, detail: str = "") -> dict:
     return {"name": name, "status": status, "detail": str(detail or "")[:300]}
 
 
-def linkedin_jpeg_bytes(image_bytes: bytes) -> bytes:
+def jpeg_bytes(image_bytes: bytes, *, purpose: str) -> bytes:
     """Decode the bound image and return a real RGB JPEG rendition."""
     if not image_bytes:
-        raise SocialRetryableError("LinkedIn JPEG rendition needs the bound photo bytes")
+        raise SocialRetryableError(f"{purpose} rendition needs the bound photo bytes")
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:
             image.load()
@@ -219,11 +219,21 @@ def linkedin_jpeg_bytes(image_bytes: bytes) -> bytes:
             output = io.BytesIO()
             rgb_image.save(output, format="JPEG", quality=90)
     except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise SocialRetryableError(f"LinkedIn JPEG rendition failed: {exc}") from exc
-    jpeg_bytes = output.getvalue()
-    if not jpeg_bytes.startswith(b"\xff\xd8\xff"):
-        raise SocialRetryableError("LinkedIn JPEG rendition did not produce JPEG bytes")
-    return jpeg_bytes
+        raise SocialRetryableError(f"{purpose} rendition failed: {exc}") from exc
+    rendered = output.getvalue()
+    if not rendered.startswith(b"\xff\xd8\xff"):
+        raise SocialRetryableError(f"{purpose} rendition did not produce JPEG bytes")
+    return rendered
+
+
+def linkedin_jpeg_bytes(image_bytes: bytes) -> bytes:
+    """Decode the bound image and return a real RGB JPEG rendition."""
+    return jpeg_bytes(image_bytes, purpose="LinkedIn JPEG")
+
+
+def instagram_jpeg_bytes(image_bytes: bytes) -> bytes:
+    """Decode the bound dashboard WebP and return a real RGB JPEG rendition."""
+    return jpeg_bytes(image_bytes, purpose="Instagram JPEG")
 
 
 def _linkedin_created_post_id(response) -> str:
@@ -548,17 +558,17 @@ class SocialPublisher:
         """Host a JPEG that Instagram will accept.
 
         Dashboard photos are WebP. Instagram's ``/{ig-user-id}/media`` image
-        container requires JPEG. An unpublished Facebook Page photo is the
-        existing Graph path that transcodes the bytes and returns a JPEG CDN
-        URL — no third host, no Reddit, no GBP.
+        container requires a JPEG URL. Convert the bound bytes first (same
+        Pillow path as LinkedIn), then upload real JPEG to an unpublished
+        Facebook Page photo and read back a non-WebP CDN URL — no third host,
+        no Reddit, no GBP.
         """
-        if not image_bytes:
-            raise SocialRetryableError("Instagram JPEG rendition needs the bound photo bytes")
+        hosted_jpeg = instagram_jpeg_bytes(image_bytes)
         try:
             uploaded = self.http.post(
                 f"{GRAPH_BASE}/{page_id}/photos",
                 data={"published": "false", "access_token": token},
-                files={"source": ("install.jpg", image_bytes, "image/webp")},
+                files={"source": ("install.jpg", hosted_jpeg, "image/jpeg")},
                 timeout=60,
             )
         except requests.exceptions.RequestException as exc:
