@@ -204,6 +204,13 @@ test('stageJobRecords persists records, indexes them, and isolates source refs',
   // Source refs live under a separate key that the mobile API never reads.
   const refs = await store.loadSourceRefs(records[0].jobId);
   assert.equal(refs.orderId, 'ORDER-ABC-123');
+
+  const byPayment = await store.findRecordsBySource({ paymentId: 'PAY-XYZ-789' });
+  assert.equal(byPayment.length, 2);
+  const byOrder = await store.findRecordsBySource({ orderId: 'ORDER-ABC-123' });
+  assert.equal(byOrder.length, 2);
+  const missing = await store.findRecordsBySource({ paymentId: 'PAY-NONE' });
+  assert.equal(missing.length, 0);
   const recordKeys = [...kv.values.keys()].filter((key) => key.includes(':job:'));
   for (const key of recordKeys) {
     assert.ok(!JSON.stringify(kv.values.get(key)).includes('ORDER-ABC-123'));

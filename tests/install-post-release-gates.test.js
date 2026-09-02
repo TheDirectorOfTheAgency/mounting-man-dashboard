@@ -13,6 +13,8 @@ test('zero-tap intake and cloud runner have no local shell publisher fallback', 
   const files = [
     'lib/install-post-auto-publish.mjs',
     'pages/api/install-post/upload.js',
+    'pages/api/install-post/ingest-photo.js',
+    'lib/install-post-photo-bind.mjs',
     'pages/api/install-post/runner/callback.js',
     'cloud/install-post-runner/runner.py',
     '.github/workflows/publish-install-post.yml',
