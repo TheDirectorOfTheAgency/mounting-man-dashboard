@@ -6,7 +6,8 @@
 # fetches the approved envelope from a signed internal endpoint.
 #
 # This job holds the Webflow publishing token, so its supply chain is immutable:
-# actions are pinned to commit SHAs (a tag can be moved) and dependencies are
+# checkout is the GitHub main SHA resolved at dispatch (never a Vercel deployment SHA),
+# actions are pinned to commit SHAs (a tag can be moved), and dependencies are
 # installed in pip's hash-checking mode.
 
 name: Publish installation post
@@ -27,7 +28,7 @@ on:
         required: true
         type: string
       source_commit:
-        description: Immutable cloud deployment commit containing the runner
+        description: GitHub main SHA of this repo; resolved at dispatch, never a Vercel deployment SHA
         required: true
         type: string
 

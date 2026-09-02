@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createConfiguredDispatcher,
   createGithubDispatcher,
+  resolveGithubMainCommit,
   signRunnerRequest,
   verifyRunnerRequest,
 } from '../lib/install-post-dispatch.mjs';
@@ -562,4 +564,111 @@ test('createGithubDispatcher refuses a mutable or malformed runner revision', as
     dispatcher.dispatch({ jobId: 'j', revision: 'r', dispatchId: 'd' }),
     /source commit/i,
   );
+});
+
+const VERCEL_DEPLOY_SHA = '33aaec01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const GITHUB_MAIN_SHA = '130645aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+function withDispatchEnv(overrides, fn) {
+  const keys = [
+    'VERCEL_GIT_COMMIT_SHA',
+    'INSTALL_POST_DISPATCH_TOKEN',
+    'INSTALL_POST_DISPATCH_OWNER',
+    'INSTALL_POST_DISPATCH_REPO',
+    'INSTALL_POST_DISPATCH_WORKFLOW',
+    'INSTALL_POST_DISPATCH_REF',
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) {
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    });
+}
+
+test('resolveGithubMainCommit reads the tip of GitHub main, not a workflow-file commit', async () => {
+  const gets = [];
+  const sha = await resolveGithubMainCommit({
+    token: 'ghp_test',
+    owner: 'TheDirectorOfTheAgency',
+    repo: 'mounting-man-dashboard',
+    httpClient: {
+      async get(url) {
+        gets.push(url);
+        return { data: { object: { sha: GITHUB_MAIN_SHA, type: 'commit' } } };
+      },
+    },
+  });
+
+  assert.equal(sha, GITHUB_MAIN_SHA);
+  assert.equal(gets.length, 1);
+  assert.match(gets[0], /\/repos\/TheDirectorOfTheAgency\/mounting-man-dashboard\/git\/ref\/heads\/main$/);
+  assert.doesNotMatch(gets[0], /[?&]path=/);
+  assert.doesNotMatch(gets[0], /publish-install-post/);
+});
+
+test('createConfiguredDispatcher sends GitHub main and cannot send a Vercel SHA', async () => {
+  const posts = [];
+  const gets = [];
+  const httpClient = {
+    async get(url) {
+      gets.push(url);
+      return { data: { object: { sha: GITHUB_MAIN_SHA, type: 'commit' } } };
+    },
+    async post(url, payload) {
+      posts.push({ url, payload });
+      return { status: 204 };
+    },
+  };
+
+  await withDispatchEnv({
+    VERCEL_GIT_COMMIT_SHA: VERCEL_DEPLOY_SHA,
+    INSTALL_POST_DISPATCH_TOKEN: 'ghp_test',
+    INSTALL_POST_DISPATCH_OWNER: 'TheDirectorOfTheAgency',
+    INSTALL_POST_DISPATCH_REPO: 'mounting-man-dashboard',
+  }, async () => {
+    const dispatcher = createConfiguredDispatcher({ httpClient });
+    await dispatcher.dispatch({ jobId: 'job_abc', revision: 'rev123', dispatchId: 'd1' });
+  });
+
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].payload.inputs.source_commit, GITHUB_MAIN_SHA);
+  assert.notEqual(posts[0].payload.inputs.source_commit, VERCEL_DEPLOY_SHA);
+  assert.ok(!JSON.stringify(posts[0].payload).includes(VERCEL_DEPLOY_SHA));
+  assert.match(gets[0], /\/git\/ref\/heads\/main$/);
+});
+
+test('createConfiguredDispatcher does not fall back to VERCEL_GIT_COMMIT_SHA when GitHub main is unavailable', async () => {
+  const posts = [];
+  const httpClient = {
+    async get() {
+      throw new Error('GitHub main ref unavailable');
+    },
+    async post(url, payload) {
+      posts.push({ url, payload });
+      return { status: 204 };
+    },
+  };
+
+  await withDispatchEnv({
+    VERCEL_GIT_COMMIT_SHA: VERCEL_DEPLOY_SHA,
+    INSTALL_POST_DISPATCH_TOKEN: 'ghp_test',
+    INSTALL_POST_DISPATCH_OWNER: 'TheDirectorOfTheAgency',
+    INSTALL_POST_DISPATCH_REPO: 'mounting-man-dashboard',
+  }, async () => {
+    const dispatcher = createConfiguredDispatcher({ httpClient });
+    await assert.rejects(
+      dispatcher.dispatch({ jobId: 'job_abc', revision: 'rev123', dispatchId: 'd1' }),
+      /unavailable|source commit|not configured/i,
+    );
+  });
+
+  assert.equal(posts.length, 0);
 });
