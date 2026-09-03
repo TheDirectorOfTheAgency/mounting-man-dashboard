@@ -15,10 +15,13 @@ import {
   PAUSE_AD_GROUP_CRITERION,
   READ_LOGIN_CUSTOMER_ID,
   createMountingManAdsApplyClient,
+  formatAdGroupCriterionMatches,
   googleAdsAdGroupCriteriaMutateUrl,
   googleAdsCampaignCriteriaMutateUrl,
   googleAdsSearchUrl,
+  parseAdGroupCriterionResourceName,
   resolveAdsApiVersion,
+  resolveAdGroupCriterionMatch,
 } from '../lib/mounting-man-ads-apply.mjs';
 import { createMountingManAdsApplyHandler } from '../pages/api/mcp/mounting-man-ads-apply.js';
 import { createMountingManReportingHandler } from '../pages/api/mcp/mounting-man-reporting.js';
@@ -148,6 +151,67 @@ function adGroupRow({
   return {
     adGroup: { id, name, status: 'ENABLED' },
     campaign: { id: campaignId, name: 'MSP - General TV Mounting' },
+  };
+}
+
+const COLLISION_CRITERION_ID = '314304139163';
+const HOLD_AD_GROUP_ID = '185159817785';
+const HOLD_RESOURCE_NAME = `customers/${DEFAULT_CUSTOMER_ID}/adGroupCriteria/${HOLD_AD_GROUP_ID}~${COLLISION_CRITERION_ID}`;
+
+function collisionKeywordRows({ holdStatus = 'PAUSED' } = {}) {
+  return [
+    keywordRow({
+      criterionId: COLLISION_CRITERION_ID,
+      campaignId: '19927004057',
+      campaignName: 'DM Lead Gen',
+      adGroupId: '147809640156',
+      adGroupName: 'DM Lead Gen',
+      status: 'ENABLED',
+    }),
+    keywordRow({
+      criterionId: COLLISION_CRITERION_ID,
+      campaignId: '20825069166',
+      campaignName: 'Nationwide',
+      adGroupId: '161961230608',
+      adGroupName: 'Nationwide',
+      status: 'ENABLED',
+    }),
+    keywordRow({
+      criterionId: COLLISION_CRITERION_ID,
+      campaignId: '20867488270',
+      campaignName: 'MSP - General TV Mounting',
+      adGroupId: '160447947247',
+      adGroupName: 'MSP General / Nationwide',
+      status: 'ENABLED',
+    }),
+    keywordRow({
+      criterionId: COLLISION_CRITERION_ID,
+      campaignId: '20867488270',
+      campaignName: 'MSP - General TV Mounting',
+      adGroupId: HOLD_AD_GROUP_ID,
+      adGroupName: 'MSP | TV Mounting - Near Me',
+      status: holdStatus,
+    }),
+  ];
+}
+
+function uniqueAllowlistedCollisionRows(options) {
+  return collisionKeywordRows(options).filter((row) => row.adGroup.id !== '160447947247');
+}
+
+function nonAllowlistedCollisionRows() {
+  return collisionKeywordRows().filter((row) => (
+    row.campaign.id === '19927004057' || row.campaign.id === '20825069166'
+  ));
+}
+
+function matchFromKeywordRow(row) {
+  return {
+    criterion_id: row.adGroupCriterion.criterionId,
+    resource_name: row.adGroupCriterion.resourceName,
+    status: row.adGroupCriterion.status,
+    campaign_id: row.campaign.id,
+    ad_group_id: row.adGroup.id,
   };
 }
 
@@ -541,6 +605,274 @@ test('get_criterion_status is read-only and sends login-customer-id 3167428631',
   assert.equal(http.calls[0].url.includes('/v20/'), false);
   assert.equal(http.calls[0].headers['login-customer-id'], READ_LOGIN_CUSTOMER_ID);
   assert.equal(http.calls.some(isMutate), false);
+  assertAdsHttpVersions(http.calls);
+});
+
+test('resolveAdGroupCriterionMatch picks unique allowlisted and refuses collisions', () => {
+  const unique = uniqueAllowlistedCollisionRows().map(matchFromKeywordRow);
+  const picked = resolveAdGroupCriterionMatch(unique, { criterionId: COLLISION_CRITERION_ID });
+  assert.equal(picked.ad_group_id, HOLD_AD_GROUP_ID);
+  assert.equal(picked.campaign_id, '20867488270');
+
+  const parsed = parseAdGroupCriterionResourceName(HOLD_RESOURCE_NAME);
+  assert.equal(parsed.adGroupId, HOLD_AD_GROUP_ID);
+  assert.equal(parsed.criterionId, COLLISION_CRITERION_ID);
+
+  const all = collisionKeywordRows().map(matchFromKeywordRow);
+  assert.throws(
+    () => resolveAdGroupCriterionMatch(all, { criterionId: COLLISION_CRITERION_ID }),
+    (error) => error.code === 'ambiguous_criterion'
+      && String(error.message).includes('ad_group_id=185159817785')
+      && String(error.message).includes('ad_group_id=160447947247')
+      && String(error.message).includes('ad_group_id=147809640156'),
+  );
+
+  const hold = resolveAdGroupCriterionMatch(all, {
+    criterionId: COLLISION_CRITERION_ID,
+    adGroupId: HOLD_AD_GROUP_ID,
+  });
+  assert.equal(hold.resource_name, HOLD_RESOURCE_NAME);
+
+  const byName = resolveAdGroupCriterionMatch(all, { resourceName: HOLD_RESOURCE_NAME });
+  assert.equal(byName.ad_group_id, HOLD_AD_GROUP_ID);
+
+  const offAllowlist = nonAllowlistedCollisionRows().map(matchFromKeywordRow);
+  assert.throws(
+    () => resolveAdGroupCriterionMatch(offAllowlist, { criterionId: COLLISION_CRITERION_ID }),
+    (error) => error.code === 'unknown_campaign'
+      && String(error.message).includes('not on an allowlisted campaign')
+      && String(error.message).includes('campaign_id=19927004057'),
+  );
+
+  assert.match(
+    formatAdGroupCriterionMatches(all),
+    /campaign_id=20867488270 ad_group_id=185159817785 status=PAUSED/,
+  );
+});
+
+test('get_criterion_status and pause pick a unique allowlisted criterion_id match', async () => {
+  const statusHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      return searchBatch(uniqueAllowlistedCollisionRows());
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const statusHandler = handlerWithHttp(statusHttp);
+  const status = response();
+  await statusHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 33,
+      method: 'tools/call',
+      params: {
+        name: GET_CRITERION_STATUS,
+        arguments: { criterion_id: COLLISION_CRITERION_ID },
+      },
+    },
+  }), status);
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.body.result.structuredContent.ad_group_id, HOLD_AD_GROUP_ID);
+  assert.equal(status.body.result.structuredContent.campaign_id, '20867488270');
+  assert.equal(status.body.result.structuredContent.resource_name, HOLD_RESOURCE_NAME);
+  assert.equal(statusHttp.calls.some(isMutate), false);
+
+  let pauseLookups = 0;
+  const pauseHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      pauseLookups += 1;
+      return searchBatch(uniqueAllowlistedCollisionRows({
+        holdStatus: pauseLookups === 1 ? 'ENABLED' : 'PAUSED',
+      }));
+    }
+    if (config.url === googleAdsAdGroupCriteriaMutateUrl(DEFAULT_CUSTOMER_ID)) {
+      return mutateResults([HOLD_RESOURCE_NAME]);
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const pauseHandler = handlerWithHttp(pauseHttp);
+  const pause = response();
+  await pauseHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 34,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: { criterion_id: COLLISION_CRITERION_ID, confirm: true },
+      },
+    },
+  }), pause);
+  assert.equal(pause.statusCode, 200);
+  assert.equal(pause.body.result.structuredContent.ad_group_id, HOLD_AD_GROUP_ID);
+  assert.equal(pause.body.result.structuredContent.resource_name, HOLD_RESOURCE_NAME);
+  assert.equal(pause.body.result.structuredContent.before_status, 'ENABLED');
+  assert.equal(pause.body.result.structuredContent.after_status, 'PAUSED');
+  const write = pauseHttp.calls.find(isMutate);
+  assert.ok(write);
+  assert.equal(write.data.operations[0].update.resourceName, HOLD_RESOURCE_NAME);
+  assert.equal('login-customer-id' in write.headers, false);
+  assertAdsHttpVersions(statusHttp.calls);
+  assertAdsHttpVersions(pauseHttp.calls);
+});
+
+test('ambiguous multi-allowlisted criterion_id refuses without mutating', async () => {
+  const http = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      return searchBatch(collisionKeywordRows());
+    }
+    throw new Error('mutate must not run for ambiguous criterion_id');
+  });
+  const handler = handlerWithHttp(http);
+
+  const status = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 35,
+      method: 'tools/call',
+      params: {
+        name: GET_CRITERION_STATUS,
+        arguments: { criterion_id: COLLISION_CRITERION_ID },
+      },
+    },
+  }), status);
+  assert.equal(status.body.error.code, -32602);
+  assert.match(status.body.error.message, /ambiguous_criterion/);
+  assert.match(status.body.error.message, /ad_group_id=185159817785/);
+  assert.match(status.body.error.message, /ad_group_id=160447947247/);
+  assert.match(status.body.error.message, /ad_group_id=147809640156/);
+  assert.match(status.body.error.message, /resource_name=customers\/1287907452\/adGroupCriteria\/185159817785~314304139163/);
+
+  const pause = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 36,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: { criterion_id: COLLISION_CRITERION_ID, confirm: true },
+      },
+    },
+  }), pause);
+  assert.equal(pause.body.error.code, -32602);
+  assert.match(pause.body.error.message, /ambiguous_criterion/);
+  assert.match(pause.body.error.message, /ad_group_id or resource_name/);
+  assert.equal(http.calls.some(isMutate), false);
+  assertAdsHttpVersions(http.calls);
+});
+
+test('ad_group_id and resource_name disambiguate a colliding criterion_id', async () => {
+  let lookups = 0;
+  const http = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      lookups += 1;
+      return searchBatch(collisionKeywordRows({
+        holdStatus: lookups === 1 || lookups === 2 ? 'ENABLED' : 'PAUSED',
+      }));
+    }
+    if (config.url === googleAdsAdGroupCriteriaMutateUrl(DEFAULT_CUSTOMER_ID)) {
+      return mutateResults([HOLD_RESOURCE_NAME]);
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const handler = handlerWithHttp(http);
+
+  const byAdGroup = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 37,
+      method: 'tools/call',
+      params: {
+        name: GET_CRITERION_STATUS,
+        arguments: {
+          criterion_id: COLLISION_CRITERION_ID,
+          ad_group_id: HOLD_AD_GROUP_ID,
+        },
+      },
+    },
+  }), byAdGroup);
+  assert.equal(byAdGroup.statusCode, 200);
+  assert.equal(byAdGroup.body.result.structuredContent.ad_group_id, HOLD_AD_GROUP_ID);
+  assert.equal(byAdGroup.body.result.structuredContent.status, 'ENABLED');
+  assert.match(queryOf(http.calls[0]), /ad_group\.id = 185159817785/);
+
+  const byResource = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 38,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: {
+          criterion_id: COLLISION_CRITERION_ID,
+          resource_name: HOLD_RESOURCE_NAME,
+          confirm: true,
+        },
+      },
+    },
+  }), byResource);
+  assert.equal(byResource.statusCode, 200);
+  assert.equal(byResource.body.result.structuredContent.ad_group_id, HOLD_AD_GROUP_ID);
+  assert.equal(byResource.body.result.structuredContent.before_status, 'ENABLED');
+  assert.equal(byResource.body.result.structuredContent.after_status, 'PAUSED');
+  assert.equal(byResource.body.result.structuredContent.resource_name, HOLD_RESOURCE_NAME);
+  const write = http.calls.find(isMutate);
+  assert.ok(write);
+  assert.equal(write.data.operations[0].update.resourceName, HOLD_RESOURCE_NAME);
+  assert.equal('login-customer-id' in write.headers, false);
+  assert.match(queryOf(http.calls.find((call) => (
+    isSearch(call) && String(call.data?.query || '').includes("ad_group_criterion.resource_name = '")
+  ))), /adGroupCriteria\/185159817785~314304139163/);
+  assertAdsHttpVersions(http.calls);
+});
+
+test('non-allowlisted-only criterion_id collisions refuse unknown_campaign', async () => {
+  const http = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      return searchBatch(nonAllowlistedCollisionRows());
+    }
+    throw new Error('mutate must not run for non-allowlisted criterion collisions');
+  });
+  const handler = handlerWithHttp(http);
+
+  const status = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 39,
+      method: 'tools/call',
+      params: {
+        name: GET_CRITERION_STATUS,
+        arguments: { criterion_id: COLLISION_CRITERION_ID },
+      },
+    },
+  }), status);
+  assert.equal(status.body.error.code, -32602);
+  assert.match(status.body.error.message, /unknown campaign/i);
+  assert.match(status.body.error.message, /not on an allowlisted campaign/);
+  assert.match(status.body.error.message, /campaign_id=19927004057/);
+  assert.match(status.body.error.message, /campaign_id=20825069166/);
+  assert.equal(String(status.body.error.message).includes('campaign_id=20867488270'), false);
+
+  const pause = response();
+  await handler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 40,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: { criterion_id: COLLISION_CRITERION_ID, confirm: true },
+      },
+    },
+  }), pause);
+  assert.equal(pause.body.error.code, -32602);
+  assert.match(pause.body.error.message, /unknown campaign/i);
+  assert.equal(http.calls.some(isMutate), false);
+  assert.equal(pause.body.result?.structuredContent, undefined);
   assertAdsHttpVersions(http.calls);
 });
 
