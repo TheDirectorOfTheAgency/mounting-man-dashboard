@@ -12,6 +12,7 @@ import {
   isJsonRpcRequest,
   jsonRpcError,
   jsonRpcResult,
+  mcpWwwAuthenticateHeader,
   negotiateProtocolVersion,
   parseToolArguments,
   wantsEventStream,
@@ -177,6 +178,8 @@ export function createMountingManReportingHandler(overrides = {}) {
       return sendJson(res, 401, {
         error: 'Unauthorized',
         hint: configured ? undefined : 'MCP_SQUARE_PAYROLL_SECRET is not set',
+      }, {
+        'WWW-Authenticate': mcpWwwAuthenticateHeader(),
       });
     }
 

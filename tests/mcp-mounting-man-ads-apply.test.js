@@ -186,6 +186,10 @@ test('MCP route rejects missing or wrong Bearer secrets', async () => {
     body: { jsonrpc: '2.0', id: 1, method: 'initialize' },
   }), missing);
   assert.equal(missing.statusCode, 401);
+  assert.equal(
+    missing.headers['www-authenticate'],
+    'Bearer realm="mcp", resource_metadata="https://mounting-man-dashboard.vercel.app/.well-known/oauth-protected-resource", scope="mcp"',
+  );
 
   const wrong = response();
   await handler(request({
@@ -193,6 +197,7 @@ test('MCP route rejects missing or wrong Bearer secrets', async () => {
     body: { jsonrpc: '2.0', id: 1, method: 'initialize' },
   }), wrong);
   assert.equal(wrong.statusCode, 401);
+  assert.equal(String(wrong.headers['www-authenticate'] || '').includes('scope="mcp"'), true);
 });
 
 test('tools/list returns exactly the three v1 Ads APPLY tools', async () => {
