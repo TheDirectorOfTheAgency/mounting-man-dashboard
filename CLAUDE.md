@@ -25,6 +25,11 @@ pages/api/square-revenue.js            # Square Payments API proxy — paginates
 pages/api/webflow-posts.js             # Webflow Collections API proxy — counts published/draft/archived blog posts
 pages/api/google-ads.js                # Google Ads REST API — uses shared auth, 15min cache + fallback to hardcoded data
 pages/api/webhooks/zenbooker.js        # Zenbooker job.completed webhook → offline conversion upload to Google Ads
+pages/api/mcp/auth/authorize.js        # OAuth 2.1 + PKCE authorize (Grok Web Custom Connector)
+pages/api/mcp/auth/token.js            # OAuth token — issues existing operator secret as access_token
+pages/api/mcp/auth/register.js         # RFC 7591 DCR — returns client_id mounting-man-ads-apply
+lib/mcp-oauth.mjs                      # Stateless HMAC-signed auth codes + PKCE S256
+lib/mcp-http.mjs                       # MCP HTTP helpers + operator Bearer check
 lib/google-ads-auth.js                 # Shared OAuth2 token refresh — used by google-ads.js and conversions upload
 lib/hash-pii.js                        # PII normalization + SHA-256 hashing for Google Ads Enhanced Conversions
 lib/google-ads-conversions.js          # Google Ads uploadClickConversions wrapper (Enhanced Conversions for Leads)

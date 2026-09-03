@@ -13,6 +13,24 @@ const nextConfig = {
       '/api/mcp/marshallwayne-x': ['./lib/assets/recap-plate.png'],
     },
   },
+  async rewrites() {
+    // RFC 8414 / RFC 9728 well-known URLs must be at the origin root.
+    // Next.js API routes live under /api, so rewrite the public paths.
+    return [
+      {
+        source: '/.well-known/oauth-authorization-server',
+        destination: '/api/well-known/oauth-authorization-server',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource',
+        destination: '/api/well-known/oauth-protected-resource',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource/:path*',
+        destination: '/api/well-known/oauth-protected-resource/:path*',
+      },
+    ];
+  },
   async headers() {
     // The installation-post surface is operator-only. The capability itself now
     // rides in a URL fragment and is exchanged for an HttpOnly cookie, but the

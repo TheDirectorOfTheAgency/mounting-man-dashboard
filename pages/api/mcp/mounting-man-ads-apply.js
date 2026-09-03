@@ -4,6 +4,7 @@
 // Production: https://mounting-man-dashboard.vercel.app/api/mcp/mounting-man-ads-apply
 // Auth: Authorization: Bearer <MCP_SQUARE_PAYROLL_SECRET> (also accepts CRON_SECRET)
 // Same operator secrets as marshallwayne-x / mounting-man-reporting. No second auth scheme.
+// Grok Web Custom Connector OAuth 2.1 + PKCE issues that same Bearer via /api/mcp/auth/*.
 // Sibling of mounting-man-reporting — do not flip reporting to write.
 
 import axios from 'axios';
@@ -13,6 +14,7 @@ import {
   isJsonRpcRequest,
   jsonRpcError,
   jsonRpcResult,
+  mcpWwwAuthenticateHeader,
   negotiateProtocolVersion,
   parseToolArguments,
   wantsEventStream,
@@ -248,6 +250,8 @@ export function createMountingManAdsApplyHandler(overrides = {}) {
       return sendJson(res, 401, {
         error: 'Unauthorized',
         hint: configured ? undefined : 'MCP_SQUARE_PAYROLL_SECRET is not set',
+      }, {
+        'WWW-Authenticate': mcpWwwAuthenticateHeader(),
       });
     }
 
