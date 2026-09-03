@@ -7,7 +7,9 @@ import test from 'node:test';
 import { GET_MOUNTING_MAN_SQUARE_DETAIL } from '../lib/square-reporting-feed.mjs';
 import {
   ADD_CAMPAIGN_PHRASE_NEGATIVES,
+  ADS_API_VERSION,
   ADS_APPLY_TOOLS,
+  DEFAULT_ADS_API_VERSION,
   DEFAULT_CUSTOMER_ID,
   GET_CRITERION_STATUS,
   PAUSE_AD_GROUP_CRITERION,
@@ -16,6 +18,7 @@ import {
   googleAdsAdGroupCriteriaMutateUrl,
   googleAdsCampaignCriteriaMutateUrl,
   googleAdsSearchUrl,
+  resolveAdsApiVersion,
 } from '../lib/mounting-man-ads-apply.mjs';
 import { createMountingManAdsApplyHandler } from '../pages/api/mcp/mounting-man-ads-apply.js';
 import { createMountingManReportingHandler } from '../pages/api/mcp/mounting-man-reporting.js';
@@ -176,6 +179,28 @@ function isSearch(config) {
 
 function isMutate(config) {
   return String(config?.url || '').includes(':mutate');
+}
+
+function assertAdsApiUrl(url, version = DEFAULT_ADS_API_VERSION) {
+  const value = String(url || '');
+  assert.match(value, new RegExp(`/${version}/`));
+  if (version !== 'v20') {
+    assert.equal(value.includes('/v20/'), false, value);
+  }
+}
+
+function assertAdsHttpVersions(calls, version = DEFAULT_ADS_API_VERSION) {
+  const adsCalls = calls.filter((call) => String(call?.url || '').includes('googleads.googleapis.com'));
+  assert.ok(adsCalls.length > 0, 'expected mocked Google Ads HTTP');
+  for (const call of adsCalls) {
+    assertAdsApiUrl(call.url, version);
+    if (isSearch(call)) {
+      assert.match(String(call.url), /googleAds:searchStream/);
+    }
+    if (isMutate(call)) {
+      assert.match(String(call.url), /:mutate/);
+    }
+  }
 }
 
 test('MCP route rejects missing or wrong Bearer secrets', async () => {
@@ -374,6 +399,8 @@ test('allowlist accepts MSP General and refuses an unknown campaign before mutat
   assert.equal(pauseUnknown.body.error.code, -32602);
   assert.match(pauseUnknown.body.error.message, /unknown campaign/i);
   assert.equal(pauseHttp.calls.some(isMutate), false);
+  assertAdsHttpVersions(http.calls);
+  assertAdsHttpVersions(pauseHttp.calls);
 });
 
 test('WRITE mutate omits login-customer-id and READ sends 3167428631', async () => {
@@ -418,12 +445,17 @@ test('WRITE mutate omits login-customer-id and READ sends 3167428631', async () 
   const writes = http.calls.filter(isMutate);
   assert.ok(reads.length >= 2);
   assert.equal(writes.length, 1);
+  assertAdsHttpVersions(http.calls);
   for (const call of reads) {
     assert.equal(call.url, googleAdsSearchUrl(DEFAULT_CUSTOMER_ID));
+    assert.match(call.url, /\/v24\//);
+    assert.equal(call.url.includes('/v20/'), false);
     assert.equal(call.headers['login-customer-id'], READ_LOGIN_CUSTOMER_ID);
     assert.equal(call.headers.Authorization, 'Bearer test-access-token');
     assert.equal(call.headers['developer-token'], 'test-developer-token');
   }
+  assert.match(writes[0].url, /\/v24\//);
+  assert.equal(writes[0].url.includes('/v20/'), false);
   assert.equal('login-customer-id' in writes[0].headers, false);
   assert.equal(writes[0].headers['login-customer-id'], undefined);
   assert.equal(writes[0].data.operations[0].update.status, 'PAUSED');
@@ -467,11 +499,16 @@ test('add_campaign_phrase_negatives mutate omits login-customer-id', async () =>
   assert.equal(res.body.result.structuredContent.after_status[0].status, 'ENABLED');
   const write = http.calls.find(isMutate);
   assert.ok(write);
+  assertAdsHttpVersions(http.calls);
+  assert.match(write.url, /\/v24\//);
+  assert.equal(write.url.includes('/v20/'), false);
   assert.equal('login-customer-id' in write.headers, false);
   assert.equal(write.data.operations[0].create.negative, true);
   assert.equal(write.data.operations[0].create.keyword.matchType, 'PHRASE');
   assert.equal(http.calls.filter(isSearch).every((call) => (
     call.headers['login-customer-id'] === READ_LOGIN_CUSTOMER_ID
+    && String(call.url).includes('/v24/')
+    && !String(call.url).includes('/v20/')
   )), true);
 });
 
@@ -500,8 +537,11 @@ test('get_criterion_status is read-only and sends login-customer-id 3167428631',
   assert.equal(res.body.result.structuredContent.status, 'PAUSED');
   assert.equal(http.calls.length, 1);
   assert.equal(http.calls[0].url, googleAdsSearchUrl(DEFAULT_CUSTOMER_ID));
+  assert.match(http.calls[0].url, /\/v24\//);
+  assert.equal(http.calls[0].url.includes('/v20/'), false);
   assert.equal(http.calls[0].headers['login-customer-id'], READ_LOGIN_CUSTOMER_ID);
   assert.equal(http.calls.some(isMutate), false);
+  assertAdsHttpVersions(http.calls);
 });
 
 test('refuses campaign pause and ad-group pause without mutating', async () => {
@@ -593,6 +633,7 @@ test('refuses campaign pause and ad-group pause without mutating', async () => {
   assert.match(adGroupLookup.body.error.message, /ad group pause/i);
   assert.equal(http.calls.some(isMutate), false);
   assert.equal(lookupHttp.calls.some(isMutate), false);
+  assertAdsHttpVersions(lookupHttp.calls);
 });
 
 test('refuses KEEP keywords and the four locked exacts without mutating', async () => {
@@ -631,6 +672,7 @@ test('refuses KEEP keywords and the four locked exacts without mutating', async 
     assert.equal(res.body.error.code, -32602, text);
     assert.match(res.body.error.message, /KEEP keyword/i, text);
     assert.equal(http.calls.some(isMutate), false, text);
+    assertAdsHttpVersions(http.calls);
   }
 
   const negativesHttp = recordingHttp(() => {
@@ -694,6 +736,7 @@ test('Frame campaign refuses keyword pause and still accepts phrase negatives', 
   assert.equal(pause.body.error.code, -32602);
   assert.match(pause.body.error.message, /negatives only/i);
   assert.equal(pauseHttp.calls.some(isMutate), false);
+  assertAdsHttpVersions(pauseHttp.calls);
 });
 
 test('budgets and bids are refused without hitting Google Ads', async () => {
@@ -720,6 +763,85 @@ test('budgets and bids are refused without hitting Google Ads', async () => {
   assert.equal(res.body.error.code, -32602);
   assert.match(res.body.error.message, /budget/i);
   assert.equal(http.calls.length, 0);
+});
+
+test('ads-apply URL builders default to v24 and honor GOOGLE_ADS_API_VERSION', () => {
+  assert.equal(DEFAULT_ADS_API_VERSION, 'v24');
+  assert.equal(ADS_API_VERSION, 'v24');
+  assert.equal(resolveAdsApiVersion({}), 'v24');
+  assert.equal(resolveAdsApiVersion({ GOOGLE_ADS_API_VERSION: '' }), 'v24');
+  assert.equal(resolveAdsApiVersion({ GOOGLE_ADS_API_VERSION: 'v21' }), 'v21');
+
+  const searchUrl = googleAdsSearchUrl(DEFAULT_CUSTOMER_ID);
+  const pauseUrl = googleAdsAdGroupCriteriaMutateUrl(DEFAULT_CUSTOMER_ID);
+  const negativesUrl = googleAdsCampaignCriteriaMutateUrl(DEFAULT_CUSTOMER_ID);
+  assertAdsApiUrl(searchUrl, 'v24');
+  assertAdsApiUrl(pauseUrl, 'v24');
+  assertAdsApiUrl(negativesUrl, 'v24');
+  assert.match(searchUrl, /\/v24\/customers\/1287907452\/googleAds:searchStream$/);
+  assert.match(pauseUrl, /\/v24\/customers\/1287907452\/adGroupCriteria:mutate$/);
+  assert.match(negativesUrl, /\/v24\/customers\/1287907452\/campaignCriteria:mutate$/);
+
+  const overrideSearch = googleAdsSearchUrl(DEFAULT_CUSTOMER_ID, 'v21');
+  assertAdsApiUrl(overrideSearch, 'v21');
+  assert.equal(overrideSearch.includes('/v24/'), false);
+});
+
+test('mocked search and mutate HTTP uses /v24/ by default and the env override when set', async () => {
+  let pauseLookups = 0;
+  const defaultHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      pauseLookups += 1;
+      return searchBatch([keywordRow({ status: pauseLookups === 1 ? 'ENABLED' : 'PAUSED' })]);
+    }
+    if (isMutate(config)) {
+      return mutateResults([keywordRow().adGroupCriterion.resourceName]);
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const defaultHandler = handlerWithHttp(defaultHttp);
+  const paused = response();
+  await defaultHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 90,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: { criterion_id: '555000111222', confirm: true },
+      },
+    },
+  }), paused);
+  assert.equal(paused.statusCode, 200);
+  assert.equal(paused.body.result.structuredContent.after_status, 'PAUSED');
+  assertAdsHttpVersions(defaultHttp.calls, 'v24');
+  assert.ok(defaultHttp.calls.some(isSearch));
+  assert.ok(defaultHttp.calls.some(isMutate));
+
+  const overrideEnv = { ...AUTH_ENV, GOOGLE_ADS_API_VERSION: 'v21' };
+  const overrideHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      return searchBatch([keywordRow({ status: 'PAUSED' })]);
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const overrideHandler = handlerWithHttp(overrideHttp, overrideEnv);
+  const status = response();
+  await overrideHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 91,
+      method: 'tools/call',
+      params: {
+        name: GET_CRITERION_STATUS,
+        arguments: { criterion_id: '555000111222' },
+      },
+    },
+  }), status);
+  assert.equal(status.statusCode, 200);
+  assertAdsHttpVersions(overrideHttp.calls, 'v21');
+  assert.equal(overrideHttp.calls[0].url.includes('/v24/'), false);
+  assert.equal(overrideHttp.calls[0].url.includes('/v20/'), false);
 });
 
 test('reporting MCP files stay a read-only sibling and do not gain Ads write tools', async () => {
