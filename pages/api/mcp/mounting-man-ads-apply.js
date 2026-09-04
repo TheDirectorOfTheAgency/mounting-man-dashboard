@@ -47,7 +47,15 @@ const TOOLS = [
         },
         criterion_id: {
           type: 'string',
-          description: 'Ad group criterion id to PAUSE. Not a campaign id or ad group id.',
+          description: 'Ad group criterion id to PAUSE. Not a campaign id or ad group id. Google reuses this id across ad groups — pass ad_group_id or resource_name when it collides.',
+        },
+        ad_group_id: {
+          type: 'string',
+          description: 'Optional ad group id. Required when the same criterion_id exists in more than one allowlisted ad group.',
+        },
+        resource_name: {
+          type: 'string',
+          description: 'Optional customers/{id}/adGroupCriteria/{adGroupId}~{criterionId}. Pins the exact row when criterion_id is reused.',
         },
         confirm: {
           type: 'boolean',
@@ -98,11 +106,15 @@ const TOOLS = [
         },
         criterion_id: {
           type: 'string',
-          description: 'Ad group or campaign criterion id.',
+          description: 'Ad group or campaign criterion id. Google reuses ad_group_criterion.criterion_id across ad groups — pass ad_group_id or resource_name when it collides.',
+        },
+        ad_group_id: {
+          type: 'string',
+          description: 'Optional ad group id. Required when the same criterion_id exists in more than one allowlisted ad group.',
         },
         resource_name: {
           type: 'string',
-          description: 'Optional Google Ads resource name. Used to recover criterion_id if omitted.',
+          description: 'Optional customers/{id}/adGroupCriteria/{adGroupId}~{criterionId}. Pins the exact row when criterion_id is reused.',
         },
       },
       required: ['criterion_id'],
@@ -148,6 +160,7 @@ const ADS_TOOL_NAMES = new Set([
 const VALIDATION_CODES = new Set([
   'confirm_required',
   'unknown_campaign',
+  'ambiguous_criterion',
   'unknown_customer',
   'invalid_customer',
   'invalid_criterion',
@@ -188,7 +201,7 @@ async function dispatchMcp(body, deps) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
       instructions:
-        'Tightly scoped Google Ads WRITE for The Mounting Man (1287907452). Tools: pause_ad_group_criterion, add_campaign_phrase_negatives, get_criterion_status. Mutates require confirm:true. WRITE omits login-customer-id. READ uses login-customer-id 3167428631. Allowlisted campaigns only. Never pause a campaign or ad group. Never change budgets or bids. Never touch HTSA/Agency. KEEP Frame installer / fireplace / mantel / masonry keywords and the locked exacts. Mounting Man Reporting stays read-only.',
+        'Tightly scoped Google Ads WRITE for The Mounting Man (1287907452). Tools: pause_ad_group_criterion, add_campaign_phrase_negatives, get_criterion_status. Mutates require confirm:true. WRITE omits login-customer-id. READ uses login-customer-id 3167428631. Allowlisted campaigns only. Never pause a campaign or ad group. Never change budgets or bids. Never touch HTSA/Agency. KEEP Frame installer / fireplace / mantel / masonry keywords and the locked exacts. When criterion_id is reused across ad groups, pass ad_group_id or resource_name. Mounting Man Reporting stays read-only.',
     });
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
