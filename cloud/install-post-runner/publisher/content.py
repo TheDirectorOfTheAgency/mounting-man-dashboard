@@ -87,14 +87,30 @@ def city_mounting_stamp(city: str) -> str:
     return f"TV mounting {place} by The Mounting Man."
 
 
+SPECIALTY_SAMSUNG_FRAME = "samsung_frame"
+SPECIALTY_MANTELMOUNT = "mantelmount"
+SPECIALTY_BOTH = "both"
+SPECIALTY_STANDARD_TV = "standard_tv"
+
+_FRAME_SERVICE_LINK = (
+    '<a href="https://www.themountingman.com/service/samsung-frame-installation">'
+    "Samsung Frame TV installation</a>"
+)
+_MANTEL_SERVICE_LINK = (
+    '<a href="https://www.themountingman.com/service/mantelmount-installation">'
+    "MantelMount installation</a>"
+)
+
+
 def job_used_frame(post_data: dict | None) -> bool:
-    """Existing Frame tagging only — do not infer from soundbar / gallery-bracket notes."""
+    """Samsung Frame tagging only — do not infer from soundbar / gallery-bracket notes.
+
+    `gallery-style` is shared with Hisense Canvas / TCL NXTFRAME / LG G-Series.
+    Only a Samsung Frame brand (including gallery-style + Samsung) counts.
+    """
     if not post_data:
         return False
-    if post_data.get("gallery-style"):
-        return True
-    brand = str(post_data.get("tv-brand") or "").strip().lower()
-    return brand.startswith("samsung frame") or brand in {"samsung frame", "samsung frame pro"}
+    return _normalized_brand(post_data).startswith("Samsung Frame")
 
 
 def job_used_mantel(post_data: dict | None) -> bool:
@@ -105,6 +121,19 @@ def job_used_mantel(post_data: dict | None) -> bool:
         return True
     mount = str(post_data.get("mount-type") or "").strip().lower()
     return "mantelmount" in mount or "mantel mount" in mount
+
+
+def classify_install_specialty(post_data: dict | None) -> str:
+    """Evidence-only specialty class. Never infer a product that was not tagged."""
+    frame = job_used_frame(post_data)
+    mantel = job_used_mantel(post_data)
+    if frame and mantel:
+        return SPECIALTY_BOTH
+    if frame:
+        return SPECIALTY_SAMSUNG_FRAME
+    if mantel:
+        return SPECIALTY_MANTELMOUNT
+    return SPECIALTY_STANDARD_TV
 
 
 def ensure_city_stamp(text: str, city: str, post_data: dict | None = None) -> str:
@@ -245,12 +274,13 @@ def _primary_install_intent(post_data: dict) -> tuple[str, str]:
 
     if multi_tv_job_details(post_data).get("is_multi_tv"):
         return "Multi-TV Mounting", "multi-tv-mounting"
-    if "mantelmount" in mount_slug:
-        return "MantelMount Installation", "mantelmount-installation"
-    if gallery_style and brand == "Samsung Frame Pro":
+    specialty = classify_install_specialty(post_data)
+    if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH} and brand == "Samsung Frame Pro":
         return "Samsung Frame Pro TV Installation", "samsung-frame-pro-tv-installation"
-    if gallery_style and brand.startswith("Samsung Frame"):
+    if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH}:
         return "Samsung Frame TV Installation", "samsung-frame-tv-installation"
+    if specialty == SPECIALTY_MANTELMOUNT or "mantelmount" in mount_slug:
+        return "MantelMount Installation", "mantelmount-installation"
     if gallery_style and brand and brand != "Gallery-Style":
         return _brand_installation_intent(brand)
     if gallery_style:
@@ -276,6 +306,186 @@ def _samsung_frame_install_label(post_data: dict) -> str:
     return "Samsung Frame Pro TV" if _is_samsung_frame_pro_install(post_data) else "Samsung Frame TV"
 
 
+def size_inch_phrase(size: str) -> str:
+    raw = str(size or "").strip()
+    if not raw or raw.lower() == "tv":
+        return ""
+    match = re.search(r"(\d{2,3})", raw)
+    if not match:
+        return ""
+    return f"{match.group(1)}-inch"
+
+
+def _mantel_model_label(post_data: dict) -> str:
+    raw = str(post_data.get("mount-type") or post_data.get("bracket-type") or "").strip()
+    label = _mount_display_label(raw)
+    if "mantelmount" in label.lower():
+        return label
+    if post_data.get("mantelmount"):
+        return "MantelMount"
+    return ""
+
+
+def _resolved_mount_label(post_data: dict) -> str:
+    """Mount wording from tagged hardware only. Frame+MantelMount is MantelMount, not Slim Fit."""
+    raw = str(post_data.get("mount-type") or post_data.get("bracket-type") or "").replace("-", " ").strip()
+    specialty = classify_install_specialty(post_data)
+    if specialty in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH}:
+        return _specific_mount_label(raw) or "MantelMount"
+    gallery_style = bool(post_data.get("gallery-style"))
+    brand_lower = str(post_data.get("tv-brand") or "").lower()
+    if specialty == SPECIALTY_SAMSUNG_FRAME and gallery_style and "samsung" in brand_lower:
+        return "Samsung Slim Fit Wall Mount"
+    if gallery_style:
+        return "flush mount"
+    return _specific_mount_label(raw)
+
+
+def _mount_details_label(mount_type: str) -> str | None:
+    if not mount_type:
+        return None
+    if mount_type.startswith("MantelMount") or mount_type == "Samsung Slim Fit Wall Mount":
+        return mount_type
+    return mount_type.title()
+
+
+def specialty_entity_label(post_data: dict) -> str:
+    specialty = classify_install_specialty(post_data)
+    if specialty == SPECIALTY_SAMSUNG_FRAME:
+        return _samsung_frame_install_label(post_data)
+    if specialty == SPECIALTY_MANTELMOUNT:
+        return _mantel_model_label(post_data) or "MantelMount"
+    if specialty == SPECIALTY_BOTH:
+        frame = _samsung_frame_install_label(post_data)
+        mantel = _mantel_model_label(post_data) or "MantelMount"
+        return f"{frame} and {mantel}"
+    return ""
+
+
+def specialty_differentiating_fact(post_data: dict) -> str:
+    """One known job fact for social/body. Empty when nothing distinctive is tagged."""
+    specialty = classify_install_specialty(post_data)
+    if specialty == SPECIALTY_STANDARD_TV:
+        return ""
+    surface = str(post_data.get("wall-surface") or "").strip()
+    fireplace = _fireplace_phrase(post_data)
+    mantel = _mantel_model_label(post_data)
+    mount = _resolved_mount_label(post_data)
+    size = size_inch_phrase(str(post_data.get("tv-size") or ""))
+    if specialty in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH} and fireplace:
+        return f"{mantel} {fireplace}".strip() if mantel else fireplace
+    if surface and surface.lower() not in {"drywall", "wall"}:
+        return f"on {surface.lower()}"
+    if specialty == SPECIALTY_SAMSUNG_FRAME and mount == "Samsung Slim Fit Wall Mount":
+        return "Samsung Slim Fit Wall Mount"
+    if mount:
+        return mount
+    if size:
+        return size
+    return ""
+
+
+def build_extractable_sentence(post_data: dict, city: str) -> str:
+    """One self-contained factual sentence a retrieval system can quote alone."""
+    specialty = classify_install_specialty(post_data)
+    if specialty == SPECIALTY_STANDARD_TV or _is_unmount_job(post_data):
+        return ""
+    place = _normalize_city_name(city)
+    size = size_inch_phrase(str(post_data.get("tv-size") or ""))
+    frame_label = (
+        _samsung_frame_install_label(post_data)
+        if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH}
+        else ""
+    )
+    mantel_label = (
+        _mantel_model_label(post_data)
+        if specialty in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH}
+        else ""
+    )
+    fireplace = _fireplace_phrase(post_data)
+    mount_label = _resolved_mount_label(post_data)
+    surface = str(post_data.get("wall-surface") or "").strip()
+
+    if specialty == SPECIALTY_SAMSUNG_FRAME:
+        unit = " ".join(part for part in [size, frame_label] if part) or "Samsung Frame TV"
+        if mount_label == "Samsung Slim Fit Wall Mount":
+            how = " using Samsung's Slim Fit Wall Mount"
+        elif mount_label:
+            article = "a " if not mount_label.lower().startswith("samsung") else ""
+            how = f" using {article}{mount_label}"
+        else:
+            how = ""
+        return f"The Mounting Man installed this {unit} in {place}{how}."
+
+    if specialty == SPECIALTY_MANTELMOUNT:
+        model = mantel_label or "MantelMount"
+        if fireplace:
+            return (
+                f"This {model} installation in {place} allows the TV to pull down "
+                f"from its resting position {fireplace}."
+            )
+        how = f" on {surface}" if surface and surface.lower() not in {"drywall", "wall"} else ""
+        return f"The Mounting Man installed this {model} in {place}{how}."
+
+    unit = " ".join(part for part in [size, frame_label] if part) or "Samsung Frame TV"
+    how = f" using a {mantel_label}" if mantel_label else ""
+    where_extra = f" {fireplace}" if fireplace else ""
+    return f"The Mounting Man installed this {unit} in {place}{how}{where_extra}."
+
+
+def select_related_installs(current: dict, candidates: list | None, *, limit: int = 3) -> list[dict]:
+    """Prefer Frame→Frame and MantelMount→MantelMount when both are tagged."""
+    specialty = classify_install_specialty(current)
+    current_slug = str(current.get("slug") or "").strip()
+    scored: list[tuple[int, dict]] = []
+    for raw in candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        slug = str(raw.get("slug") or "").strip()
+        if current_slug and slug and slug == current_slug:
+            continue
+        title = str(raw.get("title") or raw.get("name") or "").strip()
+        url = str(raw.get("url") or raw.get("live-url") or "").strip()
+        if not title or not url:
+            continue
+        item_spec = classify_install_specialty(raw)
+        score = 0
+        if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH} and item_spec in {
+            SPECIALTY_SAMSUNG_FRAME,
+            SPECIALTY_BOTH,
+        }:
+            score += 2
+        if specialty in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH} and item_spec in {
+            SPECIALTY_MANTELMOUNT,
+            SPECIALTY_BOTH,
+        }:
+            score += 2
+        current_city = _normalize_city_name(str(current.get("city") or "")).lower()
+        item_city = _normalize_city_name(str(raw.get("city") or "")).lower()
+        if current_city and item_city and current_city == item_city:
+            score += 1
+        scored.append((score, raw))
+    scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("title") or "")))
+    if specialty != SPECIALTY_STANDARD_TV:
+        preferred = [item for score, item in scored if score >= 2]
+        if preferred:
+            return preferred[:limit]
+    return [item for _, item in scored][:limit]
+
+
+def _related_installs_section(post_data: dict) -> str:
+    selected = select_related_installs(post_data, post_data.get("related-installs"))
+    if not selected:
+        return ""
+    lines = ["<h2>Related Installations</h2>", "<ul>"]
+    for item in selected:
+        title = html.escape(str(item.get("title") or item.get("name") or "").strip())
+        url = html.escape(str(item.get("url") or item.get("live-url") or "").strip(), quote=True)
+        lines.append(f'<li><a href="{url}">{title}</a></li>')
+    lines.append("</ul>")
+    return "\n".join(lines)
+
+
 def build_seo_slug(post_data: dict, city: str) -> str:
     if _is_unmount_job(post_data):
         street = _unmount_local_reference(post_data, city)
@@ -288,7 +498,7 @@ def build_seo_slug(post_data: dict, city: str) -> str:
     brand = _normalized_brand(post_data)
     size = str(post_data.get("tv-size", "")).strip().replace('"', ' inch')
     mount_label = _specific_mount_label(post_data.get("mount-type") or post_data.get("bracket-type") or "")
-    if _is_samsung_frame_install(post_data):
+    if classify_install_specialty(post_data) == SPECIALTY_SAMSUNG_FRAME:
         mount_label = ""
     surface = str(post_data.get("wall-surface", "")).strip()
     local_reference = _clean_local_reference(
@@ -598,10 +808,15 @@ def build_seo_title(post_data: dict, city: str) -> str:
             bits.append(f"Near {local_reference}")
         return f"{primary} in {city}" if not bits else f"{primary} in {city} | {' '.join(bits)}"
 
-    if _is_samsung_frame_install(post_data):
+    specialty = classify_install_specialty(post_data)
+    if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH}:
         suffix_bits = []
         if size:
             suffix_bits.append(size)
+        if specialty == SPECIALTY_BOTH:
+            mantel_label = _mantel_model_label(post_data)
+            if mantel_label:
+                suffix_bits.append(mantel_label)
         if surface and (surface.lower() != "drywall" or fireplace):
             suffix_bits.append(surface)
         if room:
@@ -769,20 +984,30 @@ def _city_service_reference(city: str) -> str:
     return _city_service_link(city, label)
 
 
-def _service_context_link(post_data: dict) -> str:
+def _service_context_links(post_data: dict) -> list[str]:
+    specialty = classify_install_specialty(post_data)
+    if specialty == SPECIALTY_SAMSUNG_FRAME:
+        return [_FRAME_SERVICE_LINK]
+    if specialty == SPECIALTY_MANTELMOUNT:
+        return [_MANTEL_SERVICE_LINK]
+    if specialty == SPECIALTY_BOTH:
+        return [_FRAME_SERVICE_LINK, _MANTEL_SERVICE_LINK]
     text = " ".join(
         str(post_data.get(key, ""))
         for key in ("title", "slug", "post-summary", "job-notes", "wall-surface", "mount-type", "tv-brand")
     ).lower()
-    if "frame" in text or bool(post_data.get("gallery-style")):
-        return '<a href="https://www.themountingman.com/service/samsung-frame-installation">Samsung Frame TV installation</a>'
-    if "mantelmount" in text:
-        return '<a href="https://www.themountingman.com/service/mantelmount-installation">MantelMount installation</a>'
     if "fireplace" in text:
-        return '<a href="https://www.themountingman.com/service/mount-tv-above-fireplace">fireplace TV mounting</a>'
+        return ['<a href="https://www.themountingman.com/service/mount-tv-above-fireplace">fireplace TV mounting</a>']
     if "conference" in text or "commercial" in text or "office" in text or "gym" in text:
-        return '<a href="https://www.themountingman.com/service/corporate-worksite-installation">commercial TV mounting</a>'
-    return '<a href="https://www.themountingman.com/service/tv-mounting">professional TV mounting services</a>'
+        return ['<a href="https://www.themountingman.com/service/corporate-worksite-installation">commercial TV mounting</a>']
+    return ['<a href="https://www.themountingman.com/service/tv-mounting">professional TV mounting services</a>']
+
+
+def _service_context_link(post_data: dict) -> str:
+    links = _service_context_links(post_data)
+    if len(links) == 2:
+        return f"{links[0]} and {links[1]}"
+    return links[0]
 
 
 def _service_area_paragraph(post_data: dict, city: str, nearby_cities: list[str]) -> str:
@@ -871,17 +1096,8 @@ def build_installation_details(post_data: dict, city: str) -> str:
         str(post_data.get("local-reference") or post_data.get("street-name") or "").strip(),
         city,
     )
-    mount_type = str(post_data.get("mount-type") or post_data.get("bracket-type") or "").replace("-", " ").strip()
     pricing = _pricing_breakdown(post_data)
-    # Samsung Frame uses proprietary Slim Fit Wall Mount, not generic "fixed"
-    gallery_style = bool(post_data.get("gallery-style"))
-    brand_lower = str(post_data.get("tv-brand", "")).lower()
-    if gallery_style and "samsung" in brand_lower:
-        mount_type = "Samsung Slim Fit Wall Mount"
-    elif gallery_style:
-        mount_type = "flush mount"
-    else:
-        mount_type = _specific_mount_label(mount_type)
+    mount_type = _resolved_mount_label(post_data)
     location_value = _location_display(post_data, city, local_reference)
     price_display = display_price_subtotal(post_data)
     performer = performer_context(post_data)
@@ -892,15 +1108,22 @@ def build_installation_details(post_data: dict, city: str) -> str:
     else:
         tech_label, tech_name = "Service Technician", None
     multi = multi_tv_job_details(post_data)
+    specialty = classify_install_specialty(post_data)
+    service_label = {
+        SPECIALTY_SAMSUNG_FRAME: "Samsung Frame TV Installation",
+        SPECIALTY_MANTELMOUNT: "MantelMount Installation",
+        SPECIALTY_BOTH: "Samsung Frame TV and MantelMount Installation",
+    }.get(specialty)
     tv_details = [
         ("TVs Mounted", f'{multi.get("tv_count")} TVs'),
         ("TV Sizes", multi.get("tv_sizes_display")),
     ] if multi.get("is_multi_tv") else [("TV Size", post_data.get("tv-size"))]
     details = [
+        *( [("Service", service_label)] if service_label else [] ),
         *tv_details,
         ("TV Brand", post_data.get("tv-brand")),
         ("Wall Type", post_data.get("wall-surface")),
-        ("Mount Type", mount_type.title() if mount_type else None),
+        ("Mount Type", _mount_details_label(mount_type)),
         ("Brackets Used", multi.get("bracket_display")),
         (tech_label, tech_name),
         (("Installation Subtotal" if pricing.get("subtotal") else "Price"), price_display),
@@ -950,7 +1173,7 @@ def _cord_concealment_display(post_data: dict) -> str:
 def _fireplace_phrase(post_data: dict) -> str:
     fireplace = re.sub(r"\s+", " ", str(post_data.get("fireplace-type") or "").replace("-", " ")).strip()
     if fireplace:
-        descriptor = fireplace[:1].lower() + fireplace[1:]
+        descriptor = fireplace.lower()
         if descriptor.lower() == "fireplace":
             return "above a fireplace"
         article = "an" if descriptor[:1].lower() in "aeiou" else "a"
@@ -983,20 +1206,29 @@ def build_distinctive_install_section(post_data: dict, city: str, *, unit_label:
         )
     if multi.get("bracket_display"):
         points.append(f"Mount hardware used: {html.escape(str(multi.get('bracket_display')))}.")
-    if gallery_style and brand == "Samsung Frame Pro":
+    specialty = classify_install_specialty(post_data)
+    if gallery_style and brand == "Samsung Frame Pro" and specialty != SPECIALTY_BOTH:
         if "recessed outlet" in cord_display.lower():
             points.append("Samsung Frame Pro plugs in like a normal TV, so the recessed outlet swap keeps the power plug from pushing the screen off the wall.")
         else:
             points.append("Samsung Frame Pro mounted as a gallery-style display; power placement matters because it plugs in like a normal TV instead of using the standard Frame's long One Connect cable.")
-    elif gallery_style and brand.startswith("Samsung Frame"):
+    elif specialty == SPECIALTY_SAMSUNG_FRAME and brand.startswith("Samsung Frame"):
         points.append("Samsung Frame mounted with the Slim Fit Wall Mount so the finished setup reads like wall art, not a standard black TV hanging off the wall.")
-    elif gallery_style:
+    elif gallery_style and specialty == SPECIALTY_STANDARD_TV:
         points.append(f"Gallery-style display mounted flush for a low-profile finished look on {html.escape(surface)}.")
-    if fireplace_phrase:
+    if specialty in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH}:
+        model = html.escape(_mantel_model_label(post_data) or "MantelMount")
+        if fireplace_phrase:
+            points.append(f"{model} lets the TV pull down from its resting position {html.escape(fireplace_phrase)}.")
+        else:
+            points.append(f"This job used a {model}.")
+    if fireplace_phrase and specialty not in {SPECIALTY_MANTELMOUNT, SPECIALTY_BOTH}:
         points.append(f"TV positioned {html.escape(fireplace_phrase)} with mounting height, heat, and viewing angle handled before drilling.")
     if surface and surface.lower() not in {"drywall", "wall"}:
         points.append(f"Mounted on {html.escape(surface)}, which requires the right drill technique, anchor selection, and careful leveling for a clean finish.")
-    if mount_type:
+    if mount_type and specialty == SPECIALTY_STANDARD_TV:
+        points.append(f"Mount type for this job: {html.escape(mount_type)}.")
+    elif mount_type and specialty == SPECIALTY_SAMSUNG_FRAME and mount_type != "Samsung Slim Fit Wall Mount":
         points.append(f"Mount type for this job: {html.escape(mount_type)}.")
     if cord_display:
         if "recessed outlet" in cord_display.lower():
@@ -1225,16 +1457,8 @@ def generate_post_body(post_data: dict, city: str) -> str:
     size = str(post_data.get("tv-size", "TV"))
     brand = str(post_data.get("tv-brand", "")).strip()
     surface = str(post_data.get("wall-surface", "wall")).lower()
-    mount_type = str(post_data.get("mount-type") or post_data.get("bracket-type") or "mount").replace("-", " ").strip()
-    # Samsung Frame uses proprietary Slim Fit Wall Mount
-    gallery_style = bool(post_data.get("gallery-style"))
-    brand_lower = brand.lower()
-    if gallery_style and "samsung" in brand_lower:
-        mount_type = "Samsung Slim Fit Wall Mount"
-    elif gallery_style:
-        mount_type = "flush mount"
-    else:
-        mount_type = _specific_mount_label(mount_type)
+    specialty = classify_install_specialty(post_data)
+    mount_type = _resolved_mount_label(post_data)
     local_reference = _clean_local_reference(
         str(post_data.get("local-reference") or post_data.get("street-name") or "").strip(),
         city,
@@ -1245,16 +1469,25 @@ def generate_post_body(post_data: dict, city: str) -> str:
     if multi.get("is_multi_tv"):
         unit_label = f'{multi.get("tv_count")} TVs'
 
-    mount_phrase = f" with a {mount_type}" if mount_type else ""
     fireplace_phrase = _fireplace_phrase(post_data)
     cord_display = _cord_concealment_display(post_data)
     room = str(post_data.get("room-type", "")).replace("-", " ").strip()
     price_display = display_price_subtotal(post_data)
     if multi.get("is_multi_tv"):
         heading_one = f"Multi-TV Mounting Near {local_reference}" if local_reference else f"Multi-TV Mounting in {city}"
-    elif gallery_style and "samsung" in brand.lower():
+    elif specialty == SPECIALTY_BOTH:
+        frame_label = _samsung_frame_install_label(post_data)
+        heading_one = (
+            f"{frame_label} and MantelMount Installation Near {local_reference}"
+            if local_reference
+            else f"{frame_label} and MantelMount Installation in {city}"
+        )
+    elif specialty == SPECIALTY_SAMSUNG_FRAME:
         frame_label = _samsung_frame_install_label(post_data)
         heading_one = f"{frame_label} Installation Near {local_reference}" if local_reference else f"{frame_label} Installation in {city}"
+    elif specialty == SPECIALTY_MANTELMOUNT:
+        model = _mantel_model_label(post_data) or "MantelMount"
+        heading_one = f"{model} Installation Near {local_reference}" if local_reference else f"{model} Installation in {city}"
     elif fireplace_phrase:
         heading_one = f"Fireplace TV Mounting Near {local_reference}" if local_reference else f"Fireplace TV Mounting in {city}"
     elif local_reference:
@@ -1299,9 +1532,18 @@ def generate_post_body(post_data: dict, city: str) -> str:
             f"{price_sentence}"
         )
 
-    if gallery_style and "samsung" in brand.lower():
+    if specialty in {SPECIALTY_SAMSUNG_FRAME, SPECIALTY_BOTH}:
         is_frame_pro = _is_samsung_frame_pro_install(post_data)
-        second_heading = "Why the Samsung Frame Pro Setup Is Different" if is_frame_pro else "Why the Samsung Frame Stands Out"
+        if specialty == SPECIALTY_BOTH:
+            second_heading = (
+                "Why This Samsung Frame Pro and MantelMount Setup Is Different"
+                if is_frame_pro
+                else "Why This Samsung Frame and MantelMount Setup Is Different"
+            )
+        elif is_frame_pro:
+            second_heading = "Why the Samsung Frame Pro Setup Is Different"
+        else:
+            second_heading = "Why the Samsung Frame Stands Out"
         cord_methods = [
             method.lower()
             for method in ensure_list(post_data.get("cord-concealment", []))
@@ -1337,7 +1579,23 @@ def generate_post_body(post_data: dict, city: str) -> str:
                 " Clean cord concealment is part of what makes a Frame installation look finished — "
                 "no visible cables, just art on the wall."
             )
-        if is_frame_pro:
+        mantel_copy = ""
+        if specialty == SPECIALTY_BOTH:
+            mantel = _mantel_model_label(post_data) or "MantelMount"
+            if fireplace_phrase:
+                mantel_copy = (
+                    f" The TV is on a {mantel}, which lets it pull down from its resting position {fireplace_phrase}."
+                )
+            else:
+                mantel_copy = f" The TV is on a {mantel}."
+        if specialty == SPECIALTY_BOTH:
+            frame_name = "Samsung Frame Pro" if is_frame_pro else "Samsung Frame"
+            second_paragraph = (
+                f"This {frame_name} was installed as a gallery-style display on the {surface} in {city}."
+                f"{cord_copy}"
+                f"{mantel_copy}"
+            )
+        elif is_frame_pro:
             second_paragraph = (
                 f"The Samsung Frame Pro is still a gallery-style display, so the goal is a clean, nearly flush finish against the {surface}. "
                 "Unlike the standard Samsung Frame setup with a long One Connect cable, the Frame Pro's normal power plug makes outlet placement part of the installation plan. "
@@ -1351,6 +1609,19 @@ def generate_post_body(post_data: dict, city: str) -> str:
                 "Precise leveling and stud placement are critical to getting that seamless gallery look."
                 f"{cord_copy}"
             )
+    elif specialty == SPECIALTY_MANTELMOUNT:
+        model = _mantel_model_label(post_data) or "MantelMount"
+        second_heading = f"Why a {model} Works Here"
+        sentences = [
+            f"A {model} is a pull-down mount designed so the screen can be lowered for viewing and returned to its resting height."
+        ]
+        if fireplace_phrase:
+            sentences.append(f"On this job the TV sits {fireplace_phrase}.")
+        if surface and surface.lower() not in {"drywall", "wall"}:
+            sentences.append(f"The bracket was anchored through {surface}.")
+        if cord_display:
+            sentences.append("Cables were concealed so nothing hangs below the screen.")
+        second_paragraph = " ".join(sentences)
     else:
         surface_challenge = _SURFACE_CHALLENGES.get(surface, _SURFACE_CHALLENGES.get(surface.split()[0] if surface else "", ""))
         if surface_challenge:
@@ -1408,8 +1679,12 @@ def generate_post_body(post_data: dict, city: str) -> str:
         post_data,
     )
 
-    return "\n".join([
-        build_installation_details(post_data, city),
+    extractable = build_extractable_sentence(post_data, city)
+    related = _related_installs_section(post_data)
+    parts = [build_installation_details(post_data, city)]
+    if extractable:
+        parts.append(f"<p>{html.escape(extractable, quote=False)}</p>")
+    parts.extend([
         f"<h2>{heading_one}</h2>",
         f"<p>{first_paragraph}</p>",
         build_distinctive_install_section(post_data, city, unit_label=unit_label, mount_type=mount_type, surface=surface, local_reference=local_reference),
@@ -1418,12 +1693,16 @@ def generate_post_body(post_data: dict, city: str) -> str:
         f"<h2>{third_heading}</h2>",
         f"<p>{third_paragraph}</p>",
     ])
+    if related:
+        parts.append(related)
+    return "\n".join(parts)
 
 
 def enrich_post_data(post_data: dict, location_id_to_city: dict[str, str]) -> dict:
     result = dict(post_data)
     city = parse_city(result, location_id_to_city)
     result["city"] = city
+    result["specialty"] = classify_install_specialty(result)
     if not str(result.get("title", "")).strip():
         result["title"] = build_seo_title(result, city)
     if not str(result.get("slug", "")).strip():
