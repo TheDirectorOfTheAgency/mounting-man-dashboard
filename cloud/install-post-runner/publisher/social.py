@@ -40,7 +40,15 @@ from uuid import uuid4
 import requests
 from PIL import Image, UnidentifiedImageError
 
-from content import display_price_subtotal, ensure_city_stamp
+from content import (
+    SPECIALTY_STANDARD_TV,
+    classify_install_specialty,
+    display_price_subtotal,
+    ensure_city_stamp,
+    specialty_differentiating_fact,
+    specialty_entity_label,
+    size_inch_phrase,
+)
 
 SOCIAL_DESTINATIONS = ("instagram", "facebook", "linkedin", "x")
 FORBIDDEN_DESTINATIONS = frozenset({"reddit", "gbp", "google-business-profile"})
@@ -195,13 +203,60 @@ def refuse_forbidden_destination(name: str) -> None:
         )
 
 
-def build_social_caption(post_data: dict, live_url: str, *, limit: int | None = None) -> str:
+def _is_unmount_caption(post_data: dict) -> bool:
+    job_type = str(post_data.get("job-type") or post_data.get("job_type") or "").strip().lower()
+    return job_type in {"unmount", "dismount", "takedown", "take-down"}
+
+
+def _platform_specialty_line(post_data: dict, city: str, platform: str | None) -> str:
+    entity = specialty_entity_label(post_data)
+    fact = specialty_differentiating_fact(post_data)
+    size = size_inch_phrase(str(post_data.get("tv-size") or ""))
+    size_prefix = f"{size} " if size and size.lower() not in entity.lower() else ""
+    key = str(platform or "").strip().lower()
+
+    if key == "linkedin":
+        core = f"The Mounting Man completed this {size_prefix}{entity} installation in {city}"
+        if fact:
+            core += f" {fact}" if fact.startswith("on ") else f" ({fact})"
+        return f"{core}."
+    if key == "x":
+        core = f"{size_prefix}{entity} in {city}"
+        if fact:
+            core += f" {fact}" if fact.startswith("on ") else f", {fact}"
+        return f"{core}."
+    if key == "facebook":
+        core = f"{size_prefix}{entity} installation in {city}"
+        if fact:
+            core += f" {fact}" if fact.startswith("on ") else f" — {fact}"
+        return f"{core}."
+    core = f"{size_prefix}{entity} installed in {city}"
+    if fact:
+        core += f" {fact}" if fact.startswith("on ") else f" — {fact}"
+    return f"{core}."
+
+
+def build_social_caption(
+    post_data: dict,
+    live_url: str,
+    *,
+    limit: int | None = None,
+    platform: str | None = None,
+) -> str:
     city = str(post_data.get("city") or "").strip()
-    summary = ensure_city_stamp(
-        str(post_data.get("post-summary") or post_data.get("title") or "").strip(),
-        city,
-        post_data,
-    )
+    specialty = classify_install_specialty(post_data)
+    if specialty != SPECIALTY_STANDARD_TV and not _is_unmount_caption(post_data):
+        summary = ensure_city_stamp(
+            _platform_specialty_line(post_data, city, platform),
+            city,
+            post_data,
+        )
+    else:
+        summary = ensure_city_stamp(
+            str(post_data.get("post-summary") or post_data.get("title") or "").strip(),
+            city,
+            post_data,
+        )
     price = display_price_subtotal(post_data)
     parts = [summary]
     if price:
@@ -435,7 +490,7 @@ class SocialPublisher:
 
     def _instagram(self, *, post_data, live_url, image_url, image_bytes) -> str:
         creds = require_env(INSTAGRAM_ENV, self.env)
-        caption = build_social_caption(post_data, live_url)
+        caption = build_social_caption(post_data, live_url, platform="instagram")
         ig_id = creds["INSTAGRAM_BUSINESS_ACCOUNT_ID"]
         token = creds["FACEBOOK_PAGE_ACCESS_TOKEN"]
         jpeg_url = self._host_jpeg_rendition(
@@ -516,7 +571,7 @@ class SocialPublisher:
     def _facebook(self, *, post_data, live_url, image_url, image_bytes) -> str:
         del image_bytes
         creds = require_env(FACEBOOK_ENV, self.env)
-        caption = build_social_caption(post_data, live_url)
+        caption = build_social_caption(post_data, live_url, platform="facebook")
         page_id = creds["FACEBOOK_PAGE_ID"]
         token = creds["FACEBOOK_PAGE_ACCESS_TOKEN"]
         published = self._graph_post(
@@ -535,7 +590,7 @@ class SocialPublisher:
         token = creds["LINKEDIN_ACCESS_TOKEN"]
         author = require_linkedin_person_author(creds["LINKEDIN_AUTHOR_URN"])
         linkedin_version = _env("LINKEDIN_VERSION", self.env) or LINKEDIN_VERSION_DEFAULT
-        caption = build_social_caption(post_data, live_url, limit=3000)
+        caption = build_social_caption(post_data, live_url, limit=3000, platform="linkedin")
         jpeg_bytes = linkedin_jpeg_bytes(image_bytes)
         headers = {
             "Authorization": f"Bearer {token}",
@@ -609,7 +664,7 @@ class SocialPublisher:
         user = self._x_verify(creds)
         assert_mountingmantv(user)
         media_id = self._x_upload_media(creds, image_bytes)
-        caption = build_social_caption(post_data, live_url, limit=280)
+        caption = build_social_caption(post_data, live_url, limit=280, platform="x")
         header = sign_oauth1(
             method="POST",
             url=X_CREATE_TWEET_URL,
