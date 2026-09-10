@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { INSTALL_POST_STATES } from '../lib/install-post-queue.mjs';
+import { INSTALL_POST_STATES, publicJobView } from '../lib/install-post-queue.mjs';
 import {
   buildJobRecords,
   createInstallPostStore,
@@ -132,6 +132,9 @@ test('buildJobRecords stages exactly one unapproved record per TV', () => {
   }
   assert.equal(records[0].seed['tv-size'], '65"');
   assert.equal(records[1].seed['tv-size'], '55"');
+  assert.equal(records[0].orderId, 'ORDER-ABC-123');
+  assert.equal(records[0].paymentId, 'PAY-XYZ-789');
+  assert.equal(records[0].invoiceId, '');
   assert.notEqual(records[0].revision, records[1].revision);
 });
 
@@ -143,10 +146,12 @@ test('staged records carry no customer, order, payment, or street-number data', 
     stagedAt: '2026-08-12T15:00:00.000Z',
   });
 
-  const serialized = JSON.stringify(records);
+  const serialized = JSON.stringify(records.map(publicJobView));
   for (const forbidden of ['ORDER-ABC-123', 'PAY-XYZ-789', 'Jane Doe', '4821']) {
-    assert.ok(!serialized.includes(forbidden), `record leaked ${forbidden}`);
+    assert.ok(!serialized.includes(forbidden), `public job view leaked ${forbidden}`);
   }
+  assert.equal(records[0].orderId, 'ORDER-ABC-123');
+  assert.equal(records[0].paymentId, 'PAY-XYZ-789');
   assert.equal(records[0].seed['street-name'], 'Elm Street');
 });
 
@@ -200,10 +205,13 @@ test('stageJobRecords persists records, indexes them, and isolates source refs',
   const loaded = await store.loadRecord(records[0].jobId);
   assert.equal(loaded.jobId, records[0].jobId);
   assert.equal(loaded.seed['tv-size'], '65"');
+  assert.equal(loaded.orderId, 'ORDER-ABC-123');
+  assert.equal(loaded.paymentId, 'PAY-XYZ-789');
 
-  // Source refs live under a separate key that the mobile API never reads.
+  // Source refs stay in their own key for bind; the phone card never sees them.
   const refs = await store.loadSourceRefs(records[0].jobId);
   assert.equal(refs.orderId, 'ORDER-ABC-123');
+  assert.equal(refs.paymentId, 'PAY-XYZ-789');
 
   const byPayment = await store.findRecordsBySource({ paymentId: 'PAY-XYZ-789' });
   assert.equal(byPayment.length, 2);
@@ -213,7 +221,9 @@ test('stageJobRecords persists records, indexes them, and isolates source refs',
   assert.equal(missing.length, 0);
   const recordKeys = [...kv.values.keys()].filter((key) => key.includes(':job:'));
   for (const key of recordKeys) {
-    assert.ok(!JSON.stringify(kv.values.get(key)).includes('ORDER-ABC-123'));
+    const stored = JSON.parse(kv.values.get(key));
+    assert.ok(!JSON.stringify(publicJobView(stored)).includes('ORDER-ABC-123'));
+    assert.ok(!JSON.stringify(stored.seed).includes('ORDER-ABC-123'));
   }
 });
 

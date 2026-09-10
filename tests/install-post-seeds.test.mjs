@@ -4,6 +4,7 @@ import {
   buildInstallPostSeeds,
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
+  parseGoogleStyleAddress,
 } from '../lib/install-post-seeds.mjs';
 import { isUnmountSeed, stripPublicUnitNumber } from '../lib/install-post-copy.mjs';
 
@@ -25,7 +26,7 @@ function line(name, variationName, amountCents = 0, quantity = '1') {
   };
 }
 
-test('multi-TV Square job creates one seed JSON per TV and does not repeat the whole payment total', () => {
+test('multi-line TV invoice creates exactly one seed with the full install subtotal', () => {
   const seeds = buildInstallPostSeeds({
     customer,
     payment: {
@@ -49,17 +50,23 @@ test('multi-TV Square job creates one seed JSON per TV and does not repeat the w
     ],
   });
 
-  assert.equal(seeds.length, 3);
-  assert.deepEqual(seeds.map((seed) => seed['tv-size']), ['50"', '75"', '65"']);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$200', '$225', '$250']);
-  assert.equal(seeds[0]['wall-surface'], 'Wood Slats');
-  assert.equal(seeds[1]['wall-surface'], 'Drywall');
-  assert.match(seeds[1]['job-notes'], /Drywall — Wall Type/);
-  assert.equal(seeds[2]['wall-surface'], 'Brick');
-  assert.equal(seeds[2]['fireplace-type'], 'Fireplace');
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['source-order-id'], 'order-123');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-123');
+  assert.equal(seeds[0]['tv-size'], '50"');
+  assert.equal(seeds[0].price, '$675');
+  assert.notEqual(seeds[0].price, '$200');
+  assert.notEqual(seeds[0].price, '$698.62');
+  assert.match(seeds[0]['job-notes'], /50" — TV Installation/);
+  assert.match(seeds[0]['job-notes'], /75" — TV Installation/);
+  assert.match(seeds[0]['job-notes'], /65" — TV Installation Over Fireplace/);
+  assert.match(seeds[0]['job-notes'], /Brick — Wall Type/);
+  assert.match(seeds[0]['job-notes'], /Wood Slats — Wall Type/);
+  assert.equal(seeds[0]['fireplace-type'], 'Fireplace');
   assert.equal(seeds[0]['performed-by'], 'Marshall');
   assert.equal(seeds[0]['street-name'], 'West Lake Harriet Parkway');
-  assert.ok(seeds.every((seed) => seed.price !== '$698.62'));
 });
 
 test('line-item prices use Square gross line amounts, ignoring taxes, fees, tips, and discounts', () => {
@@ -122,9 +129,13 @@ test('line-item prices use Square gross line amounts, ignoring taxes, fees, tips
     ],
   });
 
-  assert.deepEqual(seeds.map((seed) => seed['wall-surface']), ['Wood Slats', 'Drywall', 'Brick']);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$250', '$225', '$300']);
-  assert.ok(seeds.every((seed) => !['$195.97', '$261.29'].includes(seed.price)));
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0].price, '$775');
+  assert.match(seeds[0]['job-notes'], /Wood Slats — Wall Type/);
+  assert.match(seeds[0]['job-notes'], /Brick — Wall Type/);
+  assert.ok(!['$195.97', '$261.29', '$250', '$225', '$300'].includes(seeds[0].price));
 });
 
 test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
@@ -148,20 +159,21 @@ test('add-ons grouped after a TV stay inside that TV seed and subtotal', () => {
     ],
   });
 
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['source-order-id'], 'order-456');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-456');
   assert.equal(seeds[0]['tv-size'], '65"');
   assert.equal(seeds[0]['wall-surface'], 'Brick');
   assert.equal(seeds[0]['bracket-type'], 'Full Motion Bracket (Bought from us)');
   assert.equal(seeds[0]['soundbar-mounting'], true);
   assert.equal(seeds[0]['cable-management'], 'Exterior Concealment');
-  assert.equal(seeds[0].price, '$525');
+  assert.equal(seeds[0].price, '$750');
   assert.match(seeds[0]['job-notes'], /65" — TV Installation Over Fireplace/);
+  assert.match(seeds[0]['job-notes'], /75" — TV Installation/);
   assert.match(seeds[0]['job-notes'], /Soundbar Mounting/);
   assert.match(seeds[0]['job-notes'], /Exterior Concealment/);
-
-  assert.equal(seeds[1]['tv-size'], '75"');
-  assert.equal(seeds[1].price, '$225');
-  assert.equal(seeds[1]['soundbar-mounting'], undefined);
 });
 
 test('Frame / Gallery soundbar bracket does not classify a standard TV as Samsung Frame', () => {
@@ -216,14 +228,15 @@ test('same-count brackets after all TVs map by index instead of piling onto the 
     ],
   });
 
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-count'], 1);
   assert.equal(seeds[0]['bracket-type'], 'Fixed Bracket (Bought from us)');
-  assert.equal(seeds[0].price, '$200');
-  assert.equal(seeds[1]['bracket-type'], 'Full Motion Bracket (Bought from us)');
-  assert.equal(seeds[1].price, '$250');
+  assert.match(seeds[0]['job-notes'], /Fixed Bracket/);
+  assert.match(seeds[0]['job-notes'], /Full Motion Bracket/);
+  assert.equal(seeds[0].price, '$450');
 });
 
-test('single add-on after all TVs is omitted when it cannot be tied to a specific TV', () => {
+test('single add-on after all TVs stays on the one visit seed', () => {
   const seeds = buildInstallPostSeeds({
     customer,
     payment: { id: 'payment-999', order_id: 'order-999' },
@@ -235,11 +248,10 @@ test('single add-on after all TVs is omitted when it cannot be tied to a specifi
     ],
   });
 
-  assert.equal(seeds.length, 2);
-  assert.equal(seeds[0]['soundbar-mounting'], undefined);
-  assert.equal(seeds[1]['soundbar-mounting'], undefined);
-  assert.equal(seeds[0].price, '$150');
-  assert.equal(seeds[1].price, '$150');
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['soundbar-mounting'], true);
+  assert.match(seeds[0]['job-notes'], /Soundbar Mounting/);
+  assert.equal(seeds[0].price, '$400');
 });
 
 test('frame gallery multi-TV job assigns concealment by index and excludes extension cord supply', () => {
@@ -278,16 +290,19 @@ test('frame gallery multi-TV job assigns concealment by index and excludes exten
     ],
   });
 
-  assert.equal(seeds.length, 3);
-  assert.deepEqual(seeds.map((seed) => seed['tv-size']), ['43"', '55"', '55"']);
-  assert.deepEqual(seeds.map((seed) => seed['cable-management']), [
-    'In-Wall Concealment',
-    'In-Wall Concealment',
-    'Existing Conduit',
-  ]);
-  assert.deepEqual(seeds.map((seed) => seed.price), ['$400', '$400', '$300']);
-  assert.ok(seeds.every((seed) => !seed['job-notes'].includes('Extension Cord')));
-  assert.ok(seeds.every((seed) => seed.price !== '$1155.22'));
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['source-order-id'], 'MxkwIXQPszMiRM9zTAKkzS2ZkNAZY');
+  assert.equal(seeds[0]['source-payment-id'], 'bFEWFQIA3Tu9WKnzoHtusKOyk3cZY');
+  assert.equal(seeds[0]['tv-size'], '43"');
+  assert.equal(seeds[0]['cable-management'], 'In-Wall Concealment');
+  assert.match(seeds[0]['job-notes'], /43"/);
+  assert.match(seeds[0]['job-notes'], /55"/);
+  assert.match(seeds[0]['job-notes'], /Existing Conduit/);
+  assert.equal(seeds[0].price, '$1100');
+  assert.equal(seeds[0]['job-notes'].includes('Extension Cord'), false);
+  assert.notEqual(seeds[0].price, '$1155.22');
 });
 
 test('mixed gallery and standard TV lines keep gallery classification on only the gallery TV', () => {
@@ -301,11 +316,11 @@ test('mixed gallery and standard TV lines keep gallery classification on only th
     ],
   });
 
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
   assert.equal(seeds[0]['tv-brand'], 'Samsung Frame');
   assert.equal(seeds[0]['gallery-style'], true);
-  assert.equal(seeds[1]['tv-brand'], undefined);
-  assert.equal(seeds[1]['gallery-style'], false);
+  assert.match(seeds[0]['job-notes'], /55"/);
+  assert.match(seeds[0]['job-notes'], /75"/);
 });
 
 test('gallery seed uses Square line amount over fallback catalog price', () => {
@@ -401,6 +416,8 @@ test('fallback seed uses verified order subtotal before tax and tip when line it
   });
 
   assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
   assert.equal(seeds[0].price, '$450');
   assert.notEqual(seeds[0].price, '$472.50');
   assert.notEqual(seeds[0].price, '$572.50');
@@ -570,26 +587,29 @@ test('unmount add-on on a mount stays on the mount and does not invent a second 
   assert.equal(seeds[0].price, '$225');
 });
 
-test('a real second job on the same visit still suffixes as its own unmount seed', () => {
+test('a mount plus unmount on the same visit stays one seed, not a second page', () => {
   const seeds = buildInstallPostSeeds({
     customer: unmountCustomer(),
     payment: { id: 'payment-two-jobs', order_id: 'order-two-jobs' },
     order: {},
+    orderId: 'order-two-jobs',
+    paymentId: 'payment-two-jobs',
     lineItems: [
       line('TV Installation', '65"', 15000),
       line('TV Unmount', '86"', 12500),
     ],
   });
 
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
   assert.equal(seeds[0]['tv-size'], '65"');
   assert.equal(seeds[0]['job-type'], undefined);
   assert.equal(seeds[0].title, undefined);
-  assert.equal(seeds[1]['seed-index'], 2);
-  assert.equal(seeds[1]['seed-count'], 2);
-  assertUnmountCopy(seeds[1]);
-  assert.equal(seeds[1]['tv-size'], '86"');
-  assert.match(seeds[1].slug, /-2$/);
+  assert.match(seeds[0]['job-notes'], /65" — TV Installation/);
+  assert.match(seeds[0]['job-notes'], /TV Unmounting/);
+  assert.equal(seeds[0]['source-order-id'], 'order-two-jobs');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-two-jobs');
 });
 
 test('unmount wall type stays Square-only and never invents Drywall', () => {
@@ -641,4 +661,75 @@ test('No Unmounting Needed does not create an unmount seed', () => {
   assert.equal(seeds.length, 1);
   assert.equal(seeds[0]['job-type'], undefined);
   assert.equal(seeds[0]['tv-size'], '55"');
+});
+
+test('single TV still returns one seed with source order and payment ids', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-single', order_id: 'order-single' },
+    order: {},
+    orderId: 'order-single',
+    paymentId: 'payment-single',
+    invoiceId: 'invoice-single',
+    lineItems: [line('TV Installation', '65"', 15000)],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['tv-size'], '65"');
+  assert.equal(seeds[0]['source-order-id'], 'order-single');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-single');
+  assert.equal(seeds[0]['source-invoice-id'], 'invoice-single');
+});
+
+test('quantity-12 same-visit invoice still creates one seed', () => {
+  const seeds = buildInstallPostSeeds({
+    customer,
+    payment: { id: 'payment-qty12', order_id: 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY' },
+    order: {},
+    orderId: 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY',
+    paymentId: 'payment-qty12',
+    lineItems: [line('TV Installation', '65"', 15000, '12')],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['source-order-id'], 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-qty12');
+});
+
+test('full Google-style address in street parses real city and street name only', () => {
+  const parsed = parseGoogleStyleAddress(
+    '8600 International Drive, Bloomington, MN 55425, USA',
+  );
+  assert.equal(parsed.city, 'Bloomington');
+  assert.equal(parsed.street, '8600 International Drive');
+
+  const seeds = buildInstallPostSeeds({
+    customer: {
+      address: {
+        address_line_1: '8600 International Drive, Bloomington, MN 55425, USA',
+        locality: 'Twin Cities',
+        administrative_district_level_1: 'MN',
+        postal_code: '55425',
+      },
+    },
+    payment: { id: 'payment-bloomington', order_id: 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY' },
+    order: {},
+    orderId: 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY',
+    paymentId: 'payment-bloomington',
+    invoiceId: 'invoice-bloomington',
+    lineItems: [line('TV Installation', '65"', 15000)],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].city, 'Bloomington');
+  assert.equal(seeds[0]['street-name'], 'International Drive');
+  assert.doesNotMatch(String(seeds[0]['street-name']), /Bloomington|55425|USA/);
+  assert.notEqual(seeds[0].city, 'Twin Cities');
+  assert.equal(seeds[0]['source-order-id'], 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-bloomington');
+  assert.equal(seeds[0]['source-invoice-id'], 'invoice-bloomington');
 });
