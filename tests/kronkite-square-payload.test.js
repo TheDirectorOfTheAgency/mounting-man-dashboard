@@ -64,7 +64,11 @@ test('buildKronkiteSquarePayload keeps both Plymouth TV lines and a count', () =
   });
 
   assert.equal(facts.tvSize, '65"');
-  assert.equal(seeds.length, 2);
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0]['seed-index'], 1);
+  assert.equal(seeds[0]['seed-count'], 1);
+  assert.equal(seeds[0]['source-order-id'], 'order-plymouth');
+  assert.equal(seeds[0]['source-payment-id'], 'payment-plymouth');
 
   const payload = buildKronkiteSquarePayload({
     facts,
@@ -170,7 +174,8 @@ test('notify path sends one wake that still contains both TV lines', async () =>
   );
 
   assert.equal(result.skipped, null);
-  assert.equal(result.seeds.length, 2);
+  assert.equal(result.seeds.length, 1);
+  assert.equal(result.seeds[0]['seed-count'], 1);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, 'https://kronkite.example/square-wake');
 
@@ -196,4 +201,73 @@ test('notify path sends one wake that still contains both TV lines', async () =>
   ]) {
     assert.ok(!serialized.includes(forbidden), `wake leaked ${forbidden}`);
   }
+});
+
+test('invoice notify fills paymentId from order tenders when the webhook omitted it', async () => {
+  const pendingWrites = [];
+  const result = await notifyQInstallPost(
+    {
+      orderId: 'order-invoice',
+      payment: {},
+      invoice: { id: 'invoice-bloomington', order_id: 'order-invoice' },
+      isInvoiceEvent: true,
+      eventType: 'invoice.payment_made',
+      firstName: 'Bloomington',
+      lastName: 'Homeowner',
+      customer: {
+        ...PLYMOUTH_CUSTOMER,
+        address: {
+          address_line_1: '8600 International Drive, Bloomington, MN 55425, USA',
+          locality: 'Twin Cities',
+        },
+      },
+      amount: '350.00',
+      amountCents: 35000,
+    },
+    {
+      exists: async () => false,
+      set: async (key, value) => {
+        pendingWrites.push({ key, value });
+        return true;
+      },
+      sadd: async () => true,
+      kronkiteUrl: 'https://kronkite.example/square-wake',
+      kronkiteKey: 'kronkite-sender-key',
+      httpClient: {
+        async get() {
+          return {
+            data: {
+              order: {
+                id: 'order-invoice',
+                line_items: PLYMOUTH_LINE_ITEMS,
+                tenders: [
+                  { id: 'tender-1', type: 'CARD', payment_id: 'pay_from_tender' },
+                ],
+              },
+            },
+          };
+        },
+        async post() {
+          return { data: {} };
+        },
+      },
+    },
+  );
+
+  assert.equal(result.seeds.length, 1);
+  assert.equal(result.seeds[0]['source-order-id'], 'order-invoice');
+  assert.equal(result.seeds[0]['source-payment-id'], 'pay_from_tender');
+  assert.equal(result.seeds[0]['source-invoice-id'], 'invoice-bloomington');
+  assert.equal(result.seeds[0].city, 'Bloomington');
+  assert.equal(result.seeds[0]['street-name'], 'International Drive');
+  assert.equal(result.kronkitePayload.paymentId, 'pay_from_tender');
+  assert.equal(result.kronkitePayload.orderId, 'order-invoice');
+
+  const pending = pendingWrites.find((entry) => String(entry.key).includes('install-post:pending:'));
+  assert.ok(pending, 'pending record was written');
+  const decoded = JSON.parse(pending.value);
+  assert.equal(decoded.orderId, 'order-invoice');
+  assert.equal(decoded.paymentId, 'pay_from_tender');
+  assert.equal(decoded.invoiceId, 'invoice-bloomington');
+  assert.equal(decoded.seedCount, 1);
 });
