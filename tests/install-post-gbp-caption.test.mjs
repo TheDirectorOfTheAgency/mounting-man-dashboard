@@ -59,15 +59,75 @@ test('mantel caption leads with MantelMount and does not invent Frame', () => {
     'wall-surface': 'Stacked Stone',
     'street-name': 'France Avenue',
     'cable-management': 'In-Wall Concealment',
-    'job-notes': 'Centered on the mantel',
     price: '$650',
   });
-  assert.match(caption, /^Edina MantelMount 75" on stacked stone — France Avenue\./);
-  assert.match(caption, /Centered on mantel/);
-  assert.match(caption, /Cord concealment/);
-  assert.match(caption, /^\$650\.$/m);
+  assert.equal(
+    caption,
+    'Edina MantelMount 75" on stacked stone — France Avenue.\nCentered on the mantel. No cords on the stone.\n$650.',
+  );
   assert.doesNotMatch(caption, /Samsung Frame/);
-  assert.doesNotMatch(caption, /TV mounting/);
+  assert.doesNotMatch(caption, /TV mount/);
+  assertFenceRules(caption);
+});
+
+test('Heather Lane MantelMount uses stacked stone, not TV mount on drywall', () => {
+  const caption = buildGbpFenceCaption({
+    city: 'Edina',
+    'tv-size': '65"',
+    'tv-brand': 'Sony',
+    mantelmount: true,
+    'fireplace-type': 'Stone Fireplace',
+    'wall-surface': 'Stacked Stone',
+    'street-name': 'Heather Lane',
+    'cable-management': 'In-Wall Concealment',
+  });
+  assert.equal(
+    caption,
+    'Edina MantelMount 65" on stacked stone — Heather Lane.\nCentered on the mantel. No cords on the stone.',
+  );
+  assert.doesNotMatch(caption, /TV mount/);
+  assert.doesNotMatch(caption, /on drywall/);
+  assertFenceRules(caption);
+});
+
+test('fireplace seed never falls through to commodity TV mount on drywall', () => {
+  const caption = buildGbpFenceCaption({
+    city: 'Edina',
+    'tv-size': '65"',
+    'tv-brand': 'Sony',
+    mantelmount: true,
+    'fireplace-type': 'Stone Fireplace',
+    'wall-surface': 'Drywall',
+    'street-name': 'Heather Lane',
+    'cable-management': 'In-Wall Concealment',
+    price: '$650',
+  });
+  assert.equal(
+    caption,
+    'Edina MantelMount 65" on stone — Heather Lane.\nCentered on the mantel. No cords on the stone.\n$650.',
+  );
+  assert.doesNotMatch(caption, /TV mount/);
+  assert.doesNotMatch(caption, /on drywall/);
+  assertFenceRules(caption);
+});
+
+test('fireplace-only seed leads with fireplace mount, not TV mount', () => {
+  const caption = buildGbpFenceCaption({
+    city: 'Edina',
+    'tv-size': '65"',
+    'tv-brand': 'Samsung',
+    mantelmount: false,
+    'fireplace-type': 'Stacked Stone Fireplace',
+    'wall-surface': 'Drywall',
+    'street-name': 'Heather Lane',
+    'cable-management': 'Cord Concealment',
+  });
+  assert.equal(
+    caption,
+    'Edina fireplace mount 65" on stacked stone — Heather Lane.\nCentered on the mantel. No cords on the stone.',
+  );
+  assert.doesNotMatch(caption, /TV mount/);
+  assert.doesNotMatch(caption, /on drywall/);
   assertFenceRules(caption);
 });
 

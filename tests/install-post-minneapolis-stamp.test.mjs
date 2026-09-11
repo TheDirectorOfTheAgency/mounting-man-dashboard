@@ -70,6 +70,8 @@ test('Minneapolis MantelMount caption keeps mantel tagging and does not invent F
   }));
   assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false);
   assert.match(caption, /^Minneapolis MantelMount 65" on drywall — Lake Street\./);
+  assert.match(caption, /Centered on the mantel/);
+  assert.doesNotMatch(caption, /TV mount/);
   assert.doesNotMatch(caption, /Samsung Frame/);
   assert.doesNotMatch(caption, /by The Mounting Man/);
 });
