@@ -229,11 +229,41 @@ function gbpRequest(method, { body, query, secret = GBP_SECRET } = {}) {
 
 test('caption uses house copy and keeps the CTA on cta_url', () => {
   const caption = buildGbpCaption(SEED);
-  assert.match(caption, /65 inch Samsung/);
+  assert.match(caption, /^Edina stone mount 65" on stone — Elm Street\./);
   assert.match(caption, /\$450/);
   assert.doesNotMatch(caption, /4821/);
   assert.doesNotMatch(caption, /themountingman\.com/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
   assert.doesNotMatch(caption, /reddit/i);
+  assert.ok(caption.length <= 400);
+});
+
+test('GBP Book button cta_url is that job’s live install page, not Zenbooker or home', () => {
+  const item = gbpPayloadFromRecord({
+    jobId: 'job_cta',
+    revision: 'c'.repeat(64),
+    seed: SEED,
+    image: IMAGE,
+    result: publishedResult(),
+  });
+  const installUrl = 'https://www.themountingman.com/installations/65-inch-samsung-edina';
+  assert.equal(item.live_url, installUrl);
+  assert.equal(item.cta_url, installUrl);
+  assert.equal(item.cta_url, item.live_url);
+  assert.doesNotMatch(item.cta_url, /zenbooker/i);
+  assert.doesNotMatch(item.cta_url, /themountingman\.com\/?$/i);
+  assert.doesNotMatch(item.cta_url, /themountingman\.com\/tv-mounting/i);
+  assert.doesNotMatch(buildGbpCaption(SEED), /themountingman\.com/);
+  assert.equal(sanitizeGbpItem({
+    slug: SEED.slug,
+    live_url: 'https://www.themountingman.com/',
+    caption: 'nope',
+  }), null);
+  assert.equal(sanitizeGbpItem({
+    slug: SEED.slug,
+    live_url: 'https://zenbooker.com/',
+    caption: 'nope',
+  }), null);
 });
 
 test('sanitize rejects a non-installation URL, Reddit, and unknown schemas', () => {
@@ -295,8 +325,9 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
   assert.equal(pending[0].skip_photos_when_update_pending, false);
   assert.equal(pending[0].surfaces.update.status, 'pending');
   assert.equal(pending[0].surfaces.photos.status, 'pending');
-  assert.match(pending[0].caption, /65 inch Samsung/);
+  assert.match(pending[0].caption, /Edina stone mount 65"/);
   assert.doesNotMatch(pending[0].caption, /4821/);
+  assert.doesNotMatch(pending[0].caption, /by The Mounting Man/);
   assert.doesNotMatch(JSON.stringify(pending[0]), /reddit/i);
   assert.doesNotMatch(JSON.stringify(pending[0]), /business\.google\.com/i);
 
