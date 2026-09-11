@@ -5,7 +5,6 @@ import {
   MINNEAPOLIS_CITY_STAMP,
   buildUnmountBody,
   buildUnmountSummary,
-  cityMountingStamp,
   ensureCityStamp,
   isExactMinneapolisCity,
   jobUsedFrame,
@@ -39,14 +38,15 @@ test('exact Minneapolis city rejects metro and suburbs', () => {
   }
 });
 
-test('Minneapolis GBP caption stamps the phrase once', () => {
+test('Minneapolis GBP caption is fence copy, not the website city stamp', () => {
   const caption = buildGbpCaption(seed('Minneapolis', {
     'post-summary': 'We mounted a 65 inch Samsung on drywall in Minneapolis.',
   }));
-  assert.equal(caption.split(MINNEAPOLIS_CITY_STAMP).length - 1, 1);
-  assert.match(caption, /65 inch Samsung/);
+  assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false);
+  assert.match(caption, /^Minneapolis TV mount 65" on drywall — Lake Street\./);
   assert.doesNotMatch(caption, /Samsung Frame/);
   assert.doesNotMatch(caption, /MantelMount/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
 });
 
 test('Minneapolis Frame caption keeps Frame tagging and does not invent mantel', () => {
@@ -55,9 +55,10 @@ test('Minneapolis Frame caption keeps Frame tagging and does not invent mantel',
     'gallery-style': true,
     'post-summary': '65" Samsung Frame TV installation in Minneapolis on drywall.',
   }));
-  assert.equal(caption.split(MINNEAPOLIS_CITY_STAMP).length - 1, 1);
-  assert.match(caption, /Samsung Frame/);
+  assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false);
+  assert.match(caption, /^Minneapolis Samsung Frame 65" on drywall — Lake Street\./);
   assert.doesNotMatch(caption, /MantelMount/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
 });
 
 test('Minneapolis MantelMount caption keeps mantel tagging and does not invent Frame', () => {
@@ -67,20 +68,20 @@ test('Minneapolis MantelMount caption keeps mantel tagging and does not invent F
     'tv-brand': 'Sony',
     'post-summary': '65" Sony TV installation in Minneapolis on drywall.',
   }));
-  assert.equal(caption.split(MINNEAPOLIS_CITY_STAMP).length - 1, 1);
-  assert.match(caption, /MantelMount/);
+  assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false);
+  assert.match(caption, /^Minneapolis MantelMount 65" on drywall — Lake Street\./);
   assert.doesNotMatch(caption, /Samsung Frame/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
 });
 
 test('suburb captions use that city and never stamp Minneapolis', () => {
   for (const suburb of SUBURBS) {
-    const stamp = cityMountingStamp(suburb);
     const caption = buildGbpCaption(seed(suburb, {
       'post-summary': `We mounted a 65 inch Samsung on drywall in ${suburb}.`,
     }));
-    assert.match(caption, new RegExp(stamp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(caption, new RegExp(`^${suburb} TV mount 65" on drywall — Lake Street\\.`));
     assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false, suburb);
-    assert.equal(caption.split(stamp).length - 1, 1, suburb);
+    assert.doesNotMatch(caption, /by The Mounting Man/);
   }
 });
 
@@ -88,7 +89,8 @@ test('metro labels do not get the Minneapolis stamp', () => {
   for (const metro of ['Minneapolis–St. Paul', 'Minneapolis-St. Paul', 'Twin Cities']) {
     const caption = buildGbpCaption(seed(metro, { 'post-summary': `Install in ${metro}.` }));
     assert.equal(caption.includes(MINNEAPOLIS_CITY_STAMP), false, metro);
-    assert.match(caption, new RegExp(cityMountingStamp(metro).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(caption, new RegExp(`^${metro.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} TV mount`));
+    assert.doesNotMatch(caption, /by The Mounting Man/);
   }
 });
 
@@ -115,7 +117,9 @@ test('soundbar Frame / Gallery notes do not count as a Frame job', () => {
     ...notes,
     'post-summary': 'We mounted a 65 inch Samsung on drywall in Minneapolis.',
   });
+  assert.match(caption, /^Minneapolis TV mount 65" on drywall — Lake Street\./);
   assert.doesNotMatch(caption, /Samsung Frame/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
 });
 
 test('ensureCityStamp is idempotent', () => {

@@ -229,11 +229,13 @@ function gbpRequest(method, { body, query, secret = GBP_SECRET } = {}) {
 
 test('caption uses house copy and keeps the CTA on cta_url', () => {
   const caption = buildGbpCaption(SEED);
-  assert.match(caption, /65 inch Samsung/);
+  assert.match(caption, /^Edina TV mount 65" on stone — Elm Street\./);
   assert.match(caption, /\$450/);
   assert.doesNotMatch(caption, /4821/);
   assert.doesNotMatch(caption, /themountingman\.com/);
+  assert.doesNotMatch(caption, /by The Mounting Man/);
   assert.doesNotMatch(caption, /reddit/i);
+  assert.ok(caption.length <= 400);
 });
 
 test('sanitize rejects a non-installation URL, Reddit, and unknown schemas', () => {
@@ -295,8 +297,9 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
   assert.equal(pending[0].skip_photos_when_update_pending, false);
   assert.equal(pending[0].surfaces.update.status, 'pending');
   assert.equal(pending[0].surfaces.photos.status, 'pending');
-  assert.match(pending[0].caption, /65 inch Samsung/);
+  assert.match(pending[0].caption, /Edina TV mount 65"/);
   assert.doesNotMatch(pending[0].caption, /4821/);
+  assert.doesNotMatch(pending[0].caption, /by The Mounting Man/);
   assert.doesNotMatch(JSON.stringify(pending[0]), /reddit/i);
   assert.doesNotMatch(JSON.stringify(pending[0]), /business\.google\.com/i);
 
