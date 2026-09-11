@@ -111,6 +111,99 @@ test('fireplace seed never falls through to commodity TV mount on drywall', () =
   assertFenceRules(caption);
 });
 
+test('specialty jobs always lead with the product name, never TV mount', () => {
+  const examples = [
+    {
+      name: 'Samsung Frame',
+      seed: {
+        city: 'Minnetonka',
+        'tv-size': '65"',
+        'tv-brand': 'Samsung Frame',
+        'gallery-style': true,
+        'wall-surface': 'Tile',
+        'street-name': 'Plymouth Road',
+      },
+      lead: 'Minnetonka Samsung Frame 65" on tile — Plymouth Road.',
+    },
+    {
+      name: 'Hisense Canvas',
+      seed: {
+        city: 'Plymouth',
+        'tv-size': '75"',
+        'tv-brand': 'Hisense Canvas',
+        'gallery-style': true,
+        'wall-surface': 'Drywall',
+        'street-name': 'Vicksburg Lane',
+      },
+      lead: 'Plymouth Hisense Canvas 75" on drywall — Vicksburg Lane.',
+    },
+    {
+      name: 'LG G-Series',
+      seed: {
+        city: 'Bloomington',
+        'tv-size': '65"',
+        'tv-brand': 'LG G-Series',
+        'gallery-style': true,
+        'wall-surface': 'Drywall',
+        'street-name': 'Normandale Boulevard',
+      },
+      lead: 'Bloomington LG G-Series 65" on drywall — Normandale Boulevard.',
+    },
+    {
+      name: 'MantelMount',
+      seed: {
+        city: 'Edina',
+        'tv-size': '65"',
+        mantelmount: true,
+        'fireplace-type': 'Stone Fireplace',
+        'wall-surface': 'Stacked Stone',
+        'street-name': 'Heather Lane',
+      },
+      lead: 'Edina MantelMount 65" on stacked stone — Heather Lane.',
+    },
+    {
+      name: 'tile fireplace',
+      seed: {
+        city: 'Eden Prairie',
+        'tv-size': '75"',
+        'tv-brand': 'Sony',
+        mantelmount: false,
+        'fireplace-type': 'Tile Fireplace',
+        'wall-surface': 'Tile',
+        'street-name': 'Prairie Center Drive',
+      },
+      lead: 'Eden Prairie tile fireplace 75" on tile — Prairie Center Drive.',
+    },
+  ];
+
+  for (const example of examples) {
+    const caption = buildGbpFenceCaption(example.seed);
+    assert.equal(caption.split('\n')[0], example.lead, example.name);
+    assert.doesNotMatch(caption, /TV mount/, example.name);
+    assertFenceRules(caption);
+  }
+});
+
+test('tile fireplace recovered from a drywall default still leads with tile fireplace', () => {
+  const caption = buildGbpFenceCaption({
+    city: 'Eden Prairie',
+    'tv-size': '65"',
+    'tv-brand': 'Samsung',
+    mantelmount: false,
+    'fireplace-type': 'Tile Fireplace',
+    'wall-surface': 'Drywall',
+    'street-name': 'Prairie Center Drive',
+    'cable-management': 'In-Wall Concealment',
+  });
+  assert.equal(
+    caption,
+    'Eden Prairie tile fireplace 65" on tile — Prairie Center Drive.\nCentered on the mantel. No cords on the tile.',
+  );
+  assert.doesNotMatch(caption, /TV mount/);
+  assert.doesNotMatch(caption, /on drywall/);
+  assertFenceRules(caption);
+});
+
 test('fireplace-only seed leads with fireplace mount, not TV mount', () => {
   const caption = buildGbpFenceCaption({
     city: 'Edina',
