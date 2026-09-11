@@ -238,6 +238,34 @@ test('caption uses house copy and keeps the CTA on cta_url', () => {
   assert.ok(caption.length <= 400);
 });
 
+test('GBP Book button cta_url is that job’s live install page, not Zenbooker or home', () => {
+  const item = gbpPayloadFromRecord({
+    jobId: 'job_cta',
+    revision: 'c'.repeat(64),
+    seed: SEED,
+    image: IMAGE,
+    result: publishedResult(),
+  });
+  const installUrl = 'https://www.themountingman.com/installations/65-inch-samsung-edina';
+  assert.equal(item.live_url, installUrl);
+  assert.equal(item.cta_url, installUrl);
+  assert.equal(item.cta_url, item.live_url);
+  assert.doesNotMatch(item.cta_url, /zenbooker/i);
+  assert.doesNotMatch(item.cta_url, /themountingman\.com\/?$/i);
+  assert.doesNotMatch(item.cta_url, /themountingman\.com\/tv-mounting/i);
+  assert.doesNotMatch(buildGbpCaption(SEED), /themountingman\.com/);
+  assert.equal(sanitizeGbpItem({
+    slug: SEED.slug,
+    live_url: 'https://www.themountingman.com/',
+    caption: 'nope',
+  }), null);
+  assert.equal(sanitizeGbpItem({
+    slug: SEED.slug,
+    live_url: 'https://zenbooker.com/',
+    caption: 'nope',
+  }), null);
+});
+
 test('sanitize rejects a non-installation URL, Reddit, and unknown schemas', () => {
   assert.equal(sanitizeGbpItem({
     slug: '65-inch-samsung-edina',

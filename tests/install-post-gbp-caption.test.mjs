@@ -172,7 +172,21 @@ test('specialty jobs always lead with the product name, never TV mount', () => {
         'wall-surface': 'Tile',
         'street-name': 'Prairie Center Drive',
       },
-      lead: 'Eden Prairie tile fireplace 75" on tile — Prairie Center Drive.',
+      lead: 'Eden Prairie 75" on tile fireplace — Prairie Center Drive.',
+    },
+    {
+      name: 'Frame on tile fireplace',
+      seed: {
+        city: 'Eden Prairie',
+        'tv-size': '75"',
+        'tv-brand': 'Samsung Frame',
+        'gallery-style': true,
+        mantelmount: false,
+        'fireplace-type': 'Tile Fireplace',
+        'wall-surface': 'Tile',
+        'street-name': 'Prairie Center Drive',
+      },
+      lead: 'Eden Prairie Samsung Frame 75" on tile fireplace — Prairie Center Drive.',
     },
   ];
 
@@ -184,7 +198,7 @@ test('specialty jobs always lead with the product name, never TV mount', () => {
   }
 });
 
-test('tile fireplace recovered from a drywall default still leads with tile fireplace', () => {
+test('tile fireplace recovered from a drywall default puts fireplace in the surface', () => {
   const caption = buildGbpFenceCaption({
     city: 'Eden Prairie',
     'tv-size': '65"',
@@ -197,14 +211,15 @@ test('tile fireplace recovered from a drywall default still leads with tile fire
   });
   assert.equal(
     caption,
-    'Eden Prairie tile fireplace 65" on tile — Prairie Center Drive.\nCentered on the mantel. No cords on the tile.',
+    'Eden Prairie 65" on tile fireplace — Prairie Center Drive.\nCentered on the mantel. No cords on the tile.',
   );
+  assert.doesNotMatch(caption, /tile fireplace \d/);
   assert.doesNotMatch(caption, /TV mount/);
   assert.doesNotMatch(caption, /on drywall/);
   assertFenceRules(caption);
 });
 
-test('fireplace-only seed leads with fireplace mount, not TV mount', () => {
+test('fireplace-only seed puts fireplace in the surface, not the product', () => {
   const caption = buildGbpFenceCaption({
     city: 'Edina',
     'tv-size': '65"',
@@ -217,8 +232,9 @@ test('fireplace-only seed leads with fireplace mount, not TV mount', () => {
   });
   assert.equal(
     caption,
-    'Edina fireplace mount 65" on stacked stone — Heather Lane.\nCentered on the mantel. No cords on the stone.',
+    'Edina 65" on stacked stone fireplace — Heather Lane.\nCentered on the mantel. No cords on the stone.',
   );
+  assert.doesNotMatch(caption, /fireplace mount/);
   assert.doesNotMatch(caption, /TV mount/);
   assert.doesNotMatch(caption, /on drywall/);
   assertFenceRules(caption);
