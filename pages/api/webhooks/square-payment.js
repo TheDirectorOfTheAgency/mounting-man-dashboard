@@ -27,6 +27,7 @@ import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js'
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
+import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
 
 export { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 
@@ -302,15 +303,28 @@ export function createSquarePaymentHandler({
     }
 
     // ---- Extract payment/invoice data ----
-    const payment = body?.data?.object?.payment || body?.data?.object || {};
-    const invoice = body?.data?.object?.invoice || body?.data?.object || {};
     const isInvoiceEvent = eventType === 'invoice.payment_made';
-    const paymentId = isInvoiceEvent ? '' : (payment.id || body?.data?.id || 'unknown');
-    const invoiceId = isInvoiceEvent ? (invoice.id || body?.data?.id || 'unknown') : '';
+    const invoice = body?.data?.object?.invoice
+      || (isInvoiceEvent ? (body?.data?.object || {}) : {});
+    const payment = body?.data?.object?.payment
+      || (isInvoiceEvent ? {} : (body?.data?.object || {}));
+    const sourceRefs = resolveInstallPostSourceRefs({
+      payment,
+      invoice,
+      orderId: isInvoiceEvent ? (invoice.order_id || '') : (payment.order_id || ''),
+      invoiceId: isInvoiceEvent ? (invoice.id || body?.data?.id || '') : (invoice.id || ''),
+      paymentId: isInvoiceEvent ? '' : (payment.id || body?.data?.id || ''),
+    });
+    const paymentId = isInvoiceEvent
+      ? sourceRefs.paymentId
+      : (sourceRefs.paymentId || 'unknown');
+    const invoiceId = isInvoiceEvent
+      ? (sourceRefs.invoiceId || 'unknown')
+      : sourceRefs.invoiceId;
     const customerId = isInvoiceEvent
       ? (invoice?.primary_recipient?.customer_id || '')
       : (payment.customer_id || '');
-    const orderId = isInvoiceEvent ? (invoice.order_id || '') : (payment.order_id || '');
+    const orderId = sourceRefs.orderId;
     const paymentStatus = isInvoiceEvent ? 'COMPLETED' : (payment.status || '');
     const amountCents = isInvoiceEvent
       ? sumInvoiceCompletedAmount(invoice)
@@ -432,6 +446,8 @@ export function createSquarePaymentHandler({
         orderId,
         payment,
         invoice,
+        paymentId: paymentId && paymentId !== 'unknown' ? paymentId : '',
+        invoiceId: invoiceId && invoiceId !== 'unknown' ? invoiceId : (invoice.id || ''),
         isInvoiceEvent,
         eventType,
         firstName,
