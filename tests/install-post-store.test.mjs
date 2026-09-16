@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { INSTALL_POST_STATES } from '../lib/install-post-queue.mjs';
+import { INSTALL_POST_STATES, publicJobView } from '../lib/install-post-queue.mjs';
 import {
   buildJobRecords,
+  collapseSeedsForOneVisit,
   createInstallPostStore,
   decodeStoredRecord,
   importLegacyPendingRecord,
@@ -98,7 +99,7 @@ test('decodeStoredRecord unwraps repeatedly JSON-encoded Upstash values', () => 
 // Opaque, deterministic job identity
 // ---------------------------------------------------------------------------
 
-test('installPostJobId is opaque, deterministic, and unique per TV', () => {
+test('installPostJobId is opaque, deterministic, and unique per seed-index', () => {
   const first = installPostJobId({ ...SOURCE_REFS, seedIndex: 1 });
   const second = installPostJobId({ ...SOURCE_REFS, seedIndex: 2 });
 
@@ -113,7 +114,7 @@ test('installPostJobId is opaque, deterministic, and unique per TV', () => {
 // One normalized record per candidate TV
 // ---------------------------------------------------------------------------
 
-test('buildJobRecords stages exactly one unapproved record per TV', () => {
+test('buildJobRecords stages exactly one unapproved record per Square visit', () => {
   const records = buildJobRecords({
     seeds: TWO_TV_SEEDS,
     sourceRefs: SOURCE_REFS,
@@ -121,21 +122,70 @@ test('buildJobRecords stages exactly one unapproved record per TV', () => {
     stagedAt: '2026-08-12T15:00:00.000Z',
   });
 
-  assert.equal(records.length, 2);
-  assert.equal(new Set(records.map((r) => r.jobId)).size, 2);
-  for (const record of records) {
-    assert.equal(record.state, INSTALL_POST_STATES.AWAITING_PHOTO);
-    assert.equal(record.approval, null);
-    assert.equal(record.lease, null);
-    assert.equal(record.image, null);
-    assert.match(record.revision, /^[0-9a-f]{64}$/);
-  }
+  assert.equal(records.length, 1);
   assert.equal(records[0].seed['tv-size'], '65"');
-  assert.equal(records[1].seed['tv-size'], '55"');
-  assert.notEqual(records[0].revision, records[1].revision);
+  assert.equal(records[0].seed['seed-index'], 1);
+  assert.equal(records[0].seed['seed-count'], 1);
+  assert.equal(records[0].state, INSTALL_POST_STATES.AWAITING_PHOTO);
+  assert.equal(records[0].approval, null);
+  assert.equal(records[0].lease, null);
+  assert.equal(records[0].image, null);
+  assert.match(records[0].revision, /^[0-9a-f]{64}$/);
+  assert.equal(records[0].orderId, 'ORDER-ABC-123');
+  assert.equal(records[0].paymentId, 'PAY-XYZ-789');
+  assert.equal(records[0].invoiceId, '');
 });
 
-test('staged records carry no customer, order, payment, or street-number data', () => {
+test('leftover sibling seed-index 2 and 3 for one payment are not staged', () => {
+  const siblingSeeds = [
+    { ...TWO_TV_SEEDS[0], 'seed-index': 1, 'seed-count': 3, 'tv-size': '50"' },
+    { ...TWO_TV_SEEDS[1], 'seed-index': 2, 'seed-count': 3, 'tv-size': '65"', price: '$75' },
+    { ...TWO_TV_SEEDS[1], 'seed-index': 3, 'seed-count': 3, 'tv-size': '65"', price: '$75' },
+  ];
+  const collapsed = collapseSeedsForOneVisit(siblingSeeds, {
+    orderId: 'ORDER-ABC-123',
+    paymentId: 'PAY-XYZ-789',
+  });
+  assert.equal(collapsed.length, 1);
+  assert.equal(collapsed[0]['seed-index'], 1);
+  assert.equal(collapsed[0]['seed-count'], 1);
+  assert.equal(collapsed[0]['tv-size'], '50"');
+
+  const records = buildJobRecords({
+    seeds: siblingSeeds,
+    sourceRefs: SOURCE_REFS,
+    source: 'square-webhook',
+    stagedAt: '2026-08-12T15:00:00.000Z',
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].jobId, installPostJobId({ ...SOURCE_REFS, seedIndex: 1 }));
+  assert.notEqual(records[0].jobId, installPostJobId({ ...SOURCE_REFS, seedIndex: 2 }));
+  assert.notEqual(records[0].jobId, installPostJobId({ ...SOURCE_REFS, seedIndex: 3 }));
+  assert.equal(records[0].state, INSTALL_POST_STATES.AWAITING_PHOTO);
+});
+
+test('stageJobRecords drops leftover sibling jobIds for one payment', async () => {
+  const kv = createFakeKv();
+  const store = createInstallPostStore(kv);
+  const siblingSeeds = [
+    { ...TWO_TV_SEEDS[0], 'seed-index': 1, 'seed-count': 3 },
+    { ...TWO_TV_SEEDS[1], 'seed-index': 2, 'seed-count': 3 },
+    { ...TWO_TV_SEEDS[1], 'seed-index': 3, 'seed-count': 3 },
+  ];
+  const stored = await store.stageJobRecords({
+    seeds: siblingSeeds,
+    sourceRefs: SOURCE_REFS,
+    source: 'square-webhook',
+    stagedAt: '2026-09-16T15:00:00.000Z',
+  });
+  assert.equal(stored.length, 1);
+  assert.equal((await store.listJobIds()).length, 1);
+  assert.equal(stored[0].jobId, installPostJobId({ ...SOURCE_REFS, seedIndex: 1 }));
+  assert.equal(await store.loadRecord(installPostJobId({ ...SOURCE_REFS, seedIndex: 2 })), null);
+  assert.equal(await store.loadRecord(installPostJobId({ ...SOURCE_REFS, seedIndex: 3 })), null);
+});
+
+test('staged public job view carries no customer, order, payment, or street-number data', () => {
   const records = buildJobRecords({
     seeds: TWO_TV_SEEDS,
     sourceRefs: SOURCE_REFS,
@@ -143,10 +193,12 @@ test('staged records carry no customer, order, payment, or street-number data', 
     stagedAt: '2026-08-12T15:00:00.000Z',
   });
 
-  const serialized = JSON.stringify(records);
+  const serialized = JSON.stringify(records.map(publicJobView));
   for (const forbidden of ['ORDER-ABC-123', 'PAY-XYZ-789', 'Jane Doe', '4821']) {
-    assert.ok(!serialized.includes(forbidden), `record leaked ${forbidden}`);
+    assert.ok(!serialized.includes(forbidden), `public job view leaked ${forbidden}`);
   }
+  assert.equal(records[0].orderId, 'ORDER-ABC-123');
+  assert.equal(records[0].paymentId, 'PAY-XYZ-789');
   assert.equal(records[0].seed['street-name'], 'Elm Street');
 });
 
@@ -163,7 +215,7 @@ test('historical pending records import as unapproved and never as published', (
   }));
 
   const records = importLegacyPendingRecord(legacy);
-  assert.equal(records.length, 2);
+  assert.equal(records.length, 1);
   for (const record of records) {
     assert.equal(record.state, INSTALL_POST_STATES.AWAITING_PHOTO);
     assert.equal(record.approval, null);
@@ -193,28 +245,31 @@ test('stageJobRecords persists records, indexes them, and isolates source refs',
     stagedAt: '2026-08-12T15:00:00.000Z',
   });
 
-  assert.equal(records.length, 2);
+  assert.equal(records.length, 1);
   const jobIds = await store.listJobIds();
   assert.deepEqual(jobIds.sort(), records.map((r) => r.jobId).sort());
 
   const loaded = await store.loadRecord(records[0].jobId);
   assert.equal(loaded.jobId, records[0].jobId);
   assert.equal(loaded.seed['tv-size'], '65"');
+  assert.equal(loaded.orderId, 'ORDER-ABC-123');
+  assert.equal(loaded.paymentId, 'PAY-XYZ-789');
 
   // Source refs live under a separate key that the mobile API never reads.
   const refs = await store.loadSourceRefs(records[0].jobId);
   assert.equal(refs.orderId, 'ORDER-ABC-123');
+  assert.equal(refs.paymentId, 'PAY-XYZ-789');
 
   const byPayment = await store.findRecordsBySource({ paymentId: 'PAY-XYZ-789' });
-  assert.equal(byPayment.length, 2);
+  assert.equal(byPayment.length, 1);
   const byOrder = await store.findRecordsBySource({ orderId: 'ORDER-ABC-123' });
-  assert.equal(byOrder.length, 2);
+  assert.equal(byOrder.length, 1);
   const missing = await store.findRecordsBySource({ paymentId: 'PAY-NONE' });
   assert.equal(missing.length, 0);
-  const recordKeys = [...kv.values.keys()].filter((key) => key.includes(':job:'));
-  for (const key of recordKeys) {
-    assert.ok(!JSON.stringify(kv.values.get(key)).includes('ORDER-ABC-123'));
-  }
+  const serializedPublic = JSON.stringify(publicJobView(loaded));
+  assert.ok(!serializedPublic.includes('ORDER-ABC-123'));
+  assert.ok(!serializedPublic.includes('PAY-XYZ-789'));
+  assert.equal(JSON.stringify(loaded.seed).includes('ORDER-ABC-123'), false);
 });
 
 test('re-staging the same Square job is idempotent and preserves progress', async () => {

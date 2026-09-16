@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { INSTALL_POST_STATES } from '../lib/install-post-queue.mjs';
+import { INSTALL_POST_STATES, publicJobView } from '../lib/install-post-queue.mjs';
 import { createInstallPostStore } from '../lib/install-post-store.mjs';
 import { migratePendingToCloud } from '../pages/api/install-post/pending.js';
 
@@ -58,11 +58,11 @@ test('legacy pending records migrate into the cloud queue as unapproved jobs', a
   const store = createInstallPostStore(createFakeKv());
   const result = await migratePendingToCloud({ store, ...legacyReaders() });
 
-  assert.equal(result.imported, 3);
+  assert.equal(result.imported, 2);
   assert.equal(result.skipped, 0);
 
   const jobIds = await store.listJobIds();
-  assert.equal(jobIds.length, 3);
+  assert.equal(jobIds.length, 2);
 
   for (const jobId of jobIds) {
     const record = await store.loadRecord(jobId);
@@ -78,11 +78,14 @@ test('migration drops customer data and street numbers', async () => {
   await migratePendingToCloud({ store, ...legacyReaders() });
 
   const records = await Promise.all((await store.listJobIds()).map((id) => store.loadRecord(id)));
-  const serialized = JSON.stringify(records);
+  const serialized = JSON.stringify(records.map(publicJobView));
   for (const forbidden of ['Jane Doe', 'Other Person', 'order-1', 'payment-1', '4821']) {
-    assert.ok(!serialized.includes(forbidden), `migration leaked ${forbidden}`);
+    assert.ok(!serialized.includes(forbidden), `public job view leaked ${forbidden}`);
   }
   assert.ok(serialized.includes('Elm Street'));
+  const withPayment = records.find((record) => record.orderId === 'order-1');
+  assert.ok(withPayment);
+  assert.equal(withPayment.paymentId, 'payment-1');
 });
 
 test('migration is idempotent and never overwrites in-progress work', async () => {
@@ -101,7 +104,7 @@ test('migration is idempotent and never overwrites in-progress work', async () =
   assert.equal(second.imported, 0);
   assert.equal(second.skipped, first.imported);
   assert.equal((await store.loadRecord(jobId)).state, INSTALL_POST_STATES.READY);
-  assert.equal((await store.listJobIds()).length, 3);
+  assert.equal((await store.listJobIds()).length, 2);
 });
 
 test('migration tolerates expired and unreadable legacy keys', async () => {

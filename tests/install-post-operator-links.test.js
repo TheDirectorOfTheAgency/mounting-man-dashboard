@@ -144,19 +144,19 @@ async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
   return { posts, result };
 }
 
-test('the notifier stages one cloud job per TV without posting Discord', async () => {
+test('the notifier stages one cloud job per Square visit without posting Discord', async () => {
   const store = createInstallPostStore(createFakeKv());
   const { posts, result } = await runNotifier({ store });
 
   const jobIds = await store.listJobIds();
-  assert.equal(jobIds.length, 2);
-  assert.equal(result.operatorLinks.length, 2);
+  assert.equal(jobIds.length, 1);
+  assert.equal(result.operatorLinks.length, 1);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].url, KRONKITE_URL);
   assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
 
   const urls = result.operatorLinks.map((link) => link.url);
-  assert.equal(new Set(urls).size, 2);
+  assert.equal(new Set(urls).size, 1);
 
   const linkedJobIds = urls.map((url) => verifyJobCapability(new URL(url).hash.slice(1), {
     secret: SECRET,
@@ -193,6 +193,14 @@ test('Kronkite payload and staged seeds carry safe labels and no customer identi
   }
 
   assert.ok(result.operatorLinks.every((link) => link.label.includes('65"') || link.label.includes('55"')));
+
+  const [jobId] = jobIds;
+  const refs = await store.loadSourceRefs(jobId);
+  assert.equal(refs.orderId, 'order-1');
+  assert.equal(refs.paymentId, 'payment-1');
+  const record = await store.loadRecord(jobId);
+  assert.equal(record.orderId, 'order-1');
+  assert.equal(record.paymentId, 'payment-1');
 });
 
 test('the notifier still wakes Kronkite, without links, when the cloud queue is unconfigured', async () => {
@@ -209,7 +217,7 @@ test('a webhook retry re-links the same jobs instead of creating new cards', asy
   const first = await runNotifier({ store });
   const second = await runNotifier({ store });
 
-  assert.equal((await store.listJobIds()).length, 2);
+  assert.equal((await store.listJobIds()).length, 1);
   const extract = ({ result }) => result.operatorLinks
     .map((link) => verifyJobCapability(new URL(link.url).hash.slice(1), { secret: SECRET, now: Date.now() }).jobId)
     .sort();

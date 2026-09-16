@@ -12,28 +12,27 @@ const SECRET = 'test-session-secret';
 const HOST = 'mounting-man-dashboard.vercel.app';
 const NOW = 1_760_000_000_000;
 
-const SEEDS = [
-  {
-    city: 'Edina',
-    'tv-size': '65"',
-    'tv-brand': 'Samsung',
-    'wall-surface': 'Stone',
-    price: '$450',
-    'street-name': '4821 Elm Street',
-    'seed-index': 1,
-    'seed-count': 2,
-  },
-  {
-    city: 'Edina',
-    'tv-size': '55"',
-    'tv-brand': 'Samsung',
-    'wall-surface': 'Drywall',
-    price: '$150',
-    'street-name': '4821 Elm Street',
-    'seed-index': 2,
-    'seed-count': 2,
-  },
-];
+const SEED = {
+  city: 'Edina',
+  'tv-size': '65"',
+  'tv-brand': 'Samsung',
+  'wall-surface': 'Stone',
+  price: '$450',
+  'street-name': '4821 Elm Street',
+  'seed-index': 1,
+  'seed-count': 1,
+};
+
+const OTHER_VISIT_SEED = {
+  city: 'Hopkins',
+  'tv-size': '55"',
+  'tv-brand': 'Samsung',
+  'wall-surface': 'Drywall',
+  price: '$150',
+  'street-name': 'Elm Street',
+  'seed-index': 1,
+  'seed-count': 1,
+};
 
 function createFakeKv() {
   const values = new Map();
@@ -76,11 +75,40 @@ async function setup() {
   const kv = createFakeKv();
   const store = createInstallPostStore(kv);
   const records = await store.stageJobRecords({
-    seeds: SEEDS,
+    seeds: [SEED],
     sourceRefs: { orderId: 'ORDER-ABC-123', paymentId: 'PAY-XYZ-789' },
     source: 'square-webhook',
     stagedAt: '2026-08-12T15:00:00.000Z',
   });
+  const webflow = createFakeWebflow();
+  return {
+    store,
+    webflow,
+    records,
+    sessions: records.map((r) => signOperatorSession({
+      jobId: r.jobId, secret: SECRET, expiresAt: NOW + 3600_000,
+    })),
+    mobile: createMobileJobHandler({ store, sessionSecret: SECRET, now: () => NOW }),
+    upload: createUploadHandler({ store, sessionSecret: SECRET, webflow, now: () => NOW }),
+  };
+}
+
+async function setupTwoVisits() {
+  const kv = createFakeKv();
+  const store = createInstallPostStore(kv);
+  const first = await store.stageJobRecords({
+    seeds: [SEED],
+    sourceRefs: { orderId: 'ORDER-ABC-123', paymentId: 'PAY-XYZ-789' },
+    source: 'square-webhook',
+    stagedAt: '2026-08-12T15:00:00.000Z',
+  });
+  const second = await store.stageJobRecords({
+    seeds: [OTHER_VISIT_SEED],
+    sourceRefs: { orderId: 'ORDER-OTHER', paymentId: 'PAY-OTHER' },
+    source: 'square-webhook',
+    stagedAt: '2026-08-12T15:05:00.000Z',
+  });
+  const records = [...first, ...second];
   const webflow = createFakeWebflow();
   return {
     store,
@@ -142,14 +170,15 @@ test('GET rejects a missing, malformed, tampered, or expired session cookie', as
 test('GET returns only safe card state for the exact bound job', async () => {
   const { mobile, sessions, records } = await setup();
   const res = createResponse();
-  await mobile(request({ session: sessions[1] }), res);
+  await mobile(request({ session: sessions[0] }), res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.job.jobId, records[1].jobId);
+  assert.equal(res.body.job.jobId, records[0].jobId);
   assert.equal(res.body.job.state, INSTALL_POST_STATES.AWAITING_PHOTO);
-  assert.equal(res.body.job.seed['tv-size'], '55"');
-  assert.ok(res.body.job.label.includes('55"'));
-  assert.ok(res.body.job.label.includes('TV 2 of 2'));
+  assert.equal(res.body.job.seed['tv-size'], '65"');
+  assert.ok(res.body.job.label.includes('65"'));
+  assert.ok(!res.body.job.label.includes('TV 2 of 2'));
+  assert.ok(!res.body.job.label.includes('TV 1 of 2'));
 
   const serialized = JSON.stringify(res.body);
   for (const forbidden of ['ORDER-ABC-123', 'PAY-XYZ-789', '4821', SECRET]) {
@@ -270,16 +299,10 @@ test('a full init/commit cycle binds the photo to that exact job', async () => {
   assert.equal(commit.body.job.state, INSTALL_POST_STATES.READY);
   assert.equal(commit.body.job.image.sha256, IMAGE.sha256);
   assert.notEqual(commit.body.job.revision, records[0].revision);
-
-  // The other card is untouched — no cross-binding.
-  const other = createResponse();
-  await mobile(request({ session: sessions[1] }), other);
-  assert.equal(other.body.job.state, INSTALL_POST_STATES.AWAITING_PHOTO);
-  assert.equal(other.body.job.image, null);
 });
 
 test('an upload session cannot be committed against a different job', async () => {
-  const { upload, sessions, records } = await setup();
+  const { upload, sessions, records } = await setupTwoVisits();
 
   const init = createResponse();
   await upload(request({
@@ -336,11 +359,10 @@ test('commit refuses when the seed changed after the upload was signed', async (
   assert.equal(res.body.error, 'stale_revision');
 });
 
-test('reverse-order photo uploads still land on their own card', async () => {
-  const { upload, mobile, sessions, records } = await setup();
+test('reverse-order photo uploads still land on their own visit card', async () => {
+  const { upload, mobile, sessions, records } = await setupTwoVisits();
   const second = { ...IMAGE, sha256: 'b'.repeat(64) };
 
-  // Photo for TV 2 is uploaded first, then the photo for TV 1.
   const initB = createResponse();
   await upload(request({
     method: 'POST', session: sessions[1], body: { action: 'init', revision: records[1].revision, ...second },
