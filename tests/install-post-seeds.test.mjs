@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildInstallPostSeeds,
+  customerLocation,
+  customerWithMergedInstallAddress,
   formatInstallPostSubtotal,
   formatInstallSeedBlocks,
   parseGoogleStyleAddress,
@@ -840,4 +842,77 @@ test('full Google-style address in street parses real city and street name only'
   assert.equal(seeds[0]['source-order-id'], 'cRm1ZL36sBO6A3Dbwt2tgHC6UnWZY');
   assert.equal(seeds[0]['source-payment-id'], 'payment-bloomington');
   assert.equal(seeds[0]['source-invoice-id'], 'invoice-bloomington');
+});
+
+const GABLE_LN_GOOGLE_BLOB = {
+  address_line_1: '4225 Gable Ln, Woodbury, MN 55129, USA',
+  country: 'US',
+};
+
+test('Gable Ln Google blob without locality yields Woodbury / Gable Ln', () => {
+  const parsed = parseGoogleStyleAddress(GABLE_LN_GOOGLE_BLOB.address_line_1);
+  assert.equal(parsed.city, 'Woodbury');
+  assert.equal(parsed.street, '4225 Gable Ln');
+
+  const location = customerLocation({ address: GABLE_LN_GOOGLE_BLOB });
+  assert.equal(location.city, 'Woodbury');
+  assert.equal(location.streetName, 'Gable Ln');
+  assert.doesNotMatch(String(location.streetName), /4225|55129|USA|Woodbury/);
+
+  const seeds = buildInstallPostSeeds({
+    customer: { address: GABLE_LN_GOOGLE_BLOB },
+    payment: { id: 'payment-gable', order_id: 'order-gable' },
+    order: {},
+    orderId: 'order-gable',
+    paymentId: 'payment-gable',
+    lineItems: [line('TV Installation', '65"', 15000)],
+  });
+
+  assert.equal(seeds.length, 1);
+  assert.equal(seeds[0].city, 'Woodbury');
+  assert.equal(seeds[0]['street-name'], 'Gable Ln');
+  assert.doesNotMatch(String(seeds[0]['street-name']), /4225|55129|USA|Woodbury/);
+  assert.doesNotMatch(JSON.stringify(seeds[0]), /4225 Gable Ln, Woodbury, MN 55129, USA/);
+});
+
+test('appointment-style structured address keeps locality city and street-only line1', () => {
+  const location = customerLocation({
+    address: {
+      address_line_1: '4225 Gable Ln',
+      locality: 'Woodbury',
+      administrative_district_level_1: 'MN',
+      postal_code: '55129',
+      country: 'US',
+    },
+  });
+  assert.equal(location.city, 'Woodbury');
+  assert.equal(location.streetName, 'Gable Ln');
+  assert.doesNotMatch(String(location.streetName), /4225|55129|USA/);
+
+  const seeds = buildInstallPostSeeds({
+    customer: {
+      address: {
+        address_line_1: '4225 Gable Ln',
+        locality: 'Woodbury',
+        administrative_district_level_1: 'MN',
+        postal_code: '55129',
+        country: 'US',
+      },
+    },
+    payment: { id: 'payment-gable-appt', order_id: 'order-gable-appt' },
+    order: {},
+    lineItems: [line('TV Installation', '65"', 15000)],
+  });
+  assert.equal(seeds[0].city, 'Woodbury');
+  assert.equal(seeds[0]['street-name'], 'Gable Ln');
+});
+
+test('weak customer address falls back to invoice primary_recipient Google blob', () => {
+  const merged = customerWithMergedInstallAddress(
+    { given_name: 'Gable', address: { country: 'US' } },
+    GABLE_LN_GOOGLE_BLOB,
+  );
+  const location = customerLocation(merged);
+  assert.equal(location.city, 'Woodbury');
+  assert.equal(location.streetName, 'Gable Ln');
 });
