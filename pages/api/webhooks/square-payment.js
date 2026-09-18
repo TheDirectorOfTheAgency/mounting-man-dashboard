@@ -12,6 +12,7 @@
 //
 // Webhook URL:
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/square-payment
+// Production Git SHA must include customerLocation (parseGoogleStyleAddress).
 //
 // Square webhook signature validation:
 //   Square signs webhooks with HMAC-SHA256. We validate if signature_key is set.
@@ -26,6 +27,7 @@ import crypto from 'crypto';
 import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
+import { customerWithMergedInstallAddress } from '../../../lib/install-post-seeds.mjs';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
 
@@ -355,7 +357,10 @@ export function createSquarePaymentHandler({
       const custRes = await httpClient.get(`${SQUARE_BASE}/customers/${customerId}`, {
         headers: squareHeaders(),
       });
-      customer = custRes.data?.customer || {};
+      customer = customerWithMergedInstallAddress(
+        custRes.data?.customer || {},
+        invoice?.primary_recipient?.address,
+      );
     } catch (err) {
       const status = err.response?.status;
       console.error(`[square-webhook] Failed to fetch customer ${customerId}: ${status}`, err.response?.data || err.message);

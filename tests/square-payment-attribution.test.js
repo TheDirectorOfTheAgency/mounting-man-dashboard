@@ -200,6 +200,42 @@ test('no-key compatibility forces the default attribution coordinator to observe
   assert.equal(res.body.attributionStatus, 'observed');
 });
 
+test('invoice webhook merges primary_recipient Google blob onto a customer with no locality', async () => {
+  const gableAddress = {
+    address_line_1: '4225 Gable Ln, Woodbury, MN 55129, USA',
+    country: 'US',
+  };
+  const deps = dependencies({
+    httpClient: {
+      async get(url) {
+        assert.match(url, /\/customers\/customer-1$/);
+        return {
+          data: {
+            customer: {
+              given_name: 'Gable',
+              family_name: 'Homeowner',
+              email_address: 'gable@example.com',
+              phone_number: '+16125550123',
+              address: { country: 'US' },
+            },
+          },
+        };
+      },
+    },
+  });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(
+    invoiceRequest({
+      primary_recipient: { customer_id: 'customer-1', address: gableAddress },
+    }),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(deps.calls.installPost.length, 1);
+  assert.deepEqual(deps.calls.installPost[0].customer.address, gableAddress);
+});
+
 test('partially paid invoice preserves install-post handling without synthesizing payment attribution', async () => {
   const deps = dependencies();
   const res = createResponse();

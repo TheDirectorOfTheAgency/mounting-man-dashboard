@@ -1,5 +1,9 @@
 # The Agency - Dashboard Deployment Guide
 
+## Production Git SHA
+
+Live production is `https://mounting-man-dashboard.vercel.app`. Confirm `GET /api/health` `gitCommit` matches GitHub `main` (needs `customerLocation` / `parseGoogleStyleAddress` from #39 or newer). Vercel Git integration should build production on every `main` push. If the Vercel project Git link is disconnected, merging will not deploy — reconnect Git in the Vercel project settings or redeploy the current `main` SHA from the dashboard. Do not pin production to an older ads-apply merge.
+
 ## 🎯 Quick Start (5 minutes)
 
 ### Step 1: Get Your API Tokens

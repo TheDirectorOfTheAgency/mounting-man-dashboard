@@ -271,3 +271,110 @@ test('invoice notify fills paymentId from order tenders when the webhook omitted
   assert.equal(decoded.invoiceId, 'invoice-bloomington');
   assert.equal(decoded.seedCount, 1);
 });
+
+const GABLE_LN_GOOGLE_BLOB = {
+  address_line_1: '4225 Gable Ln, Woodbury, MN 55129, USA',
+  country: 'US',
+};
+
+test('invoice notify parses Gable Ln from primary_recipient when customer address is empty', async () => {
+  const result = await notifyQInstallPost(
+    {
+      orderId: 'order-gable',
+      payment: {},
+      invoice: {
+        id: 'invoice-gable',
+        order_id: 'order-gable',
+        primary_recipient: { customer_id: 'customer-gable', address: GABLE_LN_GOOGLE_BLOB },
+      },
+      isInvoiceEvent: true,
+      eventType: 'invoice.payment_made',
+      firstName: 'Gable',
+      lastName: 'Homeowner',
+      customer: { given_name: 'Gable', family_name: 'Homeowner', address: { country: 'US' } },
+      amount: '150.00',
+      amountCents: 15000,
+    },
+    {
+      exists: async () => false,
+      set: async () => true,
+      sadd: async () => true,
+      kronkiteUrl: 'https://kronkite.example/square-wake',
+      kronkiteKey: 'kronkite-sender-key',
+      httpClient: {
+        async get() {
+          return {
+            data: {
+              order: {
+                id: 'order-gable',
+                line_items: [PLYMOUTH_LINE_ITEMS[0]],
+              },
+            },
+          };
+        },
+        async post() {
+          return { data: {} };
+        },
+      },
+    },
+  );
+
+  assert.equal(result.seeds[0].city, 'Woodbury');
+  assert.equal(result.seeds[0]['street-name'], 'Gable Ln');
+  assert.doesNotMatch(String(result.seeds[0]['street-name']), /4225|55129|USA|Woodbury/);
+  assert.equal(result.kronkitePayload.city, 'Woodbury');
+  assert.equal(result.kronkitePayload.streetName, 'Gable Ln');
+});
+
+test('appointment notify keeps structured locality city and street-only line1', async () => {
+  const result = await notifyQInstallPost(
+    {
+      orderId: 'order-gable-appt',
+      payment: { id: 'payment-gable-appt', source_type: 'CARD', order_id: 'order-gable-appt' },
+      invoice: {},
+      isInvoiceEvent: false,
+      eventType: 'payment.updated',
+      firstName: 'Gable',
+      lastName: 'Homeowner',
+      customer: {
+        given_name: 'Gable',
+        address: {
+          address_line_1: '4225 Gable Ln',
+          locality: 'Woodbury',
+          administrative_district_level_1: 'MN',
+          postal_code: '55129',
+          country: 'US',
+        },
+      },
+      amount: '150.00',
+      amountCents: 15000,
+    },
+    {
+      exists: async () => false,
+      set: async () => true,
+      sadd: async () => true,
+      kronkiteUrl: 'https://kronkite.example/square-wake',
+      kronkiteKey: 'kronkite-sender-key',
+      httpClient: {
+        async get() {
+          return {
+            data: {
+              order: {
+                id: 'order-gable-appt',
+                line_items: [PLYMOUTH_LINE_ITEMS[0]],
+              },
+            },
+          };
+        },
+        async post() {
+          return { data: {} };
+        },
+      },
+    },
+  );
+
+  assert.equal(result.seeds[0].city, 'Woodbury');
+  assert.equal(result.seeds[0]['street-name'], 'Gable Ln');
+  assert.equal(result.kronkitePayload.city, 'Woodbury');
+  assert.equal(result.kronkitePayload.streetName, 'Gable Ln');
+});
