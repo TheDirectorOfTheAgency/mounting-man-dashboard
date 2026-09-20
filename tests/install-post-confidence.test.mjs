@@ -117,6 +117,44 @@ test('TypeSafe Jev HOLDs when noul is false or confidence is below 0.7', async (
   assert.deepEqual(lowConfidence.reasons, [HOLD_REASONS.JEV_HOLD]);
 });
 
+test('TypeSafe Jev fail-open on malformed 2xx answers does not HOLD', async () => {
+  const emptyBody = await evaluateJevInstallPostConfidence({
+    ...WOODBURY_GABLE,
+    apiKey: 'test-typesafe-key',
+    httpClient: {
+      async post() {
+        return { data: {} };
+      },
+    },
+  });
+  assert.equal(emptyBody.pass, true);
+  assert.equal(emptyBody.skipped, 'malformed_answer');
+  assert.deepEqual(emptyBody.reasons, []);
+
+  const missingNoul = await evaluateJevInstallPostConfidence({
+    ...WOODBURY_GABLE,
+    apiKey: 'test-typesafe-key',
+    httpClient: {
+      async post() {
+        return { data: { answers: { safe_to_auto_publish: { confidence: 0.9 } } } };
+      },
+    },
+  });
+  assert.equal(missingNoul.pass, true);
+  assert.equal(missingNoul.skipped, 'malformed_answer');
+
+  const resolved = await resolveInstallPostConfidence(WOODBURY_GABLE, {
+    apiKey: 'test-typesafe-key',
+    httpClient: {
+      async post() {
+        return { data: null };
+      },
+    },
+  });
+  assert.equal(resolved.pass, true);
+  assert.deepEqual(resolved.reasons, []);
+});
+
 test('TypeSafe Jev fail-open on API error does not block a deterministic PASS', async () => {
   const jev = await evaluateJevInstallPostConfidence({
     ...WOODBURY_GABLE,
