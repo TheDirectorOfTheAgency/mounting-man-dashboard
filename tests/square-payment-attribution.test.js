@@ -518,6 +518,7 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
     publisher: 'cloud-runner',
     photoPresent: false,
     deskAction: 'request_photo',
+    holdReasons: [],
     doNotRun: ['publish_one.py', 'go.py'],
   });
   const serialized = JSON.stringify(payload);

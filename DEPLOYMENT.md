@@ -177,4 +177,18 @@ Edit `components/Dashboard.js` to customize the UI. Changes hot-reload automatic
 
 **Version:** 1.0  
 **Status:** Production Ready  
-**Last Updated:** February 2026
+**Last Updated:** September 2026
+
+## Install-post happy path (THE-264)
+
+Frozen route: Square + photo → confidence gate → existing GitHub Actions `publish-install-post.yml` → site + socials. GBP is **user-paste only** (never machine-post GBP or Reddit).
+
+Set these in **Vercel project settings** (Production). Do not commit values to git.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `TYPESAFE_API_KEY` | Optional | After the deterministic city/street gate PASSes, call TypeSafe Jev (`jev-latest`) with city/street/size only. `noul` false or confidence `< 0.7` HOLDs auto-publish. API errors fail open. Never log this key. |
+| `INSTALL_POST_GBP_NOTIFY_URL` | Required for auto GBP fence | Dedicated operator webhook. After the install page is HTTP 200, POSTs **two fence-only bodies** (caption, then Book URL = live `/installations/...` page) for Mr. Wayne to paste. Independent of Woodward. |
+| `INSTALL_POST_GBP_NOTIFY_KEY` | Required with the URL | Bearer key. Same header shape as Kronkite: `Authorization: Bearer <key>` plus `x-webhook-secret`. |
+
+HOLD wakes Kronkite/Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `google_blob_street`, `seed_count`, `jev_hold`). No customer PII.
