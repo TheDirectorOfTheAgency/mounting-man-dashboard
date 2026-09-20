@@ -16,6 +16,7 @@
 
 import { autoDispatchIfPhotoBound } from '../../../lib/install-post-auto-publish.mjs';
 import { createConfiguredDispatcher } from '../../../lib/install-post-dispatch.mjs';
+import { forwardConfidenceHoldWake } from '../../../lib/notify-install-post.mjs';
 import {
   ALLOWED_PHONE_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
@@ -31,7 +32,16 @@ import { getInstallPostStore } from '../../../lib/install-post-store.mjs';
 
 export { MAX_UPLOAD_BYTES };
 
-export function createUploadHandler({ store, sessionSecret, webflow, dispatcher, now = Date.now } = {}) {
+export function createUploadHandler({
+  store,
+  sessionSecret,
+  webflow,
+  dispatcher,
+  now = Date.now,
+  deskWake,
+  typesafeHttpClient,
+  typesafeApiKey,
+} = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
       return res.status(405).json({ error: 'method_not_allowed' });
@@ -110,9 +120,20 @@ export function createUploadHandler({ store, sessionSecret, webflow, dispatcher,
         jobId,
         dispatcher,
         now,
+        typesafeHttpClient,
+        typesafeApiKey,
       });
       if (dispatched.ok) {
         return res.status(200).json({ job: publicJobView(dispatched.record) });
+      }
+      if (dispatched.reason === 'needs_human' && typeof deskWake === 'function') {
+        try {
+          await deskWake({ record: dispatched.record, reasons: dispatched.holdReasons || [] });
+        } catch (err) {
+          console.warn('[install-post-upload] HOLD wake failed open', {
+            errorType: err?.name || 'Error',
+          });
+        }
       }
     }
 
@@ -127,5 +148,6 @@ export default async function handler(req, res) {
     sessionSecret: (process.env.INSTALL_POST_ACCESS_SECRET || '').trim(),
     webflow: createWebflowUploadClient(),
     dispatcher: createConfiguredDispatcher(),
+    deskWake: (args) => forwardConfidenceHoldWake(args),
   })(req, res);
 }

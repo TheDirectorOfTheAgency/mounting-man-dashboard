@@ -11,6 +11,7 @@ import {
   buildKronkiteSquarePayload,
   notifyQInstallPost,
 } from '../lib/notify-install-post.mjs';
+import { HOLD_REASONS } from '../lib/install-post-confidence.mjs';
 import { INSTALL_POST_STATES, signOperatorSession, transitionRecord } from '../lib/install-post-queue.mjs';
 import { SESSION_COOKIE_NAME } from '../lib/install-post-session.mjs';
 import { createInstallPostStore } from '../lib/install-post-store.mjs';
@@ -345,4 +346,98 @@ test('Square notify with a bound photo dispatches the cloud runner and skips the
   assert.ok(result.cloudDispatch.some((entry) => entry.ok && entry.jobId === record.jobId));
   assert.equal(dispatcher.dispatches.length, 1);
   assert.equal(dispatcher.dispatches[0].jobId, record.jobId);
+});
+
+test('auto-dispatch HOLDs Twin Cities city and does not fire the cloud runner', async () => {
+  const store = createInstallPostStore(createFakeKv());
+  const [staged] = await store.stageJobRecords({
+    seeds: [{ ...SEED, city: 'Twin Cities' }],
+    sourceRefs: { orderId: 'ORDER-HOLD', paymentId: 'PAY-HOLD' },
+    source: 'square-webhook',
+    stagedAt: '2026-09-20T15:00:00.000Z',
+  });
+  const record = transitionRecord(staged, { type: 'photo', image: IMAGE }).record;
+  await store.saveRecord(record);
+  const dispatcher = createFakeDispatcher();
+  const outcome = await autoDispatchIfPhotoBound({
+    store,
+    jobId: record.jobId,
+    dispatcher,
+    now: () => NOW,
+  });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.reason, 'needs_human');
+  assert.deepEqual(outcome.holdReasons, [HOLD_REASONS.METRO_PLACEHOLDER_CITY]);
+  assert.equal(dispatcher.dispatches.length, 0);
+  assert.equal((await store.loadRecord(record.jobId)).state, INSTALL_POST_STATES.READY);
+});
+
+test('Square notify HOLD wakes the desk with needs_human reason codes and no PII', async () => {
+  const store = createInstallPostStore(createFakeKv());
+  const [staged] = await store.stageJobRecords({
+    seeds: [{
+      ...SEED,
+      city: 'Twin Cities',
+      'street-name': 'Gable Ln, Woodbury, MN 55129, USA',
+    }],
+    sourceRefs: { orderId: 'ORDER-1', paymentId: 'PAY-1' },
+    source: 'square-webhook',
+    stagedAt: '2026-09-20T15:00:00.000Z',
+  });
+  const record = transitionRecord(staged, { type: 'photo', image: IMAGE }).record;
+  await store.saveRecord(record);
+  const dispatcher = createFakeDispatcher();
+  const posts = [];
+  const result = await notifyQInstallPost(
+    {
+      orderId: 'ORDER-1',
+      payment: { id: 'PAY-1', source_type: 'CARD' },
+      invoice: {},
+      isInvoiceEvent: false,
+      eventType: 'payment.created',
+      firstName: 'Jane',
+      lastName: 'Homeowner',
+      customer: CUSTOMER,
+      amount: '450.00',
+      amountCents: 45000,
+    },
+    {
+      exists: async () => false,
+      set: async () => true,
+      sadd: async () => true,
+      installPostStore: store,
+      capabilitySecret: SECRET,
+      queueBaseUrl: 'https://mounting-man-dashboard.vercel.app',
+      kronkiteUrl: KRONKITE_URL,
+      kronkiteKey: 'kronkite-sender-key',
+      dispatcher,
+      httpClient: {
+        async get() {
+          return {
+            data: {
+              order: {
+                id: 'ORDER-1',
+                line_items: [{ name: '65" TV Installation', quantity: '1', base_price_money: { amount: 45000 } }],
+              },
+            },
+          };
+        },
+        async post(url, body, config) {
+          posts.push({ url, body, headers: config?.headers || {} });
+          return { data: {} };
+        },
+      },
+    },
+  );
+
+  assert.equal(dispatcher.dispatches.length, 0, 'HOLD must not dispatch');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].body.deskAction, 'needs_human');
+  assert.ok(posts[0].body.holdReasons.includes(HOLD_REASONS.METRO_PLACEHOLDER_CITY));
+  assert.equal(posts[0].body.holdReasons.includes('Jane'), false);
+  assert.equal(JSON.stringify(posts[0].body).includes('Jane'), false);
+  assert.equal(JSON.stringify(posts[0].body).includes('4821'), false);
+  assert.equal(result.kronkitePayload.deskAction, 'needs_human');
+  assert.equal(result.cloudDispatch.some((entry) => entry.reason === 'needs_human'), true);
 });

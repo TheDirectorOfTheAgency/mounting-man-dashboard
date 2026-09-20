@@ -7,11 +7,13 @@
 // late callback from an abandoned run, a replay, or a run for a newer approval
 // is refused rather than allowed to overwrite the job.
 
+import axios from 'axios';
 import {
   attachGbpQueuedDestination,
   enqueueGbpAfterPublish,
   getInstallPostGbpQueue,
 } from '../../../../lib/install-post-gbp-queue.mjs';
+import { deliverGbpFenceToOwner } from '../../../../lib/install-post-gbp-fence-notify.mjs';
 import { verifyRunnerRequest } from '../../../../lib/install-post-dispatch.mjs';
 import {
   INSTALL_POST_STATES,
@@ -28,7 +30,13 @@ const LEASE_CLEARING_STATES = new Set([
   INSTALL_POST_STATES.BLOCKED,
 ]);
 
-export function createRunnerCallbackHandler({ store, runnerSecret, gbpQueue, now = Date.now } = {}) {
+export function createRunnerCallbackHandler({
+  store,
+  runnerSecret,
+  gbpQueue,
+  gbpFenceNotify,
+  now = Date.now,
+} = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
       return res.status(405).json({ error: 'method_not_allowed' });
@@ -116,6 +124,16 @@ export function createRunnerCallbackHandler({ store, runnerSecret, gbpQueue, now
       await store.releasePublishLease({ jobId, revision });
     }
 
+    if (outcome.record.state === INSTALL_POST_STATES.PUBLISHED && typeof gbpFenceNotify === 'function') {
+      try {
+        await gbpFenceNotify({ record: outcome.record });
+      } catch (err) {
+        console.warn('[install-post-callback] GBP fence notify failed open', {
+          errorType: err?.name || 'Error',
+        });
+      }
+    }
+
     return res.status(200).json({ job: publicJobView(outcome.record) });
   };
 }
@@ -127,5 +145,11 @@ export default async function handler(req, res) {
     store,
     gbpQueue,
     runnerSecret: (process.env.INSTALL_POST_RUNNER_SECRET || '').trim(),
+    gbpFenceNotify: (args) => deliverGbpFenceToOwner({
+      ...args,
+      httpClient: axios,
+      url: process.env.INSTALL_POST_GBP_NOTIFY_URL,
+      key: process.env.INSTALL_POST_GBP_NOTIFY_KEY,
+    }),
   })(req, res);
 }

@@ -19,6 +19,7 @@
 
 import { autoDispatchIfPhotoBound } from '../../../lib/install-post-auto-publish.mjs';
 import { createConfiguredDispatcher } from '../../../lib/install-post-dispatch.mjs';
+import { forwardConfidenceHoldWake } from '../../../lib/notify-install-post.mjs';
 import {
   ALLOWED_INGEST_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
@@ -73,6 +74,9 @@ export function createIngestPhotoHandler({
   dispatcher,
   convertJpeg,
   now = Date.now,
+  deskWake,
+  typesafeHttpClient,
+  typesafeApiKey,
 } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
@@ -190,9 +194,28 @@ export function createIngestPhotoHandler({
       jobId: record.jobId,
       dispatcher,
       now,
+      typesafeHttpClient,
+      typesafeApiKey,
     });
     if (dispatched.ok) {
       return res.status(200).json({ ok: true, job: publicJobView(dispatched.record) });
+    }
+    if (dispatched.reason === 'needs_human') {
+      if (typeof deskWake === 'function') {
+        try {
+          await deskWake({ record: dispatched.record, reasons: dispatched.holdReasons || [] });
+        } catch (err) {
+          console.warn('[install-post-ingest] HOLD wake failed open', {
+            errorType: err?.name || 'Error',
+          });
+        }
+      }
+      return res.status(200).json({
+        ok: true,
+        job: publicJobView(dispatched.record || bound.record),
+        deskAction: 'needs_human',
+        holdReasons: dispatched.holdReasons || [],
+      });
     }
     if (dispatched.reason === 'already_published' || dispatched.reason === 'publish_in_flight') {
       return res.status(409).json({
@@ -214,5 +237,6 @@ export default async function handler(req, res) {
     cronSecret: CRON_SECRET,
     webflow: createWebflowUploadClient(),
     dispatcher: createConfiguredDispatcher(),
+    deskWake: (args) => forwardConfidenceHoldWake(args),
   })(req, res);
 }
