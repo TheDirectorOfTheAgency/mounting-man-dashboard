@@ -9,6 +9,7 @@ import {
   ADD_CAMPAIGN_PHRASE_NEGATIVES,
   ADS_API_VERSION,
   ADS_APPLY_TOOLS,
+  ALLOWLISTED_CAMPAIGNS,
   DEFAULT_ADS_API_VERSION,
   DEFAULT_CUSTOMER_ID,
   GET_CRITERION_STATUS,
@@ -19,6 +20,8 @@ import {
   googleAdsAdGroupCriteriaMutateUrl,
   googleAdsCampaignCriteriaMutateUrl,
   googleAdsSearchUrl,
+  isAllowlistedCampaignId,
+  isNegativesOnlyCampaign,
   parseAdGroupCriterionResourceName,
   resolveAdsApiVersion,
   resolveAdGroupCriterionMatch,
@@ -305,6 +308,11 @@ test('tools/list returns exactly the three v1 Ads APPLY tools', async () => {
   ]);
   assert.deepEqual(names, ADS_APPLY_TOOLS);
   assert.equal(names.length, 3);
+  const negativesTool = res.body.result.tools.find((tool) => tool.name === ADD_CAMPAIGN_PHRASE_NEGATIVES);
+  assert.match(negativesTool.description, /23035645593/);
+  assert.match(negativesTool.description, /Display Remarketing/);
+  const pauseTool = res.body.result.tools.find((tool) => tool.name === PAUSE_AD_GROUP_CRITERION);
+  assert.match(pauseTool.description, /Display Remarketing 23035645593/);
 });
 
 test('initialize and tools/list accept MCP_SQUARE_PAYROLL_SECRET and CRON_SECRET', async () => {
@@ -1039,6 +1047,122 @@ test('refuses KEEP keywords and the four locked exacts without mutating', async 
     assert.match(res.body.error.message, /KEEP keyword/i, phrase);
   }
   assert.equal(negativesHttp.calls.length, 0);
+});
+
+test('Display Remarketing is allowlisted for phrase negatives only', () => {
+  assert.equal(isAllowlistedCampaignId('23035645593'), true);
+  assert.equal(isNegativesOnlyCampaign('23035645593'), true);
+  assert.equal(ALLOWLISTED_CAMPAIGNS[23035645593].name, 'Display Remarketing');
+  assert.equal(ALLOWLISTED_CAMPAIGNS[23035645593].negativesOnly, true);
+  assert.equal(isNegativesOnlyCampaign('23038170184'), true);
+  assert.equal(isNegativesOnlyCampaign('20867488270'), false);
+  assert.equal(isAllowlistedCampaignId('99999999999'), false);
+});
+
+test('Display Remarketing accepts phrase negatives and refuses keyword pause', async () => {
+  const displayCampaignId = '23035645593';
+  const displayName = 'Display Remarketing';
+  const negativeResource = `customers/${DEFAULT_CUSTOMER_ID}/campaignCriteria/${displayCampaignId}~297614770951`;
+
+  const negativesHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('campaign_criterion.keyword.text')) {
+      return searchBatch([]);
+    }
+    if (isSearch(config) && queryOf(config).includes('FROM campaign_criterion')) {
+      return searchBatch([campaignNegativeRow({
+        criterionId: '297614770951',
+        text: 'flush mount tv wall mount',
+        campaignId: displayCampaignId,
+      })]);
+    }
+    if (config.url === googleAdsCampaignCriteriaMutateUrl(DEFAULT_CUSTOMER_ID)) {
+      return mutateResults([negativeResource]);
+    }
+    throw new Error(`unexpected Ads call ${config.method} ${config.url}`);
+  });
+  const negativesHandler = handlerWithHttp(negativesHttp);
+  const accepted = response();
+  await negativesHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 61,
+      method: 'tools/call',
+      params: {
+        name: ADD_CAMPAIGN_PHRASE_NEGATIVES,
+        arguments: {
+          campaign_id: displayCampaignId,
+          phrases: ['flush mount tv wall mount'],
+          confirm: true,
+        },
+      },
+    },
+  }), accepted);
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.body.result.isError, undefined);
+  assert.equal(accepted.body.result.structuredContent.campaign_id, displayCampaignId);
+  assert.equal(accepted.body.result.structuredContent.campaign_name, displayName);
+  assert.equal(accepted.body.result.structuredContent.match_type, 'PHRASE');
+  assert.equal(accepted.body.result.structuredContent.after_status[0].status, 'ENABLED');
+  const write = negativesHttp.calls.find(isMutate);
+  assert.ok(write);
+  assert.equal(write.data.operations[0].create.campaign, `customers/${DEFAULT_CUSTOMER_ID}/campaigns/${displayCampaignId}`);
+  assert.equal(write.data.operations[0].create.negative, true);
+  assert.equal(write.data.operations[0].create.keyword.matchType, 'PHRASE');
+  assert.equal('login-customer-id' in write.headers, false);
+  assertAdsHttpVersions(negativesHttp.calls);
+
+  const pauseHttp = recordingHttp((config) => {
+    if (isSearch(config) && queryOf(config).includes('FROM ad_group_criterion')) {
+      return searchBatch([keywordRow({
+        text: 'flush mount tv wall mount',
+        campaignId: displayCampaignId,
+        campaignName: displayName,
+      })]);
+    }
+    throw new Error('mutate must not pause Display Remarketing keywords');
+  });
+  const pauseHandler = handlerWithHttp(pauseHttp);
+  const pause = response();
+  await pauseHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 62,
+      method: 'tools/call',
+      params: {
+        name: PAUSE_AD_GROUP_CRITERION,
+        arguments: { criterion_id: '555000111222', confirm: true },
+      },
+    },
+  }), pause);
+  assert.equal(pause.body.error.code, -32602);
+  assert.match(pause.body.error.message, /negatives only/i);
+  assert.match(pause.body.error.message, /23035645593/);
+  assert.equal(pauseHttp.calls.some(isMutate), false);
+  assertAdsHttpVersions(pauseHttp.calls);
+
+  const refused = response();
+  await negativesHandler(authorized({
+    body: {
+      jsonrpc: '2.0',
+      id: 63,
+      method: 'tools/call',
+      params: {
+        name: ADD_CAMPAIGN_PHRASE_NEGATIVES,
+        arguments: {
+          campaign_id: '99999999999',
+          phrases: ['flush mount tv wall mount'],
+          confirm: true,
+        },
+      },
+    },
+  }), refused);
+  assert.equal(refused.body.error.code, -32602);
+  assert.match(refused.body.error.message, /unknown campaign/i);
+  assert.equal(
+    negativesHttp.calls.filter(isMutate).length,
+    1,
+    'unknown campaign must not trigger a second mutate',
+  );
 });
 
 test('Frame campaign refuses keyword pause and still accepts phrase negatives', async () => {
