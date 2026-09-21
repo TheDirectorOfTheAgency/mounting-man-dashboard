@@ -37,7 +37,7 @@ const TOOLS = [
   {
     name: PAUSE_AD_GROUP_CRITERION,
     description:
-      'PAUSE one ad-group keyword criterion on The Mounting Man (1287907452). Requires confirm:true. Refuses campaign or ad-group pause, budgets/bids, HTSA/Agency, Frame-campaign keyword pause (negatives only), fireplace/mantel/masonry/Frame-installer KEEP keywords, brand reviews, and the locked exacts [tv mounting near me], [tv installation near me], [tv installer near me], [tv mounting service]. Returns before_status, after_status, and resource_name.',
+      'PAUSE one ad-group keyword criterion on The Mounting Man (1287907452). Requires confirm:true. Refuses campaign or ad-group pause, budgets/bids, HTSA/Agency, negatives-only campaign keyword pause (MSP Samsung Frame 23038170184, Display Remarketing 23035645593), fireplace/mantel/masonry/Frame-installer KEEP keywords, brand reviews, and the locked exacts [tv mounting near me], [tv installation near me], [tv installer near me], [tv mounting service]. Returns before_status, after_status, and resource_name.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -68,7 +68,7 @@ const TOOLS = [
   {
     name: ADD_CAMPAIGN_PHRASE_NEGATIVES,
     description:
-      'Add campaign-level PHRASE negatives on an allowlisted Mounting Man Search campaign. Requires confirm:true. Allowlisted: 20867488270 MSP General, 23038170184 MSP Samsung Frame (negatives only), 23067449455 Austin General, 23246942122 Houston General. Refuses unknown campaigns, HTSA/Agency, KEEP keywords, brand reviews, and the four locked near-me exacts. Returns before_status, after_status, and resource_names.',
+      'Add campaign-level PHRASE negatives on an allowlisted Mounting Man campaign. Requires confirm:true. Allowlisted: 20867488270 MSP General, 23035645593 Display Remarketing (negatives only), 23038170184 MSP Samsung Frame (negatives only), 23067449455 Austin General, 23246942122 Houston General. Display Remarketing is phrase-negatives only — no keyword pause. Refuses unknown campaigns, HTSA/Agency, KEEP keywords, brand reviews, and the four locked near-me exacts. Returns before_status, after_status, and resource_names.',
     inputSchema: {
       type: 'object',
       properties: {
