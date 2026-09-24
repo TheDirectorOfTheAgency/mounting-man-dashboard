@@ -1,18 +1,18 @@
 // pages/api/install-post/runner/callback.js
 //
-// Signed internal endpoint the cloud runner posts its outcome to.
+// Signed internal endpoint a publisher posts its outcome to: the M1 worker
+// (m1/install-post-worker) today, the frozen cloud runner historically.
 //
 // The result is sanitized before it is stored, and a callback is only accepted
 // from the dispatch that currently holds the lease on the approved revision. A
 // late callback from an abandoned run, a replay, or a run for a newer approval
 // is refused rather than allowed to overwrite the job.
+//
+// A verified website result settles on its own. GBP is a paste pack for Mr.
+// Wayne (caption + Book URL), sent after the record is saved and fail-open. No
+// machine GBP queue is written or waited on here.
 
 import axios from 'axios';
-import {
-  attachGbpQueuedDestination,
-  enqueueGbpAfterPublish,
-  getInstallPostGbpQueue,
-} from '../../../../lib/install-post-gbp-queue.mjs';
 import { deliverGbpFenceToOwner } from '../../../../lib/install-post-gbp-fence-notify.mjs';
 import { verifyRunnerRequest } from '../../../../lib/install-post-dispatch.mjs';
 import {
@@ -33,7 +33,6 @@ const LEASE_CLEARING_STATES = new Set([
 export function createRunnerCallbackHandler({
   store,
   runnerSecret,
-  gbpQueue,
   gbpFenceNotify,
   now = Date.now,
 } = {}) {
@@ -81,42 +80,11 @@ export function createRunnerCallbackHandler({
         refusal = transition.reason;
         return null;
       }
-      // Website is the first asset. GBP is the second — establish durable GBP
-      // intent before this callback persists the terminal website result.
-      let record = transition.record;
-      if (record.state === INSTALL_POST_STATES.PUBLISHED) {
-        if (!gbpQueue) {
-          refusal = 'gbp_queue_unavailable';
-          return null;
-        }
-        let enqueued;
-        try {
-          enqueued = await enqueueGbpAfterPublish({
-            queue: gbpQueue,
-            record,
-            at: new Date(now()).toISOString(),
-          });
-        } catch {
-          refusal = 'gbp_enqueue_failed';
-          return null;
-        }
-        if (!enqueued.item && !['already_queued', 'already_posted'].includes(enqueued.reason)) {
-          refusal = 'gbp_enqueue_failed';
-          return null;
-        }
-        record = attachGbpQueuedDestination(record, {
-          slug: enqueued.item?.slug || record.result?.slug,
-          reason: enqueued.queued ? 'queued' : enqueued.reason,
-        });
-      }
-      return record;
+      return transition.record;
     });
 
     if (!outcome.ok) {
       const reason = refusal || outcome.reason;
-      if (reason === 'gbp_queue_unavailable' || reason === 'gbp_enqueue_failed') {
-        return res.status(503).json({ error: reason });
-      }
       return res.status(statusForReason(reason)).json({ error: reason });
     }
 
@@ -124,26 +92,29 @@ export function createRunnerCallbackHandler({
       await store.releasePublishLease({ jobId, revision });
     }
 
+    let gbpPastePack = null;
     if (outcome.record.state === INSTALL_POST_STATES.PUBLISHED && typeof gbpFenceNotify === 'function') {
       try {
-        await gbpFenceNotify({ record: outcome.record });
+        gbpPastePack = await gbpFenceNotify({ record: outcome.record });
       } catch (err) {
-        console.warn('[install-post-callback] GBP fence notify failed open', {
+        console.warn('[install-post-callback] GBP paste pack failed open', {
           errorType: err?.name || 'Error',
         });
+        gbpPastePack = { forwarded: false, error: true };
       }
     }
 
-    return res.status(200).json({ job: publicJobView(outcome.record) });
+    return res.status(200).json({
+      job: publicJobView(outcome.record),
+      ...(gbpPastePack ? { gbpPastePack } : {}),
+    });
   };
 }
 
 export default async function handler(req, res) {
   const store = await getInstallPostStore();
-  const gbpQueue = await getInstallPostGbpQueue();
   return createRunnerCallbackHandler({
     store,
-    gbpQueue,
     runnerSecret: (process.env.INSTALL_POST_RUNNER_SECRET || '').trim(),
     gbpFenceNotify: (args) => deliverGbpFenceToOwner({
       ...args,

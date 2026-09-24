@@ -107,11 +107,6 @@ async function setup({ now = createClock() } = {}) {
   await store.saveRecord(record);
 
   const dispatcher = createFakeDispatcher();
-  const gbpQueue = {
-    async enqueue(item) {
-      return { queued: true, reason: 'queued', item };
-    },
-  };
   return {
     kv,
     store,
@@ -123,7 +118,7 @@ async function setup({ now = createClock() } = {}) {
     }),
     publish: createPublishHandler({ store, sessionSecret: CAPABILITY_SECRET, dispatcher, now }),
     mobile: createMobileJobHandler({ store, sessionSecret: CAPABILITY_SECRET, now }),
-    callback: createRunnerCallbackHandler({ store, runnerSecret: RUNNER_SECRET, gbpQueue, now }),
+    callback: createRunnerCallbackHandler({ store, runnerSecret: RUNNER_SECRET, now }),
   };
 }
 

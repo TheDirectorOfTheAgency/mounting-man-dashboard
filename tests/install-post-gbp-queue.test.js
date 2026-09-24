@@ -210,7 +210,7 @@ async function publishedSetup() {
     record: withPhoto,
     dispatchId: dispatcher.dispatches.at(-1).dispatchId,
     callback: createRunnerCallbackHandler({
-      store, gbpQueue, runnerSecret: RUNNER_SECRET, now: () => NOW,
+      store, runnerSecret: RUNNER_SECRET, now: () => NOW,
     }),
     gbp: createGbpHandler({ queue: gbpQueue, workerSecret: GBP_SECRET }),
   };
@@ -299,8 +299,8 @@ test('shouldEnqueueGbp skips an item that is already queued', () => {
   assert.equal(shouldEnqueueGbp({ item: null }).reason, 'live_url_required');
 });
 
-test('a verified publish enqueues GBP for the M1 worker', async () => {
-  const { callback, gbpQueue, record, dispatchId } = await publishedSetup();
+test('a verified publish settles PUBLISHED without writing the machine GBP queue', async () => {
+  const { callback, gbpQueue, kv, record, dispatchId, store } = await publishedSetup();
   const res = createResponse();
   await callback(signedCallback({
     jobId: record.jobId,
@@ -310,35 +310,17 @@ test('a verified publish enqueues GBP for the M1 worker', async () => {
   }), res);
 
   assert.equal(res.statusCode, 200);
-  const pending = await gbpQueue.listPending();
-  assert.equal(pending.length, 1);
-  assert.equal(pending[0].slug, '65-inch-samsung-edina');
-  assert.equal(pending[0].live_url, 'https://www.themountingman.com/installations/65-inch-samsung-edina');
-  assert.equal(pending[0].cta_url, pending[0].live_url);
-  assert.equal(pending[0].image_url, IMAGE.hostedUrl);
-  assert.equal(pending[0].image_sha256, IMAGE.sha256);
-  assert.equal(pending[0].image_path, null);
-  assert.equal(pending[0].jobId, record.jobId);
-  assert.equal(pending[0].revision, record.revision);
-  assert.equal(pending[0].schemaVersion, 2);
-  assert.deepEqual(pending[0].required_surfaces, ['update', 'photos']);
-  assert.equal(pending[0].skip_photos_when_update_pending, false);
-  assert.equal(pending[0].surfaces.update.status, 'pending');
-  assert.equal(pending[0].surfaces.photos.status, 'pending');
-  assert.match(pending[0].caption, /Edina stone mount 65"/);
-  assert.doesNotMatch(pending[0].caption, /4821/);
-  assert.doesNotMatch(pending[0].caption, /by The Mounting Man/);
-  assert.doesNotMatch(JSON.stringify(pending[0]), /reddit/i);
-  assert.doesNotMatch(JSON.stringify(pending[0]), /business\.google\.com/i);
-
-  const gbpDest = res.body.job.result.destinations.find((entry) => entry.name === 'gbp');
-  assert.equal(gbpDest.status, 'QUEUED');
+  assert.equal(res.body.job.state, 'PUBLISHED');
+  assert.equal((await store.loadRecord(record.jobId)).state, 'PUBLISHED');
+  assert.deepEqual(await gbpQueue.listPending(), []);
+  assert.equal(kv.values.has(gbpItemKey(SEED.slug)), false);
+  assert.equal(res.body.job.result.destinations.some((entry) => entry.name === 'gbp'), false);
 });
 
-test('callback refuses to settle a published result until GBP intent is durable', async () => {
+test('callback settles PUBLISHED even when no GBP queue exists at all', async () => {
   const { store, record, dispatchId } = await publishedSetup();
   const callback = createRunnerCallbackHandler({
-    store, gbpQueue: null, runnerSecret: RUNNER_SECRET, now: () => NOW,
+    store, runnerSecret: RUNNER_SECRET, now: () => NOW,
   });
   const res = createResponse();
   await callback(signedCallback({
@@ -348,10 +330,23 @@ test('callback refuses to settle a published result until GBP intent is durable'
     result: publishedResult(),
   }), res);
 
-  assert.equal(res.statusCode, 503);
+  assert.equal(res.statusCode, 200);
   const persisted = await store.loadRecord(record.jobId);
-  assert.equal(persisted.result, null);
-  assert.equal(persisted.lease.dispatchId, dispatchId);
+  assert.equal(persisted.state, 'PUBLISHED');
+  assert.equal(persisted.result.liveUrl, 'https://www.themountingman.com/installations/65-inch-samsung-edina');
+});
+
+test('a verified publish still builds a well-formed GBP item for legacy drain', async () => {
+  const { record } = await publishedSetup();
+  const item = gbpPayloadFromRecord({ ...record, result: publishedResult() });
+  assert.equal(item.slug, '65-inch-samsung-edina');
+  assert.equal(item.cta_url, item.live_url);
+  assert.equal(item.image_sha256, IMAGE.sha256);
+  assert.deepEqual(item.required_surfaces, ['update', 'photos']);
+  assert.match(item.caption, /Edina stone mount 65"/);
+  assert.doesNotMatch(item.caption, /4821/);
+  assert.doesNotMatch(JSON.stringify(item), /reddit/i);
+  assert.doesNotMatch(JSON.stringify(item), /business\.google\.com/i);
 });
 
 test('enqueue atomically creates the item and pending-index membership', async () => {
@@ -401,9 +396,7 @@ test('a second publish of the same slug does not queue GBP again', async () => {
   }), afterCallback);
   assert.equal(afterCallback.statusCode, 200);
   assert.equal((await gbpQueue.listPending()).length, 1);
-  const gbpDest = afterCallback.body.job.result.destinations.find((entry) => entry.name === 'gbp');
-  assert.equal(gbpDest.detail, 'already_queued');
-  assert.equal((await store.loadRecord(record.jobId)).result.destinations.filter((e) => e.name === 'gbp').length, 1);
+  assert.equal((await store.loadRecord(record.jobId)).result.destinations.some((e) => e.name === 'gbp'), false);
 });
 
 test('a publish without a live installation URL does not enqueue GBP', async () => {

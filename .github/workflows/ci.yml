@@ -68,3 +68,13 @@ jobs:
           with open('m1/gbp-worker/com.themountingman.gbp-worker.plist', 'rb') as handle:
               plistlib.load(handle)
           PY
+
+      - name: Verify M1 install-post publish worker
+        run: |
+          node --check m1/install-post-worker/install-post-worker.mjs
+          node --check scripts/install-m1-install-post-worker.mjs
+          python - <<'PY'
+          import plistlib
+          with open('m1/install-post-worker/com.themountingman.install-post-worker.plist', 'rb') as handle:
+              plistlib.load(handle)
+          PY

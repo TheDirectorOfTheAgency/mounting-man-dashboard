@@ -181,7 +181,7 @@ Edit `components/Dashboard.js` to customize the UI. Changes hot-reload automatic
 
 ## Install-post happy path (THE-264)
 
-Frozen route: Square + photo → confidence gate → existing GitHub Actions `publish-install-post.yml` → site + socials. GBP is **user-paste only** (never machine-post GBP or Reddit).
+Route: Square + photo → confidence gate → `READY_FOR_M1` → M1 publish worker → site + socials (see **M1 publish worker** below; the GitHub Actions `publish-install-post.yml` path is off). GBP is **user-paste only** (never machine-post GBP or Reddit).
 
 Set these in **Vercel project settings** (Production). Do not commit values to git.
 
@@ -228,3 +228,38 @@ Cloud Actions dispatch is **off**: `INSTALL_POST_DISPATCH_TOKEN` stays empty and
 | --- | --- | --- |
 | `INSTALL_POST_READY_NOTIFY_URL` | Optional | Override for the ready ping. Falls back to `INSTALL_POST_GBP_NOTIFY_URL`. Fixed-template body (`kind: install_post_ready_for_m1`, job id, size/brand/city) — no LLM, no Woodward wake, no street or customer data. |
 | `INSTALL_POST_READY_NOTIFY_KEY` | With the URL | Bearer key. Falls back to `INSTALL_POST_GBP_NOTIFY_KEY`. |
+
+## M1 publish worker + GBP decouple (THE-273)
+
+**PUBLISHED no longer depends on the machine GBP queue.** `/api/install-post/runner/callback` saves a verified website result on its own and never writes `install-post:gbp:*`. After the save it sends the GBP paste pack (caption, then Book URL) to `INSTALL_POST_GBP_NOTIFY_URL`, fail-open. The M1 Playwright GBP worker gets no new work from publishes; do not reload it.
+
+**How M1 picks jobs:**
+
+1. Dashboard parks a gate-passed, photo-bound job as `READY_FOR_M1` (unchanged) and adds it to the `install-post:m1-ready-index` set.
+2. launchd `com.themountingman.install-post-worker` runs `m1/install-post-worker/install-post-worker.mjs` every 120s. It preflights (secret file present, wrapper executable) and never claims when misconfigured.
+3. `POST /api/install-post/m1/claim` `{ workerId }` (runner HMAC signature) takes the publish lease on the oldest `READY_FOR_M1` approval, moves it to `PUBLISHING`, and returns the envelope: safe seed, photo `hostedUrl` + `sha256`, `dispatchId`, `artMode: "never"`. Idle poll = one `SMEMBERS`.
+4. The worker downloads the photo, checks the digest (mismatch → `BLOCKED`), writes `seed.json` + `photo.webp` (0600) and runs:
+   `/Users/thedirector/jewel-way-run/bin/run_fast_install_post.sh --seed-json <seed.json> --image <photo.webp> --art-mode never`
+5. It takes the last `https://www.themountingman.com/installations/<slug>` URL the wrapper printed and reads it back. HTTP 200 → `PUBLISHED` (whatever the exit code, so a job never posts twice). Timeout, or a URL that doesn't read back → `INDETERMINATE`. Non-zero exit with no URL → `RETRYABLE_FAILURE`; a new Publish tap re-queues it as `READY_FOR_M1`.
+6. It reports to `/api/install-post/runner/callback` with the `dispatchId`. An undelivered callback is parked under the worker state dir and resent next pass (no second publish).
+
+A worker that dies mid-run leaves the job `PUBLISHING`; the card ages it to `INDETERMINATE` after 15 minutes (the worker kills the wrapper at 12). Reconcile still needs a human while cloud dispatch is off.
+
+Not changed: `INSTALL_POST_DISPATCH_*` stays empty and `publish-install-post.yml` stays disabled. `fast_install_post.py` is not forked. Reddit stays dead. The Jev/TypeSafe install-post gate stays off. Woodward naming (`WOODWARD_*`) is untouched.
+
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `INSTALL_POST_RUNNER_SECRET` | Vercel (Production) **and** M1 secret file | HMAC for `/api/install-post/m1/claim` and `/api/install-post/runner/callback`. Use one long random value in both places. If it was ever stored as a GitHub Actions secret, rotate it. |
+| `INSTALL_POST_RUNNER_SECRET_FILE` | M1 plist | Path to the 0600 file holding the secret. Default `~/.config/themountingman/install-post-worker/runner-secret`. |
+| `INSTALL_POST_API_BASE` | M1 plist | Dashboard origin. Default `https://mounting-man-dashboard.vercel.app`. |
+| `INSTALL_POST_M1_WORKER_ID` | M1 plist | Lease owner label. Default `m1-publish-01`. |
+| `INSTALL_POST_M1_PUBLISH_WRAPPER` | M1 plist | Canonical wrapper. Default `/Users/thedirector/jewel-way-run/bin/run_fast_install_post.sh`. |
+| `INSTALL_POST_M1_STATE_DIR` | M1 plist | Logs, lock, temp job files, parked callbacks. Default `~/.local/state/themountingman/install-post-worker`. |
+| `INSTALL_POST_M1_PUBLISH_TIMEOUT_MS` | M1 plist (optional) | Wrapper kill timeout. Default 720000 (12 min). |
+
+**Deploy order:**
+
+1. Set `INSTALL_POST_RUNNER_SECRET` in Vercel Production, then deploy the dashboard.
+2. On the M1, from a checkout of this repo: `node scripts/install-m1-install-post-worker.mjs --env-file /secure/path/.env` (the file only needs `INSTALL_POST_RUNNER_SECRET`; add `--wrapper PATH` if the wrapper moved). This writes the 0600 secret file, copies the worker, fills the plist, and bootstraps launchd.
+3. Check `~/.local/state/themountingman/install-post-worker/worker.log`. You should see `worker_status=idle` or `worker_status=reported ... state=PUBLISHED`. The first successful pass asks the dashboard to rescan, so jobs parked before this deploy are picked up.
+4. Remove with `node scripts/install-m1-install-post-worker.mjs --uninstall`.

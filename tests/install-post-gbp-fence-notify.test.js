@@ -167,7 +167,6 @@ test('runner callback success delivers GBP fence without a Woodward wake', async
   const callback = createRunnerCallbackHandler({
     store,
     runnerSecret: RUNNER_SECRET,
-    gbpQueue: { async enqueue(item) { return { queued: true, reason: 'queued', item }; } },
     gbpFenceNotify: async ({ record: published }) => deliverGbpFenceToOwner({
       record: published,
       url: NOTIFY_URL,

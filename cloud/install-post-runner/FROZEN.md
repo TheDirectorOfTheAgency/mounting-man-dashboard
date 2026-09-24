@@ -9,6 +9,9 @@ As of 2026-09-24 (THE-273), this cloud runner is **frozen and non-canonical**.
   and gate-passed jobs park as `READY_FOR_M1`. Re-enabling needs Mr. Wayne's
   explicit yes.
 - GBP stays paste-pack only. No machine GBP posting, no Reddit.
+- `READY_FOR_M1` jobs are picked up by `m1/install-post-worker`, which wraps
+  jewel-way-run's `run_fast_install_post.sh` and reports through the same
+  signed callback this runner used.
 
 What still matters here:
 
