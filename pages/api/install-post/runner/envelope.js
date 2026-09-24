@@ -1,11 +1,13 @@
 // pages/api/install-post/runner/envelope.js
 //
-// Signed internal endpoint the cloud runner calls to fetch exactly what was
-// approved. It returns the safe seed and the bound photo reference — never a
-// Square identifier, a customer detail, or a credential.
+// Signed internal endpoint a publisher (the M1 worker, or the frozen cloud
+// runner) calls to re-fetch exactly what was approved. It returns the safe
+// seed and the bound photo reference — never a Square identifier, a customer
+// detail, or a credential.
 
 import { verifyRunnerRequest } from '../../../../lib/install-post-dispatch.mjs';
-import { collectPostedDestinations, INSTALL_POST_STATES } from '../../../../lib/install-post-queue.mjs';
+import { buildRunnerEnvelope } from '../../../../lib/install-post-m1-queue.mjs';
+import { INSTALL_POST_STATES } from '../../../../lib/install-post-queue.mjs';
 import { getInstallPostStore } from '../../../../lib/install-post-store.mjs';
 
 export const ENVELOPE_PATH = '/api/install-post/runner/envelope';
@@ -51,27 +53,7 @@ export function createRunnerEnvelopeHandler({ store, runnerSecret, now = Date.no
       return res.status(409).json({ error: 'photo_required' });
     }
 
-    const postedDestinations = collectPostedDestinations(
-      record.postedDestinations,
-      record.result?.destinations,
-    );
-
-    return res.status(200).json({
-      jobId: record.jobId,
-      revision: record.revision,
-      approvedAt: record.approval.approvedAt,
-      seed: record.seed,
-      image: {
-        sha256: record.image.sha256,
-        bytes: record.image.bytes,
-        contentType: record.image.contentType,
-        hostedUrl: record.image.hostedUrl,
-        assetId: record.image.assetId || '',
-      },
-      postedDestinations,
-      // The cloud path never generates TV art; it publishes the real photo.
-      artMode: 'never',
-    });
+    return res.status(200).json(buildRunnerEnvelope(record));
   };
 }
 
