@@ -92,11 +92,6 @@ async function setup({ withPhoto = true, dispatcherOptions } = {}) {
   }
 
   const dispatcher = createFakeDispatcher(dispatcherOptions);
-  const gbpQueue = {
-    async enqueue(item) {
-      return { queued: true, reason: 'queued', item };
-    },
-  };
   return {
     store,
     record,
@@ -110,7 +105,7 @@ async function setup({ withPhoto = true, dispatcherOptions } = {}) {
     }),
     envelope: createRunnerEnvelopeHandler({ store, runnerSecret: RUNNER_SECRET, now: () => NOW }),
     callback: createRunnerCallbackHandler({
-      store, runnerSecret: RUNNER_SECRET, gbpQueue, now: () => NOW,
+      store, runnerSecret: RUNNER_SECRET, now: () => NOW,
     }),
   };
 }
