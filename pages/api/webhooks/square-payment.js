@@ -5,7 +5,7 @@
 //   1. Square POSTs payment webhook here (public Vercel URL)
 //   2. Extract payment data + customer_id
 //   3. Fetch customer details from Square API (phone, name)
-//   4. After 24h install-post dedup, wake Kronkite with a sanitized payload
+//   4. After 24h install-post dedup, wake Woodward with a sanitized payload
 //      and stage the phone-first Upstash queue (no Discord install-thread)
 //   5. If customer has phone → send review SMS via Twilio
 //   6. Log SMS/errors to Discord #operations (not the Installation Posts thread)
@@ -445,7 +445,7 @@ export function createSquarePaymentHandler({
       });
     }
 
-    // ---- Stage install-post desk (Kronkite wake + phone queue; no Discord) ----
+    // ---- Stage install-post desk (Woodward wake + phone queue; no Discord) ----
     try {
       await installPostNotifier({
         orderId,

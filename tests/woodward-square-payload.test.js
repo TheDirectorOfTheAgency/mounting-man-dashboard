@@ -7,7 +7,7 @@ import {
   parseTvSize,
 } from '../lib/install-post-seeds.mjs';
 import {
-  buildKronkiteSquarePayload,
+  buildWoodwardSquarePayload,
   notifyQInstallPost,
 } from '../lib/notify-install-post.mjs';
 
@@ -52,7 +52,7 @@ test('parseTvSize on a joined two-TV blob still returns only the first size', ()
   assert.equal(parseTvSize('65" TV Installation | 60" TV Installation'), '65"');
 });
 
-test('buildKronkiteSquarePayload keeps both Plymouth TV lines and a count', () => {
+test('buildWoodwardSquarePayload keeps both Plymouth TV lines and a count', () => {
   const facts = plymouthFacts();
   const seeds = buildInstallPostSeeds({
     lineItems: PLYMOUTH_LINE_ITEMS,
@@ -70,7 +70,7 @@ test('buildKronkiteSquarePayload keeps both Plymouth TV lines and a count', () =
   assert.equal(seeds[0]['source-order-id'], 'order-plymouth');
   assert.equal(seeds[0]['source-payment-id'], 'payment-plymouth');
 
-  const payload = buildKronkiteSquarePayload({
+  const payload = buildWoodwardSquarePayload({
     facts,
     seeds,
     lineItems: PLYMOUTH_LINE_ITEMS,
@@ -104,7 +104,7 @@ test('buildKronkiteSquarePayload keeps both Plymouth TV lines and a count', () =
   }
 });
 
-test('buildKronkiteSquarePayload includes Square service lines beside both TVs', () => {
+test('buildWoodwardSquarePayload includes Square service lines beside both TVs', () => {
   const lineItems = [
     ...PLYMOUTH_LINE_ITEMS,
     {
@@ -120,7 +120,7 @@ test('buildKronkiteSquarePayload includes Square service lines beside both TVs',
     },
   ];
   const facts = plymouthFacts(lineItems);
-  const payload = buildKronkiteSquarePayload({
+  const payload = buildWoodwardSquarePayload({
     facts,
     seeds: buildInstallPostSeeds({
       lineItems,
@@ -159,8 +159,8 @@ test('notify path sends one wake that still contains both TV lines', async () =>
       exists: async () => false,
       set: async () => true,
       sadd: async () => true,
-      kronkiteUrl: 'https://kronkite.example/square-wake',
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: 'https://woodward.example/square-wake',
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() {
           return { data: { order: { id: 'order-plymouth', line_items: PLYMOUTH_LINE_ITEMS } } };
@@ -177,7 +177,7 @@ test('notify path sends one wake that still contains both TV lines', async () =>
   assert.equal(result.seeds.length, 1);
   assert.equal(result.seeds[0]['seed-count'], 1);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, 'https://kronkite.example/square-wake');
+  assert.equal(posts[0].url, 'https://woodward.example/square-wake');
 
   const payload = posts[0].body;
   assert.equal(payload.tvCount, 2);
@@ -188,7 +188,7 @@ test('notify path sends one wake that still contains both TV lines', async () =>
   assert.equal(payload.tvSize, '65"');
   assert.equal(payload.city, 'Plymouth');
   assert.equal(payload.streetName, '45th Avenue North');
-  assert.equal(payload, result.kronkitePayload);
+  assert.equal(payload, result.woodwardPayload);
 
   const serialized = JSON.stringify(payload);
   for (const forbidden of [
@@ -197,7 +197,7 @@ test('notify path sends one wake that still contains both TV lines', async () =>
     '55446',
     'plymouth@example.com',
     '+17635550199',
-    'kronkite-sender-key',
+    'woodward-sender-key',
   ]) {
     assert.ok(!serialized.includes(forbidden), `wake leaked ${forbidden}`);
   }
@@ -231,8 +231,8 @@ test('invoice notify fills paymentId from order tenders when the webhook omitted
         return true;
       },
       sadd: async () => true,
-      kronkiteUrl: 'https://kronkite.example/square-wake',
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: 'https://woodward.example/square-wake',
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() {
           return {
@@ -260,8 +260,8 @@ test('invoice notify fills paymentId from order tenders when the webhook omitted
   assert.equal(result.seeds[0]['source-invoice-id'], 'invoice-bloomington');
   assert.equal(result.seeds[0].city, 'Bloomington');
   assert.equal(result.seeds[0]['street-name'], 'International Drive');
-  assert.equal(result.kronkitePayload.paymentId, 'pay_from_tender');
-  assert.equal(result.kronkitePayload.orderId, 'order-invoice');
+  assert.equal(result.woodwardPayload.paymentId, 'pay_from_tender');
+  assert.equal(result.woodwardPayload.orderId, 'order-invoice');
 
   const pending = pendingWrites.find((entry) => String(entry.key).includes('install-post:pending:'));
   assert.ok(pending, 'pending record was written');
@@ -299,8 +299,8 @@ test('invoice notify parses Gable Ln from primary_recipient when customer addres
       exists: async () => false,
       set: async () => true,
       sadd: async () => true,
-      kronkiteUrl: 'https://kronkite.example/square-wake',
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: 'https://woodward.example/square-wake',
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() {
           return {
@@ -322,8 +322,8 @@ test('invoice notify parses Gable Ln from primary_recipient when customer addres
   assert.equal(result.seeds[0].city, 'Woodbury');
   assert.equal(result.seeds[0]['street-name'], 'Gable Ln');
   assert.doesNotMatch(String(result.seeds[0]['street-name']), /4225|55129|USA|Woodbury/);
-  assert.equal(result.kronkitePayload.city, 'Woodbury');
-  assert.equal(result.kronkitePayload.streetName, 'Gable Ln');
+  assert.equal(result.woodwardPayload.city, 'Woodbury');
+  assert.equal(result.woodwardPayload.streetName, 'Gable Ln');
 });
 
 test('appointment notify keeps structured locality city and street-only line1', async () => {
@@ -353,8 +353,8 @@ test('appointment notify keeps structured locality city and street-only line1', 
       exists: async () => false,
       set: async () => true,
       sadd: async () => true,
-      kronkiteUrl: 'https://kronkite.example/square-wake',
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: 'https://woodward.example/square-wake',
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() {
           return {
@@ -375,6 +375,6 @@ test('appointment notify keeps structured locality city and street-only line1', 
 
   assert.equal(result.seeds[0].city, 'Woodbury');
   assert.equal(result.seeds[0]['street-name'], 'Gable Ln');
-  assert.equal(result.kronkitePayload.city, 'Woodbury');
-  assert.equal(result.kronkitePayload.streetName, 'Gable Ln');
+  assert.equal(result.woodwardPayload.city, 'Woodbury');
+  assert.equal(result.woodwardPayload.streetName, 'Gable Ln');
 });

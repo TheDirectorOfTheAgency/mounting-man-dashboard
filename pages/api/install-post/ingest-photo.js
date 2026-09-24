@@ -1,7 +1,7 @@
 // pages/api/install-post/ingest-photo.js
 //
 // Secret-authenticated desk ingest. Square has already staged the job
-// (AWAITING_PHOTO). Grok Bot / Woodward POSTs the photo bytes here — no
+// (AWAITING_PHOTO). Woodward POSTs the photo bytes here — no
 // operator session cookie, no publish_one.py, no Q capability mint.
 //
 //   POST /api/install-post/ingest-photo

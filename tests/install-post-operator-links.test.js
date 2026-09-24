@@ -7,7 +7,7 @@ import { notifyQInstallPost } from '../pages/api/webhooks/square-payment.js';
 
 const SECRET = 'test-capability-secret';
 const BASE_URL = 'https://mounting-man-dashboard.vercel.app';
-const KRONKITE_URL = 'https://kronkite.example/square-wake';
+const WOODWARD_URL = 'https://woodward.example/square-wake';
 
 function createFakeKv() {
   const values = new Map();
@@ -107,7 +107,7 @@ test('buildOperatorLinks returns nothing when it is not configured', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phone-first handoff + Kronkite wake (no Discord install-thread)
+// Phone-first handoff + Woodward wake (no Discord install-thread)
 // ---------------------------------------------------------------------------
 
 async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
@@ -133,8 +133,8 @@ async function runNotifier({ store, lineItems = TWO_TV_LINE_ITEMS } = {}) {
       installPostStore: store,
       capabilitySecret: SECRET,
       queueBaseUrl: BASE_URL,
-      kronkiteUrl: KRONKITE_URL,
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: WOODWARD_URL,
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() { return { data: { order: { id: 'order-1', line_items: lineItems } } }; },
         async post(url, body, config) { posts.push({ url, body, headers: config?.headers || {} }); return { data: {} }; },
@@ -152,7 +152,7 @@ test('the notifier stages one cloud job per Square visit without posting Discord
   assert.equal(jobIds.length, 1);
   assert.equal(result.operatorLinks.length, 1);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].url, WOODWARD_URL);
   assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
 
   const urls = result.operatorLinks.map((link) => link.url);
@@ -165,13 +165,13 @@ test('the notifier stages one cloud job per Square visit without posting Discord
   assert.deepEqual(linkedJobIds.slice().sort(), jobIds.slice().sort());
 });
 
-test('Kronkite payload and staged seeds carry safe labels and no customer identity', async () => {
+test('Woodward payload and staged seeds carry safe labels and no customer identity', async () => {
   const store = createInstallPostStore(createFakeKv());
   const { posts, result } = await runNotifier({ store });
 
   const payload = JSON.stringify(posts[0].body);
-  for (const forbidden of ['Test Customer', '4821', '55424', SECRET, 'kronkite-sender-key']) {
-    assert.ok(!payload.includes(forbidden), `Kronkite payload leaked ${forbidden}`);
+  for (const forbidden of ['Test Customer', '4821', '55424', SECRET, 'woodward-sender-key']) {
+    assert.ok(!payload.includes(forbidden), `Woodward payload leaked ${forbidden}`);
   }
   assert.equal(posts[0].body.streetName, 'Elm Street');
   assert.equal(posts[0].body.city, 'Edina');
@@ -203,11 +203,11 @@ test('Kronkite payload and staged seeds carry safe labels and no customer identi
   assert.equal(record.paymentId, 'payment-1');
 });
 
-test('the notifier still wakes Kronkite, without links, when the cloud queue is unconfigured', async () => {
+test('the notifier still wakes Woodward, without links, when the cloud queue is unconfigured', async () => {
   const { posts, result } = await runNotifier({ store: null });
   assert.deepEqual(result.operatorLinks, []);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].url, WOODWARD_URL);
   assert.equal(posts[0].body.paymentId, 'payment-1');
   assert.equal(posts.some(({ url }) => String(url).includes('discord.com')), false);
 });

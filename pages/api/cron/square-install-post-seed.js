@@ -79,7 +79,7 @@ export default async function handler(req, res) {
           key: result?.key || '',
           paymentId: payment.id,
           orderId: payment.order_id || '',
-          kronkite: result?.kronkite || null,
+          woodward: result?.woodward || null,
         });
       } catch (err) {
         results.push({

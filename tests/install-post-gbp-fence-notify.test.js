@@ -48,7 +48,7 @@ test('GBP fence bodies are caption then Book URL with no hashtags or caption URL
   assert.doesNotMatch(JSON.stringify(bodies), /reddit/i);
 });
 
-test('GBP fence notify headers mirror Kronkite Bearer + sender secret', () => {
+test('GBP fence notify headers mirror Woodward Bearer + sender secret', () => {
   const headers = buildGbpFenceNotifyHeaders(`  ${NOTIFY_KEY}  `);
   assert.equal(hasGbpFenceBearerAuthorization(headers), true);
   assert.equal(headers.Authorization, `Bearer ${NOTIFY_KEY}`);
@@ -215,5 +215,5 @@ test('runner callback success delivers GBP fence without a Woodward wake', async
   assert.equal(fencePosts.length, 2);
   assert.equal(fencePosts[0].body.kind, GBP_FENCE_CAPTION_KIND);
   assert.equal(fencePosts[1].body.body, LIVE_URL);
-  assert.doesNotMatch(JSON.stringify(fencePosts), /kronkite|woodward|reddit/i);
+  assert.doesNotMatch(JSON.stringify(fencePosts), /woodward|reddit/i);
 });

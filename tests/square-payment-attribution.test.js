@@ -5,7 +5,7 @@ import {
   createSquarePaymentHandler,
   notifyQInstallPost,
 } from '../pages/api/webhooks/square-payment.js';
-import { forwardKronkiteSquareWake, resetKronkiteMissingUrlLog } from '../lib/notify-install-post.mjs';
+import { forwardWoodwardSquareWake, resetWoodwardMissingUrlLog } from '../lib/notify-install-post.mjs';
 import { createResponse } from './webhook-test-helpers.js';
 
 function paymentRequest(eventType = 'payment.updated', payment = {}) {
@@ -281,7 +281,7 @@ test('paired invoice and payment events record exactly one canonical payment att
 
 test('install-post notifier failure cannot suppress review SMS', async () => {
   const deps = dependencies({
-    installPostNotifier: async () => { throw new Error('Kronkite exploded'); },
+    installPostNotifier: async () => { throw new Error('Woodward exploded'); },
   });
   const res = createResponse();
   await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
@@ -422,7 +422,7 @@ test('non-completed payments and unrelated events remain ignored before side eff
   }
 });
 
-test('install-post notifier stages pending work and forwards once to Kronkite, not Discord', async () => {
+test('install-post notifier stages pending work and forwards once to Woodward, not Discord', async () => {
   const writes = [];
   const setMembers = [];
   const posts = [];
@@ -457,8 +457,8 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
     },
     rpush: async () => true,
     sadd: async (...args) => { setMembers.push(args); return true; },
-    kronkiteUrl: 'https://kronkite.example/square-wake',
-    kronkiteKey: 'kronkite-sender-key',
+    woodwardUrl: 'https://woodward.example/square-wake',
+    woodwardKey: 'woodward-sender-key',
     httpClient: {
       async get(url) {
         assert.match(url, /\/orders\/order-1$/);
@@ -492,9 +492,9 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
   assert.equal(writes.some(([key]) => key === 'install-post:pending:order-1'), true);
   assert.deepEqual(setMembers, [['install-post:pending-index', 'install-post:pending:order-1']]);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, 'https://kronkite.example/square-wake');
-  assert.equal(posts[0].headers.Authorization, 'Bearer kronkite-sender-key');
-  assert.equal(posts[0].headers['x-webhook-secret'], 'kronkite-sender-key');
+  assert.equal(posts[0].url, 'https://woodward.example/square-wake');
+  assert.equal(posts[0].headers.Authorization, 'Bearer woodward-sender-key');
+  assert.equal(posts[0].headers['x-webhook-secret'], 'woodward-sender-key');
   assert.equal(posts.some(({ url }) => String(url).includes('1485380804707090643')), false);
   assert.equal(posts.some(({ url }) => String(url).includes('discord.com')), false);
 
@@ -522,13 +522,13 @@ test('install-post notifier stages pending work and forwards once to Kronkite, n
     doNotRun: ['publish_one.py', 'go.py'],
   });
   const serialized = JSON.stringify(payload);
-  for (const forbidden of ['Test Customer', '123 Main', '55401', 'customer@example.com', '+16125550123', 'kronkite-sender-key']) {
+  for (const forbidden of ['Test Customer', '123 Main', '55401', 'customer@example.com', '+16125550123', 'woodward-sender-key']) {
     assert.ok(!serialized.includes(forbidden), `sanitized payload leaked ${forbidden}`);
   }
 });
 
-test('unset Kronkite URL skips the wake once and still stages the phone queue', async () => {
-  resetKronkiteMissingUrlLog();
+test('unset Woodward URL skips the wake once and still stages the phone queue', async () => {
+  resetWoodwardMissingUrlLog();
   const logs = [];
   const writes = [];
   const result = await notifyQInstallPost(
@@ -548,8 +548,8 @@ test('unset Kronkite URL skips the wake once and still stages the phone queue', 
       exists: async () => false,
       set: async (...args) => { writes.push(args); return true; },
       sadd: async () => true,
-      kronkiteUrl: '',
-      kronkiteKey: 'unused-key',
+      woodwardUrl: '',
+      woodwardKey: 'unused-key',
       logger: {
         info: (...args) => logs.push(['info', ...args]),
         warn: (...args) => logs.push(['warn', ...args]),
@@ -557,17 +557,17 @@ test('unset Kronkite URL skips the wake once and still stages the phone queue', 
       },
       httpClient: {
         async get() { return { data: { order: { id: 'order-skip', line_items: [] } } }; },
-        async post() { throw new Error('Kronkite must not be called when URL is unset'); },
+        async post() { throw new Error('Woodward must not be called when URL is unset'); },
       },
     },
   );
 
-  assert.equal(result.kronkite.skipped, 'missing_url');
+  assert.equal(result.woodward.skipped, 'missing_url');
   assert.equal(writes.some(([key]) => key === 'install-post:pending:order-skip'), true);
-  assert.equal(logs.filter(([level, msg]) => level === 'warn' && String(msg).includes('KRONKITE_SQUARE_WEBHOOK_URL unset')).length, 1);
+  assert.equal(logs.filter(([level, msg]) => level === 'warn' && String(msg).includes('WOODWARD_SQUARE_WEBHOOK_URL unset')).length, 1);
 });
 
-test('Kronkite forward failure does not throw and maps EXTERNAL/CHECK', async () => {
+test('Woodward forward failure does not throw and maps EXTERNAL/CHECK', async () => {
   const result = await notifyQInstallPost(
     {
       orderId: 'order-ext',
@@ -585,27 +585,27 @@ test('Kronkite forward failure does not throw and maps EXTERNAL/CHECK', async ()
       exists: async () => false,
       set: async () => true,
       sadd: async () => true,
-      kronkiteUrl: 'https://kronkite.example/square-wake',
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: 'https://woodward.example/square-wake',
+      woodwardKey: 'woodward-sender-key',
       httpClient: {
         async get() { return { data: { order: { id: 'order-ext', line_items: [] } } }; },
-        async post() { throw new Error('kronkite down'); },
+        async post() { throw new Error('woodward down'); },
       },
     },
   );
 
   assert.equal(result.skipped, null);
-  assert.equal(result.kronkite.forwarded, false);
-  assert.equal(result.kronkitePayload.paymentSource, 'EXTERNAL/CHECK');
-  assert.equal(result.kronkitePayload.city, 'Houston');
+  assert.equal(result.woodward.forwarded, false);
+  assert.equal(result.woodwardPayload.paymentSource, 'EXTERNAL/CHECK');
+  assert.equal(result.woodwardPayload.city, 'Houston');
 });
 
-test('forwardKronkiteSquareWake sends Authorization Bearer when the key is set', async () => {
+test('forwardWoodwardSquareWake sends Authorization Bearer when the key is set', async () => {
   const posts = [];
-  const result = await forwardKronkiteSquareWake({
+  const result = await forwardWoodwardSquareWake({
     payload: { paymentId: 'payment-auth' },
-    url: 'https://kronkite.example/square-wake',
-    key: 'kronkite-sender-key',
+    url: 'https://woodward.example/square-wake',
+    key: 'woodward-sender-key',
     httpClient: {
       async post(url, body, config) {
         posts.push({ url, body, headers: config?.headers || {} });
@@ -616,6 +616,6 @@ test('forwardKronkiteSquareWake sends Authorization Bearer when the key is set',
 
   assert.equal(result.forwarded, true);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].headers.Authorization, 'Bearer kronkite-sender-key');
-  assert.equal(posts[0].headers['x-webhook-secret'], 'kronkite-sender-key');
+  assert.equal(posts[0].headers.Authorization, 'Bearer woodward-sender-key');
+  assert.equal(posts[0].headers['x-webhook-secret'], 'woodward-sender-key');
 });
