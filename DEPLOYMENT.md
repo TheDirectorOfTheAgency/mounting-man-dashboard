@@ -191,7 +191,7 @@ Set these in **Vercel project settings** (Production). Do not commit values to g
 | `INSTALL_POST_GBP_NOTIFY_URL` | Required for auto GBP fence | Dedicated operator webhook. After the install page is HTTP 200, POSTs **two fence-only bodies** (caption, then Book URL = live `/installations/...` page) for Mr. Wayne to paste. Independent of Woodward. |
 | `INSTALL_POST_GBP_NOTIFY_KEY` | Required with the URL | Bearer key. Same header shape as Woodward: `Authorization: Bearer <key>` plus `x-webhook-secret`. |
 
-HOLD wakes Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `google_blob_street`, `seed_count`, `jev_hold`). No customer PII.
+HOLD wakes Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `unknown_city`, `google_blob_street`, `missing_tv_size`, `seed_count`, `jev_hold`). `unknown_city` means the city is not in `lib/install-post-locations.mjs` (mirrors `cloud/install-post-runner/references/location-ids.md` + Houston item ids in `location-slugs.json`); `missing_tv_size` covers a blank size or the bare word "TV". No customer PII.
 
 ## Install-post photo ask (THE-276)
 

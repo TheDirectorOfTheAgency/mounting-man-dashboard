@@ -41,6 +41,7 @@ test('blank city HOLDs', () => {
     city: '',
     streetName: 'Gable Ln',
     seedCount: 1,
+    tvSize: '65"',
   });
   assert.equal(missing.pass, false);
   assert.deepEqual(missing.reasons, [HOLD_REASONS.BLANK_CITY]);
@@ -48,6 +49,7 @@ test('blank city HOLDs', () => {
   const absent = evaluateInstallPostConfidence({
     streetName: 'Gable Ln',
     seedCount: 1,
+    tvSize: '65"',
   });
   assert.equal(absent.pass, false);
   assert.ok(absent.reasons.includes(HOLD_REASONS.BLANK_CITY));
@@ -59,9 +61,43 @@ test('Twin Cities and metro placeholder cities HOLD', () => {
       city,
       streetName: 'Gable Ln',
       seedCount: 1,
+      tvSize: '65"',
     });
     assert.equal(result.pass, false, city);
     assert.deepEqual(result.reasons, [HOLD_REASONS.METRO_PLACEHOLDER_CITY], city);
+  }
+});
+
+test('a city outside the location tables HOLDs as unknown_city', () => {
+  for (const city of ['Austin', 'Eau Claire', 'Edinaa', 'Minneapolis North']) {
+    const result = evaluateInstallPostConfidence({ ...WOODBURY_GABLE, city });
+    assert.equal(result.pass, false, city);
+    assert.deepEqual(result.reasons, [HOLD_REASONS.UNKNOWN_CITY], city);
+  }
+});
+
+test('known Minnesota and Houston-area cities PASS the location check', () => {
+  for (const [city, state] of [['Edina', 'MN'], ['Saint Paul', 'MN'], ['St. Michael', ''], ['Katy', 'TX']]) {
+    const result = evaluateInstallPostConfidence({ ...WOODBURY_GABLE, city, state });
+    assert.equal(result.pass, true, city);
+  }
+});
+
+test('a known city name with a disagreeing state HOLDs as unknown_city', () => {
+  const texasEdina = evaluateInstallPostConfidence({ ...WOODBURY_GABLE, city: 'Edina', state: 'TX' });
+  assert.deepEqual(texasEdina.reasons, [HOLD_REASONS.UNKNOWN_CITY]);
+  const minnesotaKaty = evaluateInstallPostConfidence({ ...WOODBURY_GABLE, city: 'Katy', state: 'Minnesota' });
+  assert.deepEqual(minnesotaKaty.reasons, [HOLD_REASONS.UNKNOWN_CITY]);
+});
+
+test('missing or placeholder TV size HOLDs as missing_tv_size', () => {
+  for (const tvSize of [undefined, '', '  ', 'TV', 'tv', 'TVs', 'large']) {
+    const result = evaluateInstallPostConfidence({ ...WOODBURY_GABLE, tvSize });
+    assert.equal(result.pass, false, String(tvSize));
+    assert.deepEqual(result.reasons, [HOLD_REASONS.MISSING_TV_SIZE], String(tvSize));
+  }
+  for (const tvSize of ['65"', '65', '75 inch']) {
+    assert.equal(evaluateInstallPostConfidence({ ...WOODBURY_GABLE, tvSize }).pass, true, tvSize);
   }
 });
 
