@@ -191,7 +191,7 @@ Set these in **Vercel project settings** (Production). Do not commit values to g
 | `INSTALL_POST_GBP_NOTIFY_URL` | Required for auto GBP fence | Dedicated operator webhook. After the install page is HTTP 200, POSTs **two fence-only bodies** (caption, then Book URL = live `/installations/...` page) for Mr. Wayne to paste. Independent of Woodward. |
 | `INSTALL_POST_GBP_NOTIFY_KEY` | Required with the URL | Bearer key. Same header shape as Woodward: `Authorization: Bearer <key>` plus `x-webhook-secret`. |
 
-HOLD wakes Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `google_blob_street`, `seed_count`, `jev_hold`). No customer PII.
+HOLD wakes Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `unknown_city`, `google_blob_street`, `missing_tv_size`, `seed_count`, `jev_hold`). `unknown_city` means the city is not in `lib/install-post-locations.mjs` (mirrors `cloud/install-post-runner/references/location-ids.md` + Houston item ids in `location-slugs.json`); `missing_tv_size` covers a blank size or the bare word "TV". No customer PII.
 
 ## Install-post photo ask (THE-276)
 
@@ -215,3 +215,16 @@ Woodward is woken (`deskAction: request_photo`, no link in the payload) only as 
 | `INSTALL_POST_PHOTO_ASK_SMS_TO` | One channel required | Operator phone (E.164). Needs `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (optional `TWILIO_FROM_NUMBER`). |
 
 Status (no link) is returned as `photoAsk` in the seed-cron JSON: `delivered`, `skipped` (`no_channel`, `no_operator_links`, `photo_present`), and per-channel `forwarded`/`error`.
+
+## Install-post near-zero path (THE-273 / THE-274 / THE-275)
+
+Cloud Actions dispatch is **off**: `INSTALL_POST_DISPATCH_TOKEN` stays empty and `createConfiguredDispatcher()` returns `null`. The M1 publisher (`jewel-way-run`) is the canonical publisher; `cloud/install-post-runner` is frozen and non-canonical (see its `FROZEN.md`).
+
+- **PASS + photo, no dispatcher** → job becomes `READY_FOR_M1` (approved revision recorded, no lease, no timeout, not a failure) and one plain ping goes to Mr. Wayne. A repeat for the same revision is a no-op. Any correction or new photo reopens it to `READY`.
+- **Manual Publish tap** runs the same deterministic gate as the auto-run. A HOLD answers `422 { error: "needs_human", holdReasons }` and nothing is approved.
+- **Seeds** carry `location-id` and `metro-area` for known cities; editing city/state on the phone card refreshes both.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `INSTALL_POST_READY_NOTIFY_URL` | Optional | Override for the ready ping. Falls back to `INSTALL_POST_GBP_NOTIFY_URL`. Fixed-template body (`kind: install_post_ready_for_m1`, job id, size/brand/city) — no LLM, no Woodward wake, no street or customer data. |
+| `INSTALL_POST_READY_NOTIFY_KEY` | With the URL | Bearer key. Falls back to `INSTALL_POST_GBP_NOTIFY_KEY`. |

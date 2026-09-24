@@ -5,7 +5,7 @@
   "crons": [
     {
       "path": "/api/cron/square-install-post-seed",
-      "schedule": "* 14-23,0 * * *"
+      "schedule": "*/5 14-23,0 * * *"
     },
     {
       "path": "/api/cron/square-refresh",

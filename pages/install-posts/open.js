@@ -52,6 +52,21 @@ const EDITABLE_FIELDS = [
 
 const TERMINAL_STATES = new Set(['PUBLISHED']);
 
+const HOLD_MESSAGES = {
+  blank_city: 'city is blank',
+  metro_placeholder_city: 'city is a metro placeholder, not a real city',
+  unknown_city: 'city is not one of our service locations',
+  google_blob_street: 'street still has city/ZIP/USA stuck to it',
+  missing_tv_size: 'TV size is missing',
+  seed_count: 'job is split across more than one post',
+  jev_hold: 'confidence check held it',
+};
+
+function holdMessage(reasons = []) {
+  const parts = reasons.map((reason) => HOLD_MESSAGES[reason] || reason);
+  return `Needs a fix before publishing: ${parts.join('; ') || 'check the facts'}. Tap “Fix a detail”.`;
+}
+
 function factRows(seed) {
   return Object.keys(FACT_LABELS)
     .filter((key) => seed?.[key] !== undefined && seed[key] !== '' && seed[key] !== false)
@@ -239,6 +254,7 @@ export default function InstallPostCard() {
       if (localPreview) URL.revokeObjectURL(localPreview);
       setLocalPreview(URL.createObjectURL(photo.blob));
       setJob(commit.job);
+      if (commit.holdReasons?.length) setError(holdMessage(commit.holdReasons));
     } catch (err) {
       setError(err.message || 'Could not prepare that photo');
     } finally {
@@ -256,7 +272,13 @@ export default function InstallPostCard() {
       });
       const data = await response.json();
       if (!response.ok) {
+        if (data.error === 'needs_human') {
+          setError(holdMessage(data.holdReasons));
+          if (data.job) setJob(data.job);
+          return;
+        }
         setError({
+          dispatch_unconfigured: 'Cloud publishing is off — M1 has to finish this one.',
           duplicate_publish: 'Already publishing this exact photo and facts.',
           stale_revision: 'The facts or photo changed — check the card and tap Publish again.',
           reconcile_required: 'The last attempt never finished. Tap “Check and finish” to sort it out.',
@@ -278,10 +300,14 @@ export default function InstallPostCard() {
 
   const preview = localPreview || job?.image?.previewUrl || '';
   const unresolved = job?.state === 'INDETERMINATE';
+  const readyForM1 = job?.state === 'READY_FOR_M1';
   const inFlight = Boolean(job && installPostPollDelayMs(job.state));
   const canPublish = Boolean(
-    job && job.image && !busy && !inFlight && !unresolved && !TERMINAL_STATES.has(job.state),
+    job && job.image && !busy && !inFlight && !unresolved && !readyForM1 && !TERMINAL_STATES.has(job.state),
   );
+  let publishLabel = job?.image ? 'Publish' : 'Add a photo to publish';
+  if (inFlight) publishLabel = 'Publishing…';
+  if (readyForM1) publishLabel = 'Queued for M1 publish';
 
   return (
     <>
@@ -397,7 +423,7 @@ export default function InstallPostCard() {
                     onClick={() => publish()}
                     disabled={!canPublish}
                   >
-                    {inFlight ? 'Publishing…' : (job.image ? 'Publish' : 'Add a photo to publish')}
+                    {publishLabel}
                   </button>
                 )}
               </section>

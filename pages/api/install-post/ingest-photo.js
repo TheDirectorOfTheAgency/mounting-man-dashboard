@@ -14,8 +14,9 @@
 //
 // JPEG is converted to WebP on this server, then the same Webflow
 // signed-upload + commit path as /api/install-post/upload runs. After bind,
-// the existing Square+photo auto-publish claims the lease and dispatches
-// publish-install-post.yml at the tip of GitHub main.
+// the Square+photo auto-publish runs the confidence gate; a PASS dispatches
+// the cloud runner only if one is configured, otherwise the job becomes
+// READY_FOR_M1 with one plain ping.
 
 import { autoDispatchIfPhotoBound } from '../../../lib/install-post-auto-publish.mjs';
 import { createConfiguredDispatcher } from '../../../lib/install-post-dispatch.mjs';
@@ -77,6 +78,7 @@ export function createIngestPhotoHandler({
   deskWake,
   typesafeHttpClient,
   typesafeApiKey,
+  readyNotifier,
 } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
@@ -196,6 +198,7 @@ export function createIngestPhotoHandler({
       now,
       typesafeHttpClient,
       typesafeApiKey,
+      readyNotifier,
     });
     if (dispatched.ok) {
       return res.status(200).json({ ok: true, job: publicJobView(dispatched.record) });
