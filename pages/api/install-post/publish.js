@@ -2,8 +2,11 @@
 //
 // The explicit Publish tap, and the explicit Reconcile tap.
 //
-// Both share approveAndDispatchInstallPost with the Square+photo auto-run so
-// there is one signed envelope/callback protocol. Reconcile (`{ reconcile: true }`)
+// Both share approveAndDispatchInstallPost with the Square+photo auto-run, so
+// the tap passes the same deterministic confidence gate (placeholder city,
+// unknown city, Google-blob street, missing size, seed count) before anything
+// is approved. A HOLD answers 422 with reason codes. With no cloud dispatcher
+// the approved job becomes READY_FOR_M1. Reconcile (`{ reconcile: true }`)
 // re-runs an unresolved dispatch against that same approval.
 //
 // Auth is the operator session cookie alone; the URL carries nothing.
@@ -14,7 +17,13 @@ import { publicJobView, statusForReason } from '../../../lib/install-post-queue.
 import { guardOperatorRequest } from '../../../lib/install-post-session.mjs';
 import { getInstallPostStore } from '../../../lib/install-post-store.mjs';
 
-export function createPublishHandler({ store, sessionSecret, dispatcher, now = Date.now } = {}) {
+export function createPublishHandler({
+  store,
+  sessionSecret,
+  dispatcher,
+  now = Date.now,
+  readyNotifier,
+} = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
       return res.status(405).json({ error: 'method_not_allowed' });
@@ -32,11 +41,13 @@ export function createPublishHandler({ store, sessionSecret, dispatcher, now = D
       dispatcher,
       now,
       reconcile: req.body?.reconcile === true,
+      ...(readyNotifier !== undefined ? { readyNotifier } : {}),
     });
 
     if (!outcome.ok) {
       return res.status(outcome.status || statusForReason(outcome.reason)).json({
         error: outcome.reason,
+        ...(outcome.holdReasons ? { holdReasons: outcome.holdReasons } : {}),
         ...(outcome.record ? { job: publicJobView(outcome.record) } : {}),
       });
     }

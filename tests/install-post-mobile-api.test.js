@@ -278,7 +278,7 @@ test('upload init refuses a stale revision', async () => {
   assert.equal(res.body.error, 'stale_revision');
 });
 
-test('a full init/commit cycle binds the photo to that exact job', async () => {
+test('a full init/commit cycle binds the photo and, with no dispatcher, hands off to M1', async () => {
   const { upload, mobile, sessions, records, webflow } = await setup();
 
   const init = createResponse();
@@ -296,7 +296,7 @@ test('a full init/commit cycle binds the photo to that exact job', async () => {
     body: { action: 'commit', revision: records[0].revision, uploadId: init.body.uploadId, sha256: IMAGE.sha256 },
   }), commit);
   assert.equal(commit.statusCode, 200);
-  assert.equal(commit.body.job.state, INSTALL_POST_STATES.READY);
+  assert.equal(commit.body.job.state, INSTALL_POST_STATES.READY_FOR_M1);
   assert.equal(commit.body.job.image.sha256, IMAGE.sha256);
   assert.notEqual(commit.body.job.revision, records[0].revision);
 });

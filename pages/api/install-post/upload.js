@@ -41,6 +41,7 @@ export function createUploadHandler({
   deskWake,
   typesafeHttpClient,
   typesafeApiKey,
+  readyNotifier,
 } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') {
@@ -112,21 +113,23 @@ export function createUploadHandler({
       return res.status(outcome.status || 409).json({ error: outcome.reason });
     }
 
-    // Square already staged the job. Once the photo is bound, the cloud runner
-    // is the publisher — no Woodward/Q Python, no second desk hop.
-    if (dispatcher) {
-      const dispatched = await autoDispatchIfPhotoBound({
-        store,
-        jobId,
-        dispatcher,
-        now,
-        typesafeHttpClient,
-        typesafeApiKey,
-      });
-      if (dispatched.ok) {
-        return res.status(200).json({ job: publicJobView(dispatched.record) });
-      }
-      if (dispatched.reason === 'needs_human' && typeof deskWake === 'function') {
+    // Square already staged the job. Once the photo is bound and the gate
+    // passes, it goes to the cloud runner if one is configured, otherwise to
+    // READY_FOR_M1 — no Woodward/Q Python, no second desk hop.
+    const dispatched = await autoDispatchIfPhotoBound({
+      store,
+      jobId,
+      dispatcher,
+      now,
+      typesafeHttpClient,
+      typesafeApiKey,
+      readyNotifier,
+    });
+    if (dispatched.ok) {
+      return res.status(200).json({ job: publicJobView(dispatched.record) });
+    }
+    if (dispatched.reason === 'needs_human') {
+      if (typeof deskWake === 'function') {
         try {
           await deskWake({ record: dispatched.record, reasons: dispatched.holdReasons || [] });
         } catch (err) {
@@ -135,9 +138,13 @@ export function createUploadHandler({
           });
         }
       }
+      return res.status(200).json({
+        job: publicJobView(dispatched.record || outcome.record),
+        holdReasons: dispatched.holdReasons || [],
+      });
     }
 
-    return res.status(200).json({ job: publicJobView(outcome.record) });
+    return res.status(200).json({ job: publicJobView(dispatched.record || outcome.record) });
   }
 }
 
