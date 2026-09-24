@@ -189,6 +189,29 @@ Set these in **Vercel project settings** (Production). Do not commit values to g
 | --- | --- | --- |
 | `TYPESAFE_API_KEY` | Optional | After the deterministic city/street gate PASSes, call TypeSafe Jev (`jev-latest`) with city/street/size only. `noul` false or confidence `< 0.7` HOLDs auto-publish. API errors fail open. Never log this key. |
 | `INSTALL_POST_GBP_NOTIFY_URL` | Required for auto GBP fence | Dedicated operator webhook. After the install page is HTTP 200, POSTs **two fence-only bodies** (caption, then Book URL = live `/installations/...` page) for Mr. Wayne to paste. Independent of Woodward. |
-| `INSTALL_POST_GBP_NOTIFY_KEY` | Required with the URL | Bearer key. Same header shape as Kronkite: `Authorization: Bearer <key>` plus `x-webhook-secret`. |
+| `INSTALL_POST_GBP_NOTIFY_KEY` | Required with the URL | Bearer key. Same header shape as Woodward: `Authorization: Bearer <key>` plus `x-webhook-secret`. |
 
-HOLD wakes Kronkite/Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `google_blob_street`, `seed_count`, `jev_hold`). No customer PII.
+HOLD wakes Woodward with `deskAction: needs_human` and reason codes only (`blank_city`, `metro_placeholder_city`, `google_blob_street`, `seed_count`, `jev_hold`). No customer PII.
+
+## Install-post photo ask (THE-276)
+
+At payment time the photo is usually missing. The dashboard no longer wakes Woodward for that. It sends the operator a deterministic photo ask that carries the existing signed upload link. No LLM is involved.
+
+### How the operator gets the upload link
+
+1. Square payment webhook (or the seed cron fallback) claims the 24h install-post dedup, then stages **one cloud job per Square visit**.
+2. The job gets a signed operator link: `https://mounting-man-dashboard.vercel.app/install-posts/open#<capability>` (48h TTL, capability in the URL fragment only).
+3. If the job has no photo, `lib/install-post-photo-ask.mjs` sends that link over every configured channel:
+   - **Webhook** `INSTALL_POST_PHOTO_ASK_URL`: a JSON POST with `title`, `text` (label → link), `url`, `links[]`, `defaultAction.url`. Point it at Pushcut, an iOS Shortcut relay, an ntfy relay, or a Zapier/Make hook that forwards as SMS/email/push.
+   - **SMS** `INSTALL_POST_PHOTO_ASK_SMS_TO`: Twilio text `Mounting Man — Add install photo & publish` + `label → link`.
+4. The operator taps the link on the phone. The card opens, they drop the photo, and the existing upload → confidence gate → publish path runs.
+
+Woodward is woken (`deskAction: request_photo`, no link in the payload) only as the exception path: no channel configured, every channel failed, or the queue produced no link. Confidence HOLDs still wake Woodward with `needs_human`. The photo ask fires once per Square visit (same 24h dedup claim as the rest of intake). Multi-TV visits list one link per job.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `INSTALL_POST_PHOTO_ASK_URL` | One channel required | Operator webhook for the photo ask. |
+| `INSTALL_POST_PHOTO_ASK_KEY` | Optional | Sent as `Authorization: Bearer <key>` plus `x-webhook-secret`. |
+| `INSTALL_POST_PHOTO_ASK_SMS_TO` | One channel required | Operator phone (E.164). Needs `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` (optional `TWILIO_FROM_NUMBER`). |
+
+Status (no link) is returned as `photoAsk` in the seed-cron JSON: `delivered`, `skipped` (`no_channel`, `no_operator_links`, `photo_present`), and per-channel `forwarded`/`error`.

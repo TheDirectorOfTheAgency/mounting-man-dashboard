@@ -1,19 +1,21 @@
-// Regression: live Grok Bot accepts Authorization: Bearer only.
+// Regression: live Woodward desk accepts Authorization: Bearer only.
 // x-webhook-secret alone is 401. A later x-webhook-secret-only edit must fail here.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildKronkiteWakeHeaders,
-  forwardKronkiteSquareWake,
-  hasKronkiteBearerAuthorization,
+  buildWoodwardWakeHeaders,
+  forwardWoodwardSquareWake,
+  hasWoodwardBearerAuthorization,
   notifyQInstallPost,
-  resetKronkiteMissingUrlLog,
+  resetWoodwardMissingUrlLog,
+  woodwardWebhookKey,
+  woodwardWebhookUrl,
 } from '../lib/notify-install-post.mjs';
 
-const WAKE_URL = 'https://kronkite.example/square-wake';
-const SENDER_KEY = 'kronkite-sender-key';
+const WAKE_URL = 'https://woodward.example/square-wake';
+const SENDER_KEY = 'woodward-sender-key';
 
 function headerValue(headers, name) {
   const target = name.toLowerCase();
@@ -24,7 +26,7 @@ function headerValue(headers, name) {
 }
 
 /** Same contract as the live webhook: Bearer required, secret header is not enough. */
-function createGrokBotLikeClient({ expectedKey } = {}) {
+function createWoodwardDeskLikeClient({ expectedKey } = {}) {
   const posts = [];
   return {
     posts,
@@ -48,20 +50,35 @@ function createGrokBotLikeClient({ expectedKey } = {}) {
   };
 }
 
-test('buildKronkiteWakeHeaders always includes Authorization Bearer when a key exists', () => {
-  const headers = buildKronkiteWakeHeaders(`  ${SENDER_KEY}  `);
-  assert.equal(hasKronkiteBearerAuthorization(headers), true);
-  assert.equal(headers.Authorization, `Bearer ${SENDER_KEY}`);
-  assert.equal(headers['x-webhook-secret'], SENDER_KEY);
-  assert.equal(buildKronkiteWakeHeaders(''), null);
-  assert.equal(buildKronkiteWakeHeaders('   '), null);
-  assert.equal(hasKronkiteBearerAuthorization({ 'x-webhook-secret': SENDER_KEY }), false);
-  assert.equal(hasKronkiteBearerAuthorization({ Authorization: 'Bearer' }), false);
+test('Woodward desk env prefers WOODWARD_* and reads pre-rename names only as a fallback', () => {
+  const legacy = {
+    KRONKITE_SQUARE_WEBHOOK_URL: 'https://legacy.example/wake',
+    KRONKITE_SQUARE_WEBHOOK_KEY: 'legacy-key',
+  };
+  assert.equal(woodwardWebhookUrl(legacy), 'https://legacy.example/wake');
+  assert.equal(woodwardWebhookKey(legacy), 'legacy-key');
+
+  const both = { ...legacy, WOODWARD_SQUARE_WEBHOOK_URL: WAKE_URL, WOODWARD_SQUARE_WEBHOOK_KEY: SENDER_KEY };
+  assert.equal(woodwardWebhookUrl(both), WAKE_URL);
+  assert.equal(woodwardWebhookKey(both), SENDER_KEY);
+
+  assert.equal(woodwardWebhookUrl({}), undefined);
 });
 
-test('forwardKronkiteSquareWake is 401 on the live contract if Bearer is omitted', async () => {
-  const client = createGrokBotLikeClient({ expectedKey: SENDER_KEY });
-  const secretOnly = await forwardKronkiteSquareWake({
+test('buildWoodwardWakeHeaders always includes Authorization Bearer when a key exists', () => {
+  const headers = buildWoodwardWakeHeaders(`  ${SENDER_KEY}  `);
+  assert.equal(hasWoodwardBearerAuthorization(headers), true);
+  assert.equal(headers.Authorization, `Bearer ${SENDER_KEY}`);
+  assert.equal(headers['x-webhook-secret'], SENDER_KEY);
+  assert.equal(buildWoodwardWakeHeaders(''), null);
+  assert.equal(buildWoodwardWakeHeaders('   '), null);
+  assert.equal(hasWoodwardBearerAuthorization({ 'x-webhook-secret': SENDER_KEY }), false);
+  assert.equal(hasWoodwardBearerAuthorization({ Authorization: 'Bearer' }), false);
+});
+
+test('forwardWoodwardSquareWake is 401 on the live contract if Bearer is omitted', async () => {
+  const client = createWoodwardDeskLikeClient({ expectedKey: SENDER_KEY });
+  const secretOnly = await forwardWoodwardSquareWake({
     payload: { paymentId: 'payment-secret-only' },
     url: WAKE_URL,
     key: SENDER_KEY,
@@ -79,7 +96,7 @@ test('forwardKronkiteSquareWake is 401 on the live contract if Bearer is omitted
   assert.equal(secretOnly.forwarded, false);
   assert.equal(secretOnly.error, true);
 
-  const withBearer = await forwardKronkiteSquareWake({
+  const withBearer = await forwardWoodwardSquareWake({
     payload: { paymentId: 'payment-bearer' },
     url: WAKE_URL,
     key: SENDER_KEY,
@@ -91,7 +108,7 @@ test('forwardKronkiteSquareWake is 401 on the live contract if Bearer is omitted
 });
 
 test('paid-job notify POST forwards only when Authorization Bearer is present', async () => {
-  const client = createGrokBotLikeClient({ expectedKey: SENDER_KEY });
+  const client = createWoodwardDeskLikeClient({ expectedKey: SENDER_KEY });
   const result = await notifyQInstallPost(
     {
       orderId: 'order-auth',
@@ -109,24 +126,24 @@ test('paid-job notify POST forwards only when Authorization Bearer is present', 
       exists: async () => false,
       set: async () => true,
       sadd: async () => true,
-      kronkiteUrl: WAKE_URL,
-      kronkiteKey: SENDER_KEY,
+      woodwardUrl: WAKE_URL,
+      woodwardKey: SENDER_KEY,
       httpClient: client,
     },
   );
 
-  assert.equal(result.kronkite.forwarded, true);
+  assert.equal(result.woodward.forwarded, true);
   assert.equal(client.posts.length, 1);
   assert.equal(client.posts[0].url, WAKE_URL);
   assert.equal(headerValue(client.posts[0].headers, 'authorization'), `Bearer ${SENDER_KEY}`);
-  assert.ok(hasKronkiteBearerAuthorization(client.posts[0].headers));
+  assert.ok(hasWoodwardBearerAuthorization(client.posts[0].headers));
 });
 
 test('wake with a URL but no key does not POST without Bearer', async () => {
-  resetKronkiteMissingUrlLog();
+  resetWoodwardMissingUrlLog();
   const logs = [];
   let posted = false;
-  const result = await forwardKronkiteSquareWake({
+  const result = await forwardWoodwardSquareWake({
     payload: { paymentId: 'payment-no-key' },
     url: WAKE_URL,
     key: '   ',

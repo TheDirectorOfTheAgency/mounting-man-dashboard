@@ -8,7 +8,7 @@ import {
 import {
   INSTALL_POST_CLOUD_PUBLISHER,
   INSTALL_POST_FORBIDDEN_SCRIPTS,
-  buildKronkiteSquarePayload,
+  buildWoodwardSquarePayload,
   notifyQInstallPost,
 } from '../lib/notify-install-post.mjs';
 import { HOLD_REASONS } from '../lib/install-post-confidence.mjs';
@@ -21,7 +21,7 @@ import { createResponse } from './webhook-test-helpers.js';
 const SECRET = 'test-session-secret';
 const HOST = 'mounting-man-dashboard.vercel.app';
 const NOW = 1_760_000_000_000;
-const KRONKITE_URL = 'https://kronkite.example/square-wake';
+const WOODWARD_URL = 'https://woodward.example/square-wake';
 
 const SEED = {
   city: 'Edina',
@@ -218,8 +218,8 @@ test('photo commit auto-dispatches the cloud runner and never Reddit', async () 
   assert.equal(redditUrls(JSON.stringify(dispatcher.dispatches)).length, 0);
 });
 
-test('Kronkite wake asks for the photo only and forbids local Python publishers', () => {
-  const payload = buildKronkiteSquarePayload({
+test('Woodward wake asks for the photo only and forbids local Python publishers', () => {
+  const payload = buildWoodwardSquarePayload({
     facts: { city: 'Edina', streetName: 'Elm Street', tvSize: '65"' },
     payment: { id: 'payment-1', source_type: 'CARD' },
     orderId: 'order-1',
@@ -237,7 +237,7 @@ test('Kronkite wake asks for the photo only and forbids local Python publishers'
   assert.equal(redditUrls(JSON.stringify(payload)).length, 0);
 });
 
-test('Square notify with no photo wakes Kronkite for the photo and does not dispatch', async () => {
+test('Square notify with no photo wakes Woodward for the photo and does not dispatch', async () => {
   const store = createInstallPostStore(createFakeKv());
   const dispatcher = createFakeDispatcher();
   const posts = [];
@@ -261,8 +261,8 @@ test('Square notify with no photo wakes Kronkite for the photo and does not disp
       installPostStore: store,
       capabilitySecret: SECRET,
       queueBaseUrl: 'https://mounting-man-dashboard.vercel.app',
-      kronkiteUrl: KRONKITE_URL,
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: WOODWARD_URL,
+      woodwardKey: 'woodward-sender-key',
       dispatcher,
       httpClient: {
         async get() {
@@ -285,7 +285,7 @@ test('Square notify with no photo wakes Kronkite for the photo and does not disp
 
   assert.equal(dispatcher.dispatches.length, 0);
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].url, WOODWARD_URL);
   assert.equal(posts[0].body.deskAction, 'request_photo');
   assert.equal(posts[0].body.publisher, 'cloud-runner');
   assert.equal(posts[0].body.photoPresent, false);
@@ -317,8 +317,8 @@ test('Square notify with a bound photo dispatches the cloud runner and skips the
       installPostStore: store,
       capabilitySecret: SECRET,
       queueBaseUrl: 'https://mounting-man-dashboard.vercel.app',
-      kronkiteUrl: KRONKITE_URL,
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: WOODWARD_URL,
+      woodwardKey: 'woodward-sender-key',
       dispatcher,
       httpClient: {
         async get() {
@@ -340,9 +340,9 @@ test('Square notify with a bound photo dispatches the cloud runner and skips the
   );
 
   assert.equal(posts.length, 0, 'photo present must not wake Woodward/Q');
-  assert.equal(result.kronkite.skipped, 'photo_present_cloud_publisher');
-  assert.equal(result.kronkitePayload.deskAction, 'none');
-  assert.equal(result.kronkitePayload.publisher, 'cloud-runner');
+  assert.equal(result.woodward.skipped, 'photo_present_cloud_publisher');
+  assert.equal(result.woodwardPayload.deskAction, 'none');
+  assert.equal(result.woodwardPayload.publisher, 'cloud-runner');
   assert.ok(result.cloudDispatch.some((entry) => entry.ok && entry.jobId === record.jobId));
   assert.equal(dispatcher.dispatches.length, 1);
   assert.equal(dispatcher.dispatches[0].jobId, record.jobId);
@@ -408,8 +408,8 @@ test('Square notify HOLD wakes the desk with needs_human reason codes and no PII
       installPostStore: store,
       capabilitySecret: SECRET,
       queueBaseUrl: 'https://mounting-man-dashboard.vercel.app',
-      kronkiteUrl: KRONKITE_URL,
-      kronkiteKey: 'kronkite-sender-key',
+      woodwardUrl: WOODWARD_URL,
+      woodwardKey: 'woodward-sender-key',
       dispatcher,
       httpClient: {
         async get() {
@@ -432,12 +432,12 @@ test('Square notify HOLD wakes the desk with needs_human reason codes and no PII
 
   assert.equal(dispatcher.dispatches.length, 0, 'HOLD must not dispatch');
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, KRONKITE_URL);
+  assert.equal(posts[0].url, WOODWARD_URL);
   assert.equal(posts[0].body.deskAction, 'needs_human');
   assert.ok(posts[0].body.holdReasons.includes(HOLD_REASONS.METRO_PLACEHOLDER_CITY));
   assert.equal(posts[0].body.holdReasons.includes('Jane'), false);
   assert.equal(JSON.stringify(posts[0].body).includes('Jane'), false);
   assert.equal(JSON.stringify(posts[0].body).includes('4821'), false);
-  assert.equal(result.kronkitePayload.deskAction, 'needs_human');
+  assert.equal(result.woodwardPayload.deskAction, 'needs_human');
   assert.equal(result.cloudDispatch.some((entry) => entry.reason === 'needs_human'), true);
 });
