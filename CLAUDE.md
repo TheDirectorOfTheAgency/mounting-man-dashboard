@@ -25,6 +25,11 @@ pages/api/square-revenue.js            # Square Payments API proxy — paginates
 pages/api/webflow-posts.js             # Webflow Collections API proxy — counts published/draft/archived blog posts
 pages/api/google-ads.js                # Google Ads REST API — uses shared auth, 15min cache + fallback to hardcoded data
 pages/api/webhooks/zenbooker.js        # Zenbooker job.completed webhook → offline conversion upload to Google Ads
+pages/api/install-post/m1/claim.js     # Signed claim of the oldest READY_FOR_M1 job for the M1 publish worker
+pages/api/install-post/runner/callback.js # Signed publisher result → job state; GBP paste pack after PUBLISHED (no GBP queue)
+lib/install-post-m1-queue.mjs          # READY_FOR_M1 claim + shared runner envelope
+m1/install-post-worker/                # M1 launchd worker: claim → run_fast_install_post.sh --art-mode never → callback
+scripts/install-m1-install-post-worker.mjs # Installs the M1 publish worker launchd agent
 pages/api/mcp/auth/authorize.js        # OAuth 2.1 + PKCE authorize (Grok Web Custom Connector)
 pages/api/mcp/auth/token.js            # OAuth token — issues existing operator secret as access_token
 pages/api/mcp/auth/register.js         # RFC 7591 DCR — returns client_id mounting-man-ads-apply
