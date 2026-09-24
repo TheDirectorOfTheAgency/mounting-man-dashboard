@@ -65,7 +65,7 @@ Paste these two values from the Woodward routine panel into **Vercel project set
 | `WOODWARD_SQUARE_WEBHOOK_URL` | Routine webhook URL |
 | `WOODWARD_SQUARE_WEBHOOK_KEY` | Sender key |
 
-The Square payment webhook authenticates with `Authorization: Bearer <WOODWARD_SQUARE_WEBHOOK_KEY>` (and still sends `x-webhook-secret` for compatibility). If the URL is unset, the Woodward wake is skipped and review SMS + the phone queue still run. The pre-rename `KRONKITE_SQUARE_WEBHOOK_URL` / `KRONKITE_SQUARE_WEBHOOK_KEY` names are still read as a fallback; once the `WOODWARD_*` names are set in Vercel, delete the old ones and the two `LEGACY_DESK_WEBHOOK_*` constants in `lib/notify-install-post.mjs`.
+The Square payment webhook authenticates with `Authorization: Bearer <WOODWARD_SQUARE_WEBHOOK_KEY>` (and still sends `x-webhook-secret` for compatibility). If the URL is unset, the Woodward wake is skipped and review SMS + the phone queue still run. **Deprecated:** the pre-rename `KRONKITE_SQUARE_WEBHOOK_URL` / `KRONKITE_SQUARE_WEBHOOK_KEY` names are still read as a fallback when the `WOODWARD_*` names are unset, so production does not break mid-deploy; once the `WOODWARD_*` names are set in Vercel, delete the old ones and the two `LEGACY_DESK_WEBHOOK_*` constants in `lib/notify-install-post.mjs`.
 
 Woodward is woken only for confidence HOLDs (or when the photo ask below could not be delivered). A missing photo is handled by the deterministic photo ask — see **Install-post photo ask** in `DEPLOYMENT.md`.
 
