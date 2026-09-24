@@ -5,8 +5,9 @@
 //   1. Square POSTs payment webhook here (public Vercel URL)
 //   2. Extract payment data + customer_id
 //   3. Fetch customer details from Square API (phone, name)
-//   4. After 24h install-post dedup, wake Woodward with a sanitized payload
-//      and stage the phone-first Upstash queue (no Discord install-thread)
+//   4. After 24h install-post dedup, stage the phone-first Upstash queue and
+//      send the operator photo ask (upload link). Woodward is woken only for
+//      confidence holds or an undeliverable photo ask (no Discord install-thread)
 //   5. If customer has phone → send review SMS via Twilio
 //   6. Log SMS/errors to Discord #operations (not the Installation Posts thread)
 //
@@ -445,7 +446,7 @@ export function createSquarePaymentHandler({
       });
     }
 
-    // ---- Stage install-post desk (Woodward wake + phone queue; no Discord) ----
+    // ---- Stage install-post (phone queue + photo ask; Woodward on holds only) ----
     try {
       await installPostNotifier({
         orderId,
