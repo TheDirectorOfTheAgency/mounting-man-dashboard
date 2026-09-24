@@ -228,4 +228,3 @@ Cloud Actions dispatch is **off**: `INSTALL_POST_DISPATCH_TOKEN` stays empty and
 | --- | --- | --- |
 | `INSTALL_POST_READY_NOTIFY_URL` | Optional | Override for the ready ping. Falls back to `INSTALL_POST_GBP_NOTIFY_URL`. Fixed-template body (`kind: install_post_ready_for_m1`, job id, size/brand/city) — no LLM, no Woodward wake, no street or customer data. |
 | `INSTALL_POST_READY_NOTIFY_KEY` | With the URL | Bearer key. Falls back to `INSTALL_POST_GBP_NOTIFY_KEY`. |
-| `WOODWARD_SQUARE_WEBHOOK_URL` / `_KEY` | For HOLD wakes + photo-ask fallback | Woodward desk wake. The pre-rename `KRONKITE_SQUARE_WEBHOOK_URL` / `_KEY` are still read as a fallback until Vercel is re-keyed. |
