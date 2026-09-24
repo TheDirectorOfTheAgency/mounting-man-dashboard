@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Install (or remove) the M1 install-post publish worker as a launchd agent.
+// Install, reinstall, or remove the M1 install-post publish worker as a launchd agent.
 //
 //   node scripts/install-m1-install-post-worker.mjs --env-file /secure/path/.env
 //   node scripts/install-m1-install-post-worker.mjs --uninstall
 //
+// First install and worker code updates both use the same command: it copies the
+// current worker from this repo, refreshes the plist, and reloads launchd.
 // The env file must hold INSTALL_POST_RUNNER_SECRET (same value as Vercel).
 // It is copied into a 0600 secret file; the plist only carries its path.
 

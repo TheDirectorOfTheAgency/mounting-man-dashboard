@@ -240,7 +240,7 @@ Cloud Actions dispatch is **off**: `INSTALL_POST_DISPATCH_TOKEN` stays empty and
 3. `POST /api/install-post/m1/claim` `{ workerId }` (runner HMAC signature) takes the publish lease on the oldest `READY_FOR_M1` approval, moves it to `PUBLISHING`, and returns the envelope: safe seed, photo `hostedUrl` + `sha256`, `dispatchId`, `artMode: "never"`. Idle poll = one `SMEMBERS`.
 4. The worker downloads the photo, checks the digest (mismatch → `BLOCKED`), writes `seed.json` + `photo.webp` (0600) and runs:
    `/Users/thedirector/jewel-way-run/bin/run_fast_install_post.sh --seed-json <seed.json> --image <photo.webp> --art-mode never`
-5. It takes the last `https://www.themountingman.com/installations/<slug>` URL the wrapper printed and reads it back. HTTP 200 → `PUBLISHED` (whatever the exit code, so a job never posts twice). Timeout, or a URL that doesn't read back → `INDETERMINATE`. Non-zero exit with no URL → `RETRYABLE_FAILURE`; a new Publish tap re-queues it as `READY_FOR_M1`.
+5. The canonical publisher (`jewel-way-run/scripts/fast_install_post.py`, not forked here) prints a final JSON object on stdout with `"live_url": "https://www.themountingman.com/installations/<slug>"`. The worker parses that `live_url` (last JSON object wins; `/tv-mounting/...` and other paths are ignored), then verifies HTTP 200 on the page. HTTP 200 → `PUBLISHED` (whatever the exit code, so a job never posts twice). Timeout, or a URL that doesn't read back → `INDETERMINATE`. Exit 0 with no parseable install URL → `INDETERMINATE`. Non-zero exit with no URL → `RETRYABLE_FAILURE`; a new Publish tap re-queues it as `READY_FOR_M1`.
 6. It reports to `/api/install-post/runner/callback` with the `dispatchId`. An undelivered callback is parked under the worker state dir and resent next pass (no second publish).
 
 A worker that dies mid-run leaves the job `PUBLISHING`; the card ages it to `INDETERMINATE` after 15 minutes (the worker kills the wrapper at 12). Reconcile still needs a human while cloud dispatch is off.
@@ -257,9 +257,11 @@ Not changed: `INSTALL_POST_DISPATCH_*` stays empty and `publish-install-post.yml
 | `INSTALL_POST_M1_STATE_DIR` | M1 plist | Logs, lock, temp job files, parked callbacks. Default `~/.local/state/themountingman/install-post-worker`. |
 | `INSTALL_POST_M1_PUBLISH_TIMEOUT_MS` | M1 plist (optional) | Wrapper kill timeout. Default 720000 (12 min). |
 
-**Deploy order:**
+**M1 worker install: DONE (2026-09-23 CT).** `com.themountingman.install-post-worker` is loaded on the M1. Secret file: `~/.config/themountingman/install-post-worker/runner-secret` (mode 0600). Wrapper: `/Users/thedirector/jewel-way-run/bin/run_fast_install_post.sh`. Worker log shows `worker_status=idle` when idle.
+
+**Deploy / reinstall order:**
 
 1. Set `INSTALL_POST_RUNNER_SECRET` in Vercel Production, then deploy the dashboard.
-2. On the M1, from a checkout of this repo: `node scripts/install-m1-install-post-worker.mjs --env-file /secure/path/.env` (the file only needs `INSTALL_POST_RUNNER_SECRET`; add `--wrapper PATH` if the wrapper moved). This writes the 0600 secret file, copies the worker, fills the plist, and bootstraps launchd.
-3. Check `~/.local/state/themountingman/install-post-worker/worker.log`. You should see `worker_status=idle` or `worker_status=reported ... state=PUBLISHED`. The first successful pass asks the dashboard to rescan, so jobs parked before this deploy are picked up.
+2. On the M1, from a checkout of this repo: `node scripts/install-m1-install-post-worker.mjs --env-file /secure/path/.env` (the file only needs `INSTALL_POST_RUNNER_SECRET`; add `--wrapper PATH` if the wrapper moved). Use the same command after worker code merges to copy the updated worker and reload launchd.
+3. Check `~/.local/state/themountingman/install-post-worker/worker.log`. You should see `worker_status=idle` or `worker_status=reported ... state=PUBLISHED`. The first successful pass asks the dashboard to rescan, so jobs parked before a deploy are picked up.
 4. Remove with `node scripts/install-m1-install-post-worker.mjs --uninstall`.
