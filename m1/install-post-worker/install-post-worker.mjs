@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // M1 install-post publish worker (launchd com.themountingman.install-post-worker).
+// Re-run scripts/install-m1-install-post-worker.mjs after worker code updates.
 //
 // One pass: claim the oldest READY_FOR_M1 job from the dashboard, verify the
 // approved photo, run the canonical jewel-way-run publisher wrapper
@@ -110,9 +111,63 @@ async function signedPost({ fetchImpl, apiBase, requestPath, body, secret, now }
 // Publisher outcome
 // ---------------------------------------------------------------------------
 
-/** Last install-page URL the publisher printed, or ''. */
+function isInstallLiveUrl(url = '') {
+  return /^https:\/\/(?:www\.)?themountingman\.com\/installations\/[a-z0-9-]+$/i.test(String(url).trim());
+}
+
+/** Walk balanced braces from `start` and JSON.parse one object, or null. */
+function tryParseJsonAt(text, start) {
+  if (text[start] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return { value: JSON.parse(text.slice(start, i + 1)), end: i + 1 };
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Last install-page URL the publisher printed, or ''.
+ *
+ * Prefers the last JSON object on stdout whose `live_url` is an
+ * `/installations/<slug>` page (canonical `fast_install_post.py` shape).
+ * Falls back to the last regex match in the output tail.
+ */
 export function extractLiveUrl(output = '') {
-  const matches = String(output).match(LIVE_INSTALL_URL_RE);
+  const text = String(output);
+  let lastFromJson = '';
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '{') continue;
+    const parsed = tryParseJsonAt(text, i);
+    if (!parsed) continue;
+    const candidate = parsed.value?.live_url;
+    if (typeof candidate === 'string' && isInstallLiveUrl(candidate)) {
+      lastFromJson = candidate.trim();
+    }
+    i = parsed.end - 1;
+  }
+  if (lastFromJson) return lastFromJson;
+
+  const matches = text.match(LIVE_INSTALL_URL_RE);
   return matches ? matches[matches.length - 1] : '';
 }
 

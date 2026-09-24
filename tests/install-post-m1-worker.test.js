@@ -446,13 +446,38 @@ test('publisher outcomes never turn a possibly-live page into a blind retry', ()
   assert.deepEqual(published.destinations, [{ name: 'website', status: 'PUBLISHED', detail: LIVE_URL }]);
 });
 
-test('the worker reads the last install URL the publisher printed', () => {
-  const output = [
+test('extractLiveUrl prefers the last publisher JSON live_url, then regex fallback', () => {
+  const pretty = JSON.stringify({
+    live_url: LIVE_URL,
+    slug: '65-inch-samsung-edina',
+    image_url: 'https://cdn.webflow.com/abc.webp',
+  }, null, 2);
+  assert.equal(extractLiveUrl(pretty), LIVE_URL);
+
+  const compact = JSON.stringify({ live_url: LIVE_URL, slug: '65-inch-samsung-edina' });
+  assert.equal(extractLiveUrl(compact), LIVE_URL);
+
+  const noisyStdout = [
+    'uploading hero image...',
+    'posting to instagram...',
+    JSON.stringify({ live_url: 'https://www.themountingman.com/installations/older-post' }),
+    'finalizing webflow item...',
+    pretty,
+  ].join('\n');
+  assert.equal(extractLiveUrl(noisyStdout), LIVE_URL);
+
+  const proseFallback = [
     'checking https://www.themountingman.com/installations/older-post',
     'Verified live: https://www.themountingman.com/installations/65-inch-samsung-edina (200)',
   ].join('\n');
-  assert.equal(extractLiveUrl(output), LIVE_URL);
+  assert.equal(extractLiveUrl(proseFallback), LIVE_URL);
+
   assert.equal(extractLiveUrl('https://www.themountingman.com/tv-mounting/edina'), '');
+  assert.equal(extractLiveUrl(JSON.stringify({
+    live_url: 'https://www.themountingman.com/tv-mounting/edina',
+  })), '');
+  assert.equal(extractLiveUrl('publisher finished with no URL\n'), '');
+  assert.equal(classifyPublisherOutcome({ exitCode: 0 }).status, 'INDETERMINATE');
 });
 
 test('spawnPublisher runs a real wrapper, captures its URL, and kills it on timeout', async () => {
