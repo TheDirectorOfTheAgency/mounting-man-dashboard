@@ -42,6 +42,7 @@ from PIL import Image, UnidentifiedImageError
 
 from content import (
     SPECIALTY_STANDARD_TV,
+    city_mounting_stamp,
     classify_install_specialty,
     display_price_subtotal,
     ensure_city_stamp,
@@ -264,9 +265,34 @@ def build_social_caption(
     if live_url:
         parts.append(live_url)
     caption = "\n\n".join(parts)
-    if limit and len(caption) > limit:
-        caption = caption[: max(0, limit - 1)].rstrip() + "…"
-    return caption
+    if not limit or len(caption) <= limit:
+        return caption
+
+    # Reserve the exact destination before fitting prose. Never slice a URL or
+    # a price; omit the optional subtotal first when the caption overflows.
+    suffix = f"\n\n{live_url}" if live_url else ""
+    budget = limit - len(suffix)
+    if len(summary) <= budget:
+        return summary + suffix
+
+    if specialty != SPECIALTY_STANDARD_TV and not _is_unmount_caption(post_data):
+        # Keep the city/company stamp and complete product/model names. The
+        # full summary repeats these, so compact it before dropping job facts.
+        entity = specialty_entity_label(post_data)
+        size = size_inch_phrase(str(post_data.get("tv-size") or ""))
+        fact = specialty_differentiating_fact(post_data)
+        core = f"{city_mounting_stamp(city)} {entity}"
+        for details in ("; ".join(bit for bit in (size, fact) if bit), size, ""):
+            compact = f"{core} ({details})." if details else f"{core}."
+            if len(compact) <= budget:
+                return compact + suffix
+        raise SocialBlockedError("Caption limit cannot fit specialty identity and full live URL")
+
+    if live_url and len(live_url) > limit:
+        raise SocialBlockedError("Caption limit cannot fit full live URL")
+    if budget <= 0:
+        return live_url
+    return summary[: max(0, budget - 1)].rstrip() + "…" + suffix
 
 
 def _destination(name: str, status: str, detail: str = "") -> dict:
@@ -661,10 +687,10 @@ class SocialPublisher:
     def _x(self, *, post_data, live_url, image_url, image_bytes) -> str:
         del image_url
         creds = require_env(X_ENV, self.env)
+        caption = build_social_caption(post_data, live_url, limit=280, platform="x")
         user = self._x_verify(creds)
         assert_mountingmantv(user)
         media_id = self._x_upload_media(creds, image_bytes)
-        caption = build_social_caption(post_data, live_url, limit=280, platform="x")
         header = sign_oauth1(
             method="POST",
             url=X_CREATE_TWEET_URL,
