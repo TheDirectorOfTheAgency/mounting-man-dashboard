@@ -3,6 +3,10 @@
 // All-time baseline hardcoded — cron updates it in Redis over time
 // Recent data: fetches only last 90 days from Square (~3-4 API calls)
 import axios from 'axios';
+import {
+  bucketRecentSquarePayments,
+  squareRevenueCacheIncludesThisWeek,
+} from '../../lib/square-revenue-buckets.mjs';
 
 const CACHE_KEY         = 'square:revenue:cache';
 const ALLTIME_CACHE_KEY = 'square:revenue:alltime';
@@ -59,7 +63,7 @@ export default async function handler(req, res) {
   if (kv) {
     try {
       const cached = await kv.get(CACHE_KEY);
-      if (cached) return res.status(200).json(cached);
+      if (squareRevenueCacheIncludesThisWeek(cached)) return res.status(200).json(cached);
     } catch {}
   }
 
@@ -71,12 +75,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing Square credentials' });
     }
 
-    const TIMEZONE = 'America/Chicago';
-    const toLocalDateStr = (d) => d.toLocaleDateString('en-CA', { timeZone: TIMEZONE });
-
-    const nowStr       = toLocalDateStr(new Date());
-    const thisMonthStr = nowStr.slice(0, 7);
-    const thisYearStr  = nowStr.slice(0, 4);
+    const periodNow = new Date();
 
     // All-time: Redis if cron stored it, otherwise hardcoded baseline
     let allTime = ALLTIME_BASELINE;
@@ -90,41 +89,15 @@ export default async function handler(req, res) {
     // Recent: last 90 days only — fast
     const recentPayments = await fetchRecentPayments(token, locationId);
 
-    let thisMonthTotal = 0, thisMonthCount = 0;
-    let todayTotal = 0, todayCount = 0;
-    let thisYearTotal = 0, thisYearCount = 0;
-
-    const dailyMap = {};
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      dailyMap[toLocalDateStr(d)] = 0;
-    }
-
-    recentPayments.forEach((p) => {
-      if (p.status === 'COMPLETED') {
-        const amount  = (p.total_money?.amount || p.amount_money?.amount || 0) / 100;
-        const dateStr = toLocalDateStr(new Date(p.created_at));
-
-        if (dateStr.slice(0, 4) === thisYearStr)  { thisYearTotal  += amount; thisYearCount++;  }
-        if (dateStr.slice(0, 7) === thisMonthStr)  { thisMonthTotal += amount; thisMonthCount++; }
-        if (dateStr === nowStr)                    { todayTotal     += amount; todayCount++;     }
-        if (dailyMap.hasOwnProperty(dateStr))      { dailyMap[dateStr] += amount; }
-      }
-    });
-
-    const revenueHistory = Object.entries(dailyMap).map(([dateStr, revenue]) => {
-      const d = new Date(dateStr + 'T18:00:00Z');
-      const dayLabel = d.toLocaleDateString('en-US', { timeZone: TIMEZONE, weekday: 'short' }).toUpperCase().slice(0, 3);
-      return { date: dayLabel, revenue: parseFloat(revenue.toFixed(2)) };
-    });
+    const buckets = bucketRecentSquarePayments(recentPayments, periodNow, new Date());
 
     const result = {
       allTime:   { total: allTime.total, count: allTime.count, avgValue: allTime.count > 0 ? parseFloat((allTime.total / allTime.count).toFixed(2)) : 0 },
-      thisYear:  { total: parseFloat(thisYearTotal.toFixed(2)), count: thisYearCount, avgValue: thisYearCount > 0 ? parseFloat((thisYearTotal / thisYearCount).toFixed(2)) : 0 },
-      thisMonth: { total: parseFloat(thisMonthTotal.toFixed(2)), count: thisMonthCount },
-      today:     { total: parseFloat(todayTotal.toFixed(2)), count: todayCount },
-      revenueHistory,
+      thisYear:  buckets.thisYear,
+      thisMonth: buckets.thisMonth,
+      today:     buckets.today,
+      thisWeek:  buckets.thisWeek,
+      revenueHistory: buckets.revenueHistory,
       lastUpdated: new Date().toISOString(),
     };
 
