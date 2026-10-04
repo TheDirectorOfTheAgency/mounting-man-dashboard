@@ -42,6 +42,34 @@ test('Google conversion writes retain direct-owner headers and omit login-custom
   assert.equal(request.config.headers.Authorization, 'Bearer access-token');
   assert.equal('login-customer-id' in request.config.headers, false);
   assert.equal(request.payload.validateOnly, false);
+  assert.deepEqual(request.payload.conversions[0].consent, { adUserData: 'GRANTED' });
+  assert.equal(request.payload.conversions[0].consent.adPersonalization, undefined);
+  assert.equal(request.payload.conversions[0].gclid, undefined);
+});
+
+test('gclid is sent when present and gbraid is omitted alongside it', async (t) => {
+  installEnv(t);
+  let request;
+  await uploadOfflineConversion({
+    ...conversionInput(),
+    gclid: 'click-1',
+    gbraid: 'braid-1',
+  }, {
+    getAccessToken: async () => 'access-token',
+    getDeveloperToken: () => 'developer-token',
+    httpClient: {
+      async post(url, payload) {
+        request = { url, payload };
+        return { data: {}, headers: {} };
+      },
+    },
+  });
+  assert.equal(request.payload.conversions[0].gclid, 'click-1');
+  assert.equal(request.payload.conversions[0].gbraid, undefined);
+  assert.equal(
+    request.payload.conversions[0].conversionAction,
+    'customers/1287907452/conversionActions/7509313857',
+  );
 });
 
 test('Google partial failure is retryable when the returned status is transient', async (t) => {

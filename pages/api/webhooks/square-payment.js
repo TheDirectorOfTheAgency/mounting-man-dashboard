@@ -29,6 +29,7 @@ import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js'
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 import { customerWithMergedInstallAddress } from '../../../lib/install-post-seeds.mjs';
+import { postDiscordOperationsMessage } from '../../../lib/discord-ops.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
 
@@ -49,10 +50,7 @@ const TWILIO_FROM    = process.env.TWILIO_FROM_NUMBER || '+19526496388';
 // Google Review link
 const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
 
-// Discord logging
-const DISCORD_BOT_TOKEN =
-  process.env.DISCORD_Q_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN;
-const DISCORD_OPS_CHANNEL = '1472767806452924520'; // #operations — SMS/errors only
+// Discord logging — #operations. See lib/discord-ops.js.
 
 // Upstash Redis — for follow-up claim only
 const KV_URL   = process.env.KV_REST_API_URL;
@@ -89,18 +87,13 @@ const squareHeaders = () => ({
 
 /** Post a message to Discord #operations */
 async function logDiscord(message) {
-  if (!DISCORD_BOT_TOKEN) {
+  const result = await postDiscordOperationsMessage(message);
+  if (result.skipped) {
     console.log('[discord-skip]', message);
     return;
   }
-  try {
-    await axios.post(
-      `https://discord.com/api/v10/channels/${DISCORD_OPS_CHANNEL}/messages`,
-      { content: message },
-      { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, 'Content-Type': 'application/json' } }
-    );
-  } catch (err) {
-    console.error('[discord-error]', err.response?.data || err.message);
+  if (!result.ok) {
+    console.error('[discord-error]', result.envName, result.error);
   }
 }
 
