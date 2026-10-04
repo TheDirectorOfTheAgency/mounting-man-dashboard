@@ -9,6 +9,7 @@ test('privacy policy discloses advertising measurement data sharing and customer
   assert.match(privacySource, /service outcome data/i);
   assert.match(privacySource, /including Google/i);
   assert.match(privacySource, /measure whether advertising led to a booked and completed service/i);
+  assert.match(privacySource, /We may share booking and payment information, such as your email address, phone number, and the amount you paid, with advertising platforms such as Google to measure the performance of our ads\./);
   assert.match(privacySource, /do not sell/i);
   assert.match(privacySource, /deletion/i);
   assert.match(privacySource, /mailto:/i);

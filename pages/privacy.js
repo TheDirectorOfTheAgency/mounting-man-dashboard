@@ -18,6 +18,7 @@ export default function Privacy() {
 
       <h2>5. Advertising Measurement</h2>
       <p>We may securely share hashed contact information and service outcome data with advertising platforms, including Google, to measure whether advertising led to a booked and completed service. We do not sell this information.</p>
+      <p>We may share booking and payment information, such as your email address, phone number, and the amount you paid, with advertising platforms such as Google to measure the performance of our ads.</p>
 
       <h2>6. Data Security</h2>
       <p>We take reasonable precautions to protect your information. However, no method of transmission over the internet is 100% secure.</p>
