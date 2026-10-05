@@ -60,11 +60,13 @@ test('capture endpoint stores only sanitized paid evidence behind booking refere
     hasWbraid: false,
   });
 
-  const rendered = JSON.stringify({ saved, logs, response: res.body });
+  assert.equal(saved[0].gclid, 'raw-click-id-must-be-ignored');
+  assert.equal(saved[0].gbraid, null);
+  assert.equal(saved[0].zenCustomerId, 'zen-customer-sensitive');
+  const rendered = JSON.stringify({ logs, response: res.body });
   assert.equal(rendered.includes('raw-click-id-must-be-ignored'), false);
-  assert.equal(rendered.includes('zen-customer-sensitive'), true);
-  assert.equal(JSON.stringify({ logs, response: res.body }).includes('zen-customer-sensitive'), false);
-  assert.equal(JSON.stringify({ logs, response: res.body }).includes('booking-session-sensitive'), false);
+  assert.equal(rendered.includes('zen-customer-sensitive'), false);
+  assert.equal(rendered.includes('booking-session-sensitive'), false);
 });
 
 test('capture endpoint rejects foreign origins and non-paid traffic', async () => {

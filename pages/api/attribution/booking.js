@@ -1,5 +1,5 @@
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
-import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
+import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 4096;
@@ -112,10 +112,16 @@ export function createBookingAttributionHandler({
         }
         activeStore = createAttributionStore(activeKV);
       }
+      const click = extractClickIdentifiers({
+        gclid: body.gclid || body.acquisition?.gclid,
+        gbraid: body.gbraid || body.acquisition?.gbraid,
+      });
       await activeStore.saveBookingAttribution({
         zenCustomerId,
         bookingSession,
         acquisition,
+        gclid: click.gclid,
+        gbraid: click.gbraid,
       });
       logger.info('booking_attribution_captured', {
         bookingRef,

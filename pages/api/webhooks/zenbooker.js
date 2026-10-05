@@ -113,13 +113,19 @@ export function createZenbookerWebhookHandler({
         activeStore = createAttributionStore(activeKV);
       }
 
-      if (!candidate.acquisition?.paidEvidence && typeof activeStore.getBookingAttribution === 'function') {
+      if (typeof activeStore.getBookingAttribution === 'function') {
         const bookingAttribution = await activeStore.getBookingAttribution({
           zenCustomerId: candidate.zenCustomerId,
           bookingSession: candidate.bookingSession,
         });
-        if (bookingAttribution?.acquisition) {
+        if (!candidate.acquisition?.paidEvidence && bookingAttribution?.acquisition) {
           candidate = { ...candidate, acquisition: bookingAttribution.acquisition };
+        }
+        if (!candidate.gclid && bookingAttribution?.gclid) {
+          candidate = { ...candidate, gclid: bookingAttribution.gclid };
+        }
+        if (!candidate.gbraid && bookingAttribution?.gbraid) {
+          candidate = { ...candidate, gbraid: bookingAttribution.gbraid };
         }
       }
       if (!candidate.acquisition?.paidEvidence) {

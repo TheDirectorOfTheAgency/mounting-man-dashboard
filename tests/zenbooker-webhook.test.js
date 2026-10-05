@@ -182,6 +182,7 @@ test('captured booking attribution joins by ZenBooker customer and reaches the c
           mediumClass: 'cpc',
           hasGclid: true,
         },
+        gclid: 'stored-click-id',
       }
     ),
     coordinator: {
@@ -202,6 +203,8 @@ test('captured booking attribution joins by ZenBooker customer and reaches the c
   assert.equal(calls.length, 1);
   assert.equal(calls[0].acquisition.paidEvidence, true);
   assert.equal(calls[0].acquisition.paidMarker, 'gclid');
+  assert.equal(calls[0].gclid, 'stored-click-id');
+  assert.equal(JSON.stringify(res.body).includes('stored-click-id'), false);
 });
 
 test('retryable coordinator upload failure returns 200 so ZenBooker does not disable the hook', async (t) => {

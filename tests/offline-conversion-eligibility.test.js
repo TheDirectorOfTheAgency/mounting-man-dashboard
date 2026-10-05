@@ -88,6 +88,20 @@ test('acquisition normalization records presence and classifications, not raw va
   assert.equal(JSON.stringify(result).includes('secret-path'), false);
 });
 
+test('candidate keeps a click id beside acquisition and acquisition stays redacted', () => {
+  const candidate = extractJobCandidate({
+    data: {
+      id: 'job-1',
+      status: 'completed',
+      created_by: 'customer',
+      tracking: { gclid: 'click-id-value', gbraid: 'braid-id-value' },
+    },
+  });
+  assert.equal(candidate.gclid, 'click-id-value');
+  assert.equal(candidate.gbraid, 'braid-id-value');
+  assert.equal(JSON.stringify(candidate.acquisition).includes('click-id-value'), false);
+});
+
 test('candidate extraction accepts timestamped direct ZenBooker consent without invoice value fallback', () => {
   const candidate = extractJobCandidate(
     {

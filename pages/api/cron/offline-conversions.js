@@ -11,8 +11,10 @@ import { postDiscordOperationsMessage } from '../../../lib/discord-ops.js';
 import {
   CHANGE_RECORD,
   LOOKBACK_MS,
+  conversionIdentifierCounts,
   createDailyGoogleUpload,
   createDailyUploadLedger,
+  debugOrderIdFromQuery,
   fetchCompletedSquarePayments,
   fetchSquareCustomers,
   formatDiscordSummary,
@@ -47,6 +49,7 @@ export default async function handler(req, res) {
   if (!authorized(req)) return res.status(401).json({ error: 'Unauthorized' });
 
   const validateOnly = validateOnlyRequested(req);
+  const debugOrderId = debugOrderIdFromQuery(req.query || {});
   const { token, locationId } = squareCredentials();
   if (!token || !locationId) {
     return res.status(500).json({ error: 'Missing Square credentials' });
@@ -81,22 +84,31 @@ export default async function handler(req, res) {
       store: kvBindings?.store || null,
       ledger: kvBindings?.ledger || null,
       validateOnly,
+      debugOrderId,
       uploadConversion: createDailyGoogleUpload(process.env, axios),
     });
-    const publicSummary = {
+    const counts = conversionIdentifierCounts(summary.orders);
+    const compactSummary = {
       changeRecord: summary.changeRecord,
       conversionActionId: summary.conversionActionId,
       validateOnly: summary.validateOnly,
       uploadedCount: summary.uploadedCount,
       totalValue: summary.totalValue,
-      currency: summary.currency,
-      orders: summary.orders,
-      errors: summary.errors,
+      gclidCount: summary.gclidCount ?? counts.gclidCount,
+      gbraidCount: summary.gbraidCount ?? counts.gbraidCount,
+      piiOnlyCount: summary.piiOnlyCount ?? counts.piiOnlyCount,
       skippedCount: summary.skipped.length,
       rejectedCount: summary.rejected.length,
+      errors: summary.errors,
       stoppedEarly: Boolean(summary.stoppedEarly),
     };
-    console.log('daily_offline_conversion_summary', publicSummary);
+    const publicSummary = {
+      ...compactSummary,
+      currency: summary.currency,
+      orders: summary.orders,
+    };
+    console.log('daily_offline_conversion_summary', compactSummary);
+    console.log('daily_offline_conversion_orders', summary.orders);
     const discord = await postDiscordOperationsMessage(formatDiscordSummary(publicSummary));
     if (!discord.ok && !discord.skipped) {
       console.error('[discord-error]', discord.envName, discord.error);
