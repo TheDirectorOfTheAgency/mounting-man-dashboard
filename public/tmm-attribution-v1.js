@@ -40,6 +40,7 @@
       hasLandingContext: true,
       gclid: marker === 'gclid' ? clickValue('gclid') : '',
       gbraid: marker === 'gbraid' ? clickValue('gbraid') : '',
+      wbraid: marker === 'wbraid' ? clickValue('wbraid') : '',
     };
   }
 
@@ -68,6 +69,7 @@
         acquisition: storedAcquisition,
         gclid: storedAcquisition.gclid || '',
         gbraid: storedAcquisition.gbraid || '',
+        wbraid: storedAcquisition.wbraid || '',
       }),
     }).then(function (response) {
       if (response.ok) localStorage.removeItem(STORAGE_KEY);

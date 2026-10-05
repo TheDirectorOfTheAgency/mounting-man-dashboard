@@ -127,6 +127,9 @@ export function createZenbookerWebhookHandler({
         if (!candidate.gbraid && bookingAttribution?.gbraid) {
           candidate = { ...candidate, gbraid: bookingAttribution.gbraid };
         }
+        if (!candidate.wbraid && bookingAttribution?.wbraid) {
+          candidate = { ...candidate, wbraid: bookingAttribution.wbraid };
+        }
       }
       if (!candidate.acquisition?.paidEvidence) {
         logger.info('offline_conversion_candidate_skipped', {

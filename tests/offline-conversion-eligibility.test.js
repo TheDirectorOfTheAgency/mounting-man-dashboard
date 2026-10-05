@@ -99,7 +99,22 @@ test('candidate keeps a click id beside acquisition and acquisition stays redact
   });
   assert.equal(candidate.gclid, 'click-id-value');
   assert.equal(candidate.gbraid, 'braid-id-value');
+  assert.equal(candidate.wbraid, null);
   assert.equal(JSON.stringify(candidate.acquisition).includes('click-id-value'), false);
+});
+
+test('candidate keeps a wbraid beside acquisition', () => {
+  const candidate = extractJobCandidate({
+    data: {
+      id: 'job-wbraid',
+      status: 'completed',
+      created_by: 'customer',
+      tracking: { wbraid: 'web-braid-value' },
+    },
+  });
+  assert.equal(candidate.wbraid, 'web-braid-value');
+  assert.equal(candidate.gclid, null);
+  assert.equal(JSON.stringify(candidate.acquisition).includes('web-braid-value'), false);
 });
 
 test('candidate extraction accepts timestamped direct ZenBooker consent without invoice value fallback', () => {
