@@ -4,6 +4,7 @@ import test from 'node:test';
 import { resolveAdUserDataConsent } from '../lib/ad-user-data-consent.js';
 import {
   createDailyUploadLedger,
+  debugOrderIdFromQuery,
   prepareDailyOrders,
   runDailyOfflineConversions,
 } from '../lib/daily-offline-conversions.js';
@@ -284,4 +285,190 @@ test('a job the existing hook already uploaded is not sent again', async () => {
   });
   assert.equal(calls, 0);
   assert.equal(result.skipped[0].reason, 'already_uploaded');
+});
+
+async function saveClickedJob(store, { jobId, gclid = null, gbraid = null, completedAt = '2026-10-04T18:00:00.000Z' }) {
+  await store.savePendingJob({
+    jobId,
+    squareCustomerId: 'customer-1',
+    completedAt,
+    consentStatus: 'UNKNOWN',
+    gclid,
+    gbraid,
+    acquisition: {
+      paidEvidence: true,
+      paidMarker: gclid ? 'gclid' : 'gbraid',
+      hasGclid: Boolean(gclid),
+      hasGbraid: Boolean(gbraid),
+    },
+  });
+}
+
+test('attribution join attaches one customer click id and keeps hashed email and phone', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await saveClickedJob(store, { jobId: 'job-hit', gclid: 'click-hit-1' });
+  const calls = [];
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger: createDailyUploadLedger(createFakeKv()),
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true, googleRequestId: 'request-hit' };
+    },
+  });
+  assert.equal(calls[0].gclid, 'click-hit-1');
+  assert.equal(calls[0].gbraid, null);
+  assert.equal(calls[0].email, usCustomer.email_address);
+  assert.equal(calls[0].phone, usCustomer.phone_number);
+  assert.equal(calls[0].consentStatus, 'GRANTED');
+  assert.equal(result.gclidCount, 1);
+  assert.equal(result.gbraidCount, 0);
+  assert.equal(result.piiOnlyCount, 0);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone', 'gclid']);
+});
+
+test('attribution join misses when the store has no click id', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await saveClickedJob(store, { jobId: 'job-miss' });
+  const calls = [];
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger: createDailyUploadLedger(createFakeKv()),
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true };
+    },
+  });
+  assert.equal(calls[0].gclid, null);
+  assert.equal(calls[0].gbraid, null);
+  assert.equal(result.gclidCount, 0);
+  assert.equal(result.piiOnlyCount, 1);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone']);
+});
+
+test('attribution join leaves the order PII-only when several jobs disagree on the click id', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await saveClickedJob(store, { jobId: 'job-a', gclid: 'click-aaa' });
+  await saveClickedJob(store, { jobId: 'job-b', gclid: 'click-bbb' });
+  const calls = [];
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger: createDailyUploadLedger(createFakeKv()),
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true };
+    },
+  });
+  assert.equal(calls[0].gclid, null);
+  assert.equal(result.piiOnlyCount, 1);
+  assert.equal(result.gclidCount, 0);
+});
+
+test('payment binding picks one job when several customer jobs have click ids', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  await saveClickedJob(store, { jobId: 'job-bound', gclid: 'click-bound' });
+  await saveClickedJob(store, { jobId: 'job-other', gclid: 'click-other' });
+  await store.bindPaymentToJob('payment-1', 'job-bound');
+  const calls = [];
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger: createDailyUploadLedger(kv),
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true };
+    },
+  });
+  assert.equal(calls[0].gclid, 'click-bound');
+  assert.equal(result.gclidCount, 1);
+});
+
+test('identifier counts separate gclid, gbraid, and PII-only uploads', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await store.savePendingJob({
+    jobId: 'job-gclid',
+    squareCustomerId: 'customer-1',
+    completedAt: '2026-10-04T18:00:00.000Z',
+    gclid: 'click-count-1',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+  });
+  await store.savePendingJob({
+    jobId: 'job-gbraid',
+    squareCustomerId: 'customer-2',
+    completedAt: '2026-10-04T18:00:00.000Z',
+    gbraid: 'braid-count-1',
+    acquisition: { paidEvidence: true, paidMarker: 'gbraid', hasGbraid: true },
+  });
+  const result = await runDailyOfflineConversions({
+    payments: [
+      payment(),
+      payment({ id: 'payment-2', order_id: 'order-2', customer_id: 'customer-2' }),
+      payment({ id: 'payment-3', order_id: 'order-3', customer_id: 'customer-3' }),
+    ],
+    customersById: {
+      'customer-1': usCustomer,
+      'customer-2': usCustomer,
+      'customer-3': usCustomer,
+    },
+    store,
+    ledger: createDailyUploadLedger(createFakeKv()),
+    uploadConversion: async () => ({ success: true }),
+  });
+  assert.equal(result.uploadedCount, 3);
+  assert.equal(result.gclidCount, 1);
+  assert.equal(result.gbraidCount, 1);
+  assert.equal(result.piiOnlyCount, 1);
+});
+
+test('ledger still skips an already-uploaded order after a click id is available', async () => {
+  const kv = createFakeKv();
+  const ledger = createDailyUploadLedger(kv);
+  await ledger.record('order-1', { status: 'uploaded', changeRecord: 'LEDGER-2026-10-04-CONVERSION-TRACKING' });
+  const store = createAttributionStore(kv);
+  await saveClickedJob(store, { jobId: 'job-later', gclid: 'click-later' });
+  let calls = 0;
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger,
+    uploadConversion: async () => {
+      calls += 1;
+      return { success: true };
+    },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.uploadedCount, 0);
+  assert.equal(result.gclidCount, 0);
+  assert.equal(result.skipped[0].reason, 'already_uploaded');
+});
+
+test('debug_enabled stays off unless a single order id is named', async () => {
+  assert.equal(debugOrderIdFromQuery({}), null);
+  assert.equal(debugOrderIdFromQuery({ debug_enabled: '1' }), null);
+  assert.equal(debugOrderIdFromQuery({ debug_enabled: '1', debugOrderId: 'order-2' }), 'order-2');
+  const calls = [];
+  await runDailyOfflineConversions({
+    payments: [
+      payment(),
+      payment({ id: 'payment-2', order_id: 'order-2' }),
+    ],
+    customersById: { 'customer-1': usCustomer },
+    ledger: createDailyUploadLedger(createFakeKv()),
+    debugOrderId: 'order-2',
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true };
+    },
+  });
+  assert.equal(calls[0].debugEnabled, false);
+  assert.equal(calls[1].debugEnabled, true);
 });

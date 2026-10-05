@@ -95,7 +95,7 @@ test('booking attribution is retrievable by session or customer without storing 
   }
 });
 
-test('pending jobs retain only coordinator metadata and never raw PII or click ids', async () => {
+test('pending jobs retain click ids and coordinator metadata and never raw PII', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);
 
@@ -122,6 +122,8 @@ test('pending jobs retain only coordinator metadata and never raw PII or click i
   assert.equal(jobs[0].consentCapturedAt, '2026-07-10T12:00:00.000Z');
   assert.equal(jobs[0].disclosureVersion, '2026-07-10');
   assert.equal(jobs[0].acquisition.paidMarker, 'gclid');
+  assert.equal(jobs[0].gclid, 'raw-click-id');
+  assert.equal(jobs[0].gbraid, null);
 
   const serialized = JSON.stringify(kv.writes);
   for (const forbidden of [
@@ -130,7 +132,6 @@ test('pending jobs retain only coordinator metadata and never raw PII or click i
     '+16125550123',
     'Private',
     'Customer',
-    'raw-click-id',
     'raw-consent-answer',
   ]) {
     assert.equal(serialized.includes(forbidden), false, `stored forbidden value ${forbidden}`);

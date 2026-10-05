@@ -45,6 +45,27 @@ test('Google conversion writes retain direct-owner headers and omit login-custom
   assert.deepEqual(request.payload.conversions[0].consent, { adUserData: 'GRANTED' });
   assert.equal(request.payload.conversions[0].consent.adPersonalization, undefined);
   assert.equal(request.payload.conversions[0].gclid, undefined);
+  assert.equal(request.payload.debugEnabled, undefined);
+});
+
+test('debugEnabled is sent only when the single-order canary asks for it', async (t) => {
+  installEnv(t);
+  let request;
+  await uploadOfflineConversion({
+    ...conversionInput(),
+    debugEnabled: true,
+  }, {
+    getAccessToken: async () => 'access-token',
+    getDeveloperToken: () => 'developer-token',
+    httpClient: {
+      async post(url, payload) {
+        request = { url, payload };
+        return { data: {}, headers: {} };
+      },
+    },
+  });
+  assert.equal(request.payload.debugEnabled, true);
+  assert.equal(request.payload.validateOnly, false);
 });
 
 test('gclid is sent when present and gbraid is omitted alongside it', async (t) => {

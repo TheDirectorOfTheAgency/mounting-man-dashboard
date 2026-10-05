@@ -11,8 +11,10 @@ test('first-party helper captures ZenBooker redirect references and posts to the
   assert.match(source, /\/thank-you/);
 });
 
-test('first-party helper never reads or logs a raw Google click id', () => {
-  assert.doesNotMatch(source, /params\.get\(['"]gclid['"]\)/);
+test('first-party helper sends the click id to the booking endpoint and does not log it', () => {
+  assert.match(source, /clickValue\('gclid'\)/);
+  assert.match(source, /clickValue\('gbraid'\)/);
+  assert.match(source, /params\.get\(name\)/);
   assert.doesNotMatch(source, /console\./);
-  assert.match(source, /params\.has\(['"]gclid['"]\)/);
+  assert.match(source, /gclid: storedAcquisition\.gclid/);
 });

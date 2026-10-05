@@ -13,6 +13,11 @@
       .slice(0, 64);
   }
 
+  function clickValue(name) {
+    if (!params.has(name)) return '';
+    return String(params.get(name) || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 512);
+  }
+
   function readPaidAcquisition() {
     var marker = params.has('gclid')
       ? 'gclid'
@@ -33,6 +38,8 @@
       mediumClass: medium || (marker === 'gclid' ? 'cpc' : null),
       hasCampaign: params.has('utm_campaign'),
       hasLandingContext: true,
+      gclid: marker === 'gclid' ? clickValue('gclid') : '',
+      gbraid: marker === 'gbraid' ? clickValue('gbraid') : '',
     };
   }
 
@@ -59,6 +66,8 @@
         customer_id: customerId,
         booking_session: bookingSession,
         acquisition: storedAcquisition,
+        gclid: storedAcquisition.gclid || '',
+        gbraid: storedAcquisition.gbraid || '',
       }),
     }).then(function (response) {
       if (response.ok) localStorage.removeItem(STORAGE_KEY);
