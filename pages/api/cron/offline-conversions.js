@@ -96,6 +96,7 @@ export default async function handler(req, res) {
       totalValue: summary.totalValue,
       gclidCount: summary.gclidCount ?? counts.gclidCount,
       gbraidCount: summary.gbraidCount ?? counts.gbraidCount,
+      wbraidCount: summary.wbraidCount ?? counts.wbraidCount,
       piiOnlyCount: summary.piiOnlyCount ?? counts.piiOnlyCount,
       skippedCount: summary.skipped.length,
       rejectedCount: summary.rejected.length,

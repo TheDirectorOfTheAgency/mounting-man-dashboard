@@ -115,6 +115,7 @@ export function createBookingAttributionHandler({
       const click = extractClickIdentifiers({
         gclid: body.gclid || body.acquisition?.gclid,
         gbraid: body.gbraid || body.acquisition?.gbraid,
+        wbraid: body.wbraid || body.acquisition?.wbraid,
       });
       await activeStore.saveBookingAttribution({
         zenCustomerId,
@@ -122,6 +123,7 @@ export function createBookingAttributionHandler({
         acquisition,
         gclid: click.gclid,
         gbraid: click.gbraid,
+        wbraid: click.wbraid,
       });
       logger.info('booking_attribution_captured', {
         bookingRef,

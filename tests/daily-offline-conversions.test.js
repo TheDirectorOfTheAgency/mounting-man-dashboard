@@ -287,7 +287,13 @@ test('a job the existing hook already uploaded is not sent again', async () => {
   assert.equal(result.skipped[0].reason, 'already_uploaded');
 });
 
-async function saveClickedJob(store, { jobId, gclid = null, gbraid = null, completedAt = '2026-10-04T18:00:00.000Z' }) {
+async function saveClickedJob(store, {
+  jobId,
+  gclid = null,
+  gbraid = null,
+  wbraid = null,
+  completedAt = '2026-10-04T18:00:00.000Z',
+}) {
   await store.savePendingJob({
     jobId,
     squareCustomerId: 'customer-1',
@@ -295,11 +301,13 @@ async function saveClickedJob(store, { jobId, gclid = null, gbraid = null, compl
     consentStatus: 'UNKNOWN',
     gclid,
     gbraid,
+    wbraid,
     acquisition: {
       paidEvidence: true,
-      paidMarker: gclid ? 'gclid' : 'gbraid',
+      paidMarker: gclid ? 'gclid' : gbraid ? 'gbraid' : wbraid ? 'wbraid' : null,
       hasGclid: Boolean(gclid),
       hasGbraid: Boolean(gbraid),
+      hasWbraid: Boolean(wbraid),
     },
   });
 }
@@ -345,9 +353,35 @@ test('attribution join misses when the store has no click id', async () => {
   });
   assert.equal(calls[0].gclid, null);
   assert.equal(calls[0].gbraid, null);
+  assert.equal(calls[0].wbraid, null);
   assert.equal(result.gclidCount, 0);
+  assert.equal(result.wbraidCount, 0);
   assert.equal(result.piiOnlyCount, 1);
   assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone']);
+});
+
+test('attribution join attaches a stored wbraid when gclid and gbraid are absent', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await saveClickedJob(store, { jobId: 'job-web', wbraid: 'web-hit-1' });
+  const calls = [];
+  const result = await runDailyOfflineConversions({
+    payments: [payment()],
+    customersById: { 'customer-1': usCustomer },
+    store,
+    ledger: createDailyUploadLedger(createFakeKv()),
+    uploadConversion: async (value) => {
+      calls.push(value);
+      return { success: true, googleRequestId: 'request-web' };
+    },
+  });
+  assert.equal(calls[0].gclid, null);
+  assert.equal(calls[0].gbraid, null);
+  assert.equal(calls[0].wbraid, 'web-hit-1');
+  assert.equal(result.gclidCount, 0);
+  assert.equal(result.gbraidCount, 0);
+  assert.equal(result.wbraidCount, 1);
+  assert.equal(result.piiOnlyCount, 0);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone', 'wbraid']);
 });
 
 test('attribution join leaves the order PII-only when several jobs disagree on the click id', async () => {

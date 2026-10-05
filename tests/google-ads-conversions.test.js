@@ -87,10 +87,32 @@ test('gclid is sent when present and gbraid is omitted alongside it', async (t) 
   });
   assert.equal(request.payload.conversions[0].gclid, 'click-1');
   assert.equal(request.payload.conversions[0].gbraid, undefined);
+  assert.equal(request.payload.conversions[0].wbraid, undefined);
   assert.equal(
     request.payload.conversions[0].conversionAction,
     'customers/1287907452/conversionActions/7509313857',
   );
+});
+
+test('wbraid is sent only when gclid and gbraid are absent', async (t) => {
+  installEnv(t);
+  let request;
+  await uploadOfflineConversion({
+    ...conversionInput(),
+    wbraid: 'web-braid-1',
+  }, {
+    getAccessToken: async () => 'access-token',
+    getDeveloperToken: () => 'developer-token',
+    httpClient: {
+      async post(url, payload) {
+        request = { url, payload };
+        return { data: {}, headers: {} };
+      },
+    },
+  });
+  assert.equal(request.payload.conversions[0].gclid, undefined);
+  assert.equal(request.payload.conversions[0].gbraid, undefined);
+  assert.equal(request.payload.conversions[0].wbraid, 'web-braid-1');
 });
 
 test('Google partial failure is retryable when the returned status is transient', async (t) => {

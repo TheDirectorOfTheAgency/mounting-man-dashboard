@@ -14,7 +14,9 @@ test('first-party helper captures ZenBooker redirect references and posts to the
 test('first-party helper sends the click id to the booking endpoint and does not log it', () => {
   assert.match(source, /clickValue\('gclid'\)/);
   assert.match(source, /clickValue\('gbraid'\)/);
+  assert.match(source, /clickValue\('wbraid'\)/);
   assert.match(source, /params\.get\(name\)/);
   assert.doesNotMatch(source, /console\./);
   assert.match(source, /gclid: storedAcquisition\.gclid/);
+  assert.match(source, /wbraid: storedAcquisition\.wbraid/);
 });

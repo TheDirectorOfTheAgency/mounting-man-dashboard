@@ -88,6 +88,45 @@ test('capture endpoint rejects foreign origins and non-paid traffic', async () =
   assert.equal(organic.body.errorCode, 'PAID_EVIDENCE_REQUIRED');
 });
 
+test('capture endpoint stores a raw wbraid beside sanitized acquisition', async () => {
+  const saved = [];
+  const logs = [];
+  const handler = createBookingAttributionHandler({
+    attributionStore: {
+      async saveBookingAttribution(value) {
+        saved.push(value);
+      },
+    },
+    logger: {
+      info: (...args) => logs.push(args),
+      warn: (...args) => logs.push(args),
+      error: (...args) => logs.push(args),
+    },
+  });
+  const res = createResponse();
+  await handler(request({
+    body: {
+      ...request().body,
+      acquisition: {
+        paidMarker: 'wbraid',
+        sourceClass: 'google',
+        mediumClass: 'cpc',
+        hasLandingContext: true,
+        wbraid: 'web-braid-must-not-log',
+      },
+      wbraid: 'web-braid-must-not-log',
+    },
+  }), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(saved[0].gclid, null);
+  assert.equal(saved[0].gbraid, null);
+  assert.equal(saved[0].wbraid, 'web-braid-must-not-log');
+  assert.equal(saved[0].acquisition.hasWbraid, true);
+  assert.equal(JSON.stringify(saved[0].acquisition).includes('web-braid-must-not-log'), false);
+  assert.equal(JSON.stringify({ logs, response: res.body }).includes('web-braid-must-not-log'), false);
+});
+
 test('normalization never retains raw click identifiers', () => {
   const value = normalizeCapturedAcquisition({
     paidMarker: 'wbraid',
