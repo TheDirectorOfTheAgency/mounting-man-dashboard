@@ -57,7 +57,7 @@ test('stores and reads a job-to-Square mapping behind an opaque key', async () =
   assert.equal([...kv.values.keys()].some((key) => key.includes(mapping.jobId)), false);
 });
 
-test('booking attribution is retrievable by session or customer without storing raw identifiers or click ids', async () => {
+test('booking attribution is retrievable only by session without storing raw identifiers or nested click ids', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);
 
@@ -82,7 +82,7 @@ test('booking attribution is retrievable by session or customer without storing 
   const byCustomer = await store.getBookingAttribution({
     zenCustomerId: 'zen-customer-sensitive',
   });
-  assert.deepEqual(bySession.acquisition, byCustomer.acquisition);
+  assert.equal(byCustomer, null);
   assert.equal(bySession.acquisition.paidMarker, 'gclid');
 
   const serialized = JSON.stringify(kv.writes);
@@ -312,4 +312,27 @@ test('success records deduplicate by opaque job reference', async () => {
   assert.equal(serialized.includes('job-sensitive'), false);
   const successWrite = kv.writes.find((write) => write.key.startsWith('conv:success:'));
   assert.deepEqual(successWrite.options, {});
+});
+
+
+test('repeat customers retain separate booking attribution; missing and unknown sessions never use the latest customer record', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  for (const suffix of ['first', 'second']) {
+    await store.saveBookingAttribution({
+      zenCustomerId: 'repeat-customer',
+      bookingSession: `session-${suffix}`,
+      acquisition: { paidEvidence: true, paidMarker: 'gclid' },
+      gclid: `click-${suffix}`,
+    });
+  }
+  // Model existing production customer keys as well as freshly captured sessions.
+  assert.equal(kv.values.has(`attrib:booking-customer:${opaqueRef('repeat-customer')}`), true);
+  for (const bookingSession of [undefined, null, '', '   ', 'unknown-session']) {
+    assert.equal(await store.getBookingAttribution({ zenCustomerId: 'repeat-customer', bookingSession }), null);
+  }
+  for (const suffix of ['first', 'second', 'first']) {
+    const record = await store.getBookingAttribution({ zenCustomerId: 'repeat-customer', bookingSession: `session-${suffix}` });
+    assert.equal(record.gclid, `click-${suffix}`);
+  }
 });
