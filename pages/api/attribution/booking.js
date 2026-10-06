@@ -1,3 +1,4 @@
+import { considerCapture } from '../../../lib/attribution-bridge.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
@@ -117,7 +118,7 @@ export function createBookingAttributionHandler({
         gbraid: body.gbraid || body.acquisition?.gbraid,
         wbraid: body.wbraid || body.acquisition?.wbraid,
       });
-      await activeStore.saveBookingAttribution({
+      const saved = await activeStore.saveBookingAttribution({
         zenCustomerId,
         bookingSession,
         acquisition,
@@ -125,6 +126,18 @@ export function createBookingAttributionHandler({
         gbraid: click.gbraid,
         wbraid: click.wbraid,
       });
+      try {
+        await considerCapture({
+          store: activeStore,
+          zenCustomerId,
+          capturedAt: saved?.capturedAt,
+        });
+      } catch (error) {
+        logger.error('booking_attribution_bridge_failed', {
+          bookingRef,
+          errorType: error?.name || 'Error',
+        });
+      }
       logger.info('booking_attribution_captured', {
         bookingRef,
         paidMarker: acquisition.paidMarker,
