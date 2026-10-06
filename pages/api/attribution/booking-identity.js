@@ -1,4 +1,5 @@
 import { bookingRef, lookupBookingIdentity } from '../../../lib/booking-identity.js';
+import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 1024;
@@ -64,11 +65,25 @@ export function createRateLimiter({
   };
 }
 
+let cachedKV;
+async function getDefaultKV() {
+  if (cachedKV !== undefined) return cachedKV;
+  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) {
+    cachedKV = null;
+    return cachedKV;
+  }
+  const { kv } = await import('@vercel/kv');
+  cachedKV = kv;
+  return cachedKV;
+}
+
 export function createBookingIdentityHandler({
   allowedOrigin = DEFAULT_ALLOWED_ORIGIN,
   logger = defaultLogger(),
   lookup = lookupBookingIdentity,
   rateLimiter = createRateLimiter(),
+  attributionStore,
+  kvClient,
 } = {}) {
   return async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
@@ -97,7 +112,12 @@ export function createBookingIdentityHandler({
 
     const ref = bookingRef(customerId, bookingSession);
     try {
-      const result = await lookup({ customerId, bookingSession });
+      let store = attributionStore;
+      if (store === undefined) {
+        const activeKV = kvClient === undefined ? await getDefaultKV() : kvClient;
+        store = activeKV ? createAttributionStore(activeKV) : null;
+      }
+      const result = await lookup({ customerId, bookingSession, store });
       if (!result.found) {
         logger.info('booking_identity_not_found', { bookingRef: ref, reason: result.reason });
         return res.status(404).json({ found: false, errorCode: 'BOOKING_NOT_FOUND' });

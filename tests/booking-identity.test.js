@@ -8,6 +8,7 @@ import {
   normalizeEmailForEnhancedConversions,
   normalizePhoneForEnhancedConversions,
 } from '../lib/booking-identity.js';
+import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createBookingIdentityHandler, createRateLimiter } from '../pages/api/attribution/booking-identity.js';
 import { createResponse } from './webhook-test-helpers.js';
 
@@ -284,4 +285,124 @@ test('rate limiter window expires', () => {
   assert.equal(allow('a'), false);
   now = 1001;
   assert.equal(allow('a'), true);
+});
+
+function bridgeKv() {
+  const values = new Map();
+  const sets = new Map();
+  return {
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, structuredClone(value));
+      return 'OK';
+    },
+    async get(key) {
+      const value = values.get(key);
+      return value === undefined ? null : structuredClone(value);
+    },
+    async del(key) { return values.delete(key) ? 1 : 0; },
+    async sadd(key, ...members) {
+      const set = sets.get(key) || new Set();
+      for (const member of members) set.add(member);
+      sets.set(key, set);
+      return members.length;
+    },
+    async smembers(key) { return [...(sets.get(key) || new Set())]; },
+    async expire() { return 1; },
+  };
+}
+
+test('lookup uses the job-scoped mapping when the job has no booking_session', async () => {
+  const store = createAttributionStore(bridgeKv());
+  await store.saveJobBridge({
+    jobId: 'job-mapped',
+    sessionRef: (await store.saveBookingAttribution({
+      zenCustomerId: 'cust-1',
+      bookingSession: 'session-mapped',
+      capturedAt: new Date(NOW - 60 * 1000).toISOString(),
+      acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+      gclid: 'identity-click-secret',
+    })).sessionRef,
+    source: 'window',
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+    gclid: 'identity-click-secret',
+  });
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-mapped',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      job({ id: 'job-mapped', booking_session: undefined }),
+      job({
+        id: 'job-other',
+        booking_session: undefined,
+        customer: { id: 'cust-1', email: 'other@example.com', phone: '6125559999' },
+      }),
+    ]),
+    now: NOW,
+  });
+  assert.equal(result.found, true);
+  assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
+  assert.equal(JSON.stringify(result).includes('identity-click-secret'), false);
+  assert.equal(await store.getJobIdForSession('session-other'), null);
+});
+
+test('lookup bridges one in-window capture to the only in-window job without a session field', async () => {
+  const store = createAttributionStore(bridgeKv());
+  await store.saveBookingAttribution({
+    zenCustomerId: 'cust-1',
+    bookingSession: 'session-window',
+    capturedAt: new Date(NOW - 60 * 1000).toISOString(),
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+    gclid: 'identity-click-secret',
+  });
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-window',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      job({
+        id: 'job-window',
+        booking_session: undefined,
+        created: new Date(NOW - 2 * 60 * 1000).toISOString(),
+      }),
+      job({
+        id: 'job-old',
+        booking_session: undefined,
+        created: new Date(NOW - 3 * 60 * 60 * 1000).toISOString(),
+        customer: { id: 'cust-1', email: 'other@example.com', phone: '6125550000' },
+      }),
+    ]),
+    now: NOW,
+  });
+  assert.equal(result.found, true);
+  assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
+  assert.equal(await store.getJobIdForSession('session-window'), 'job-window');
+  assert.equal(JSON.stringify(result).includes('identity-click-secret'), false);
+});
+
+test('lookup does not bridge when two jobs were created inside the window', async () => {
+  const store = createAttributionStore(bridgeKv());
+  await store.saveBookingAttribution({
+    zenCustomerId: 'cust-1',
+    bookingSession: 'session-two-jobs',
+    capturedAt: new Date(NOW - 60 * 1000).toISOString(),
+    acquisition: { paidEvidence: true, paidMarker: 'gclid', hasGclid: true },
+    gclid: 'identity-click-secret',
+  });
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-two-jobs',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      job({ id: 'job-a', booking_session: undefined, created: new Date(NOW - 2 * 60 * 1000).toISOString() }),
+      job({ id: 'job-b', booking_session: undefined, created: new Date(NOW - 4 * 60 * 1000).toISOString() }),
+    ]),
+    now: NOW,
+  });
+  assert.deepEqual(result, { found: false, reason: 'not_found' });
+  assert.equal(await store.getJobIdForSession('session-two-jobs'), null);
 });

@@ -12,6 +12,13 @@ import {
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
+import {
+  applyBridgeToCandidate,
+  bridgeMode,
+  bridgeWindowMs,
+  logBridgeDecision,
+  resolveCompletedBridge,
+} from '../../../lib/attribution-bridge.js';
 
 let cachedKV;
 async function getDefaultKV() {
@@ -54,6 +61,9 @@ export function createZenbookerWebhookHandler({
   kvClient,
   uploadConversion = uploadOfflineConversion,
   mode,
+  attributionBridgeMode,
+  bridgeWindow,
+  listJobs,
   disclosureVersion,
   consentFieldLabel,
   logger = defaultLogger(),
@@ -132,6 +142,29 @@ export function createZenbookerWebhookHandler({
         if (!candidate.wbraid && bookingAttribution?.wbraid) {
           candidate = { ...candidate, wbraid: bookingAttribution.wbraid };
         }
+      }
+      const activeBridgeMode = attributionBridgeMode ?? bridgeMode();
+      try {
+        const bridgeDecision = await resolveCompletedBridge({
+          store: activeStore,
+          candidate,
+          payload: req.body,
+          windowMs: bridgeWindow ?? bridgeWindowMs(),
+          listJobs,
+        });
+        logBridgeDecision(bridgeDecision);
+        if (activeBridgeMode === 'live') {
+          candidate = applyBridgeToCandidate(candidate, bridgeDecision);
+        }
+      } catch {
+        logBridgeDecision({
+          jobId: candidate.jobId,
+          decision: 'no_bridge',
+          reason: 'error',
+          hasGclid: false,
+          hasGbraid: false,
+          hasWbraid: false,
+        });
       }
       if (!candidate.acquisition?.paidEvidence) {
         logger.info('offline_conversion_candidate_skipped', {

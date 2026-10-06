@@ -12,6 +12,7 @@
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker-to-square?secret=<ZENBOOKER_WEBHOOK_SECRET>
 
 import axios from 'axios';
+import { considerIncomingJob } from '../../../lib/attribution-bridge.js';
 import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
 import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
 import {
@@ -1404,6 +1405,21 @@ export function createZenbookerToSquareHandler({
 
   const payload = req.body;
   logPayloadConversionSummary(payload);
+  try {
+    const bridgeStore = attributionStore === undefined
+      ? await loadAttributionStore()
+      : attributionStore;
+    await considerIncomingJob({ payload, store: bridgeStore });
+  } catch {
+    console.log('ZB_BRIDGE_DECISION', JSON.stringify({
+      jobId: null,
+      decision: 'no_bridge',
+      reason: 'error',
+      hasGclid: false,
+      hasGbraid: false,
+      hasWbraid: false,
+    }));
+  }
 
   // Log top-level keys + condensed payload (avoid Vercel log truncation)
   console.log('=== ZENBOOKER → SQUARE WEBHOOK ===');
