@@ -11,6 +11,7 @@ import {
 } from '../../../lib/offline-conversion-eligibility.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
+import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
 
 let cachedKV;
 async function getDefaultKV() {
@@ -70,6 +71,8 @@ export function createZenbookerWebhookHandler({
       logger.warn('offline_conversion_auth_failed', {});
       return res.status(401).json({ error: 'Unauthorized' });
     }
+
+    logPayloadConversionSummary(req.body);
 
     const receivedEvent = eventType(req);
     if (receivedEvent && receivedEvent !== 'job.completed') {

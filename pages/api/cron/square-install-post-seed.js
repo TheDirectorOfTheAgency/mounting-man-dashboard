@@ -1,5 +1,6 @@
 import axios from 'axios';
 
+import { runConversionSummaryKeyProbeOnce } from '../../../lib/conversion-summary-keys.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
@@ -45,6 +46,14 @@ export default async function handler(req, res) {
 
   if (!authorizedByBearer && !authorizedByVercelCron) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    await runConversionSummaryKeyProbeOnce();
+  } catch (error) {
+    console.error('ZB_CONV_SUMMARY_KEYS_FETCH_FAILED', {
+      errorType: error?.name || 'Error',
+    });
   }
 
   if (!SQUARE_TOKEN || !SQUARE_LOCATION_ID) {
