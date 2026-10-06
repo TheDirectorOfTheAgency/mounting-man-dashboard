@@ -12,6 +12,7 @@
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/zenbooker-to-square?secret=<ZENBOOKER_WEBHOOK_SECRET>
 
 import axios from 'axios';
+import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
 import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
 import {
   buildSquareInvoiceRequest,
@@ -1402,6 +1403,7 @@ export function createZenbookerToSquareHandler({
   }
 
   const payload = req.body;
+  logPayloadConversionSummary(payload);
 
   // Log top-level keys + condensed payload (avoid Vercel log truncation)
   console.log('=== ZENBOOKER → SQUARE WEBHOOK ===');
