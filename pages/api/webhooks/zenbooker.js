@@ -115,7 +115,6 @@ export function createZenbookerWebhookHandler({
 
       if (typeof activeStore.getBookingAttribution === 'function') {
         const bookingAttribution = await activeStore.getBookingAttribution({
-          zenCustomerId: candidate.zenCustomerId,
           bookingSession: candidate.bookingSession,
         });
         if (!candidate.acquisition?.paidEvidence && bookingAttribution?.acquisition) {

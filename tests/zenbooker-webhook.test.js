@@ -167,7 +167,7 @@ test('plain Google source is rejected when no captured paid evidence exists', as
   assert.equal(res.body.reason, 'NO_PAID_ACQUISITION');
 });
 
-test('captured booking attribution joins by ZenBooker customer and reaches the coordinator', async (t) => {
+test('captured booking attribution joins by exact booking session and reaches the coordinator', async (t) => {
   const restoreEnv = installTestEnvironment();
   t.after(restoreEnv);
   const calls = [];
@@ -195,7 +195,7 @@ test('captured booking attribution joins by ZenBooker customer and reaches the c
     disclosureVersion: '2026-07-10',
     logger: quietLogger(),
   });
-  const payload = completedPayload({ tracking: { source: 'Google' } });
+  const payload = completedPayload({ booking_session: 'current-session', tracking: { source: 'Google' } });
   const res = createResponse();
   await handler(createRequest(payload), res);
 
