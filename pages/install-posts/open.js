@@ -75,7 +75,7 @@ function factRows(seed) {
 
 const SESSION_ERRORS = {
   expired: 'This link has expired — ask for a fresh one.',
-  no_session: 'This link has already been used up. Open it again from Discord.',
+  no_session: 'This link has already been used up. Ask for a fresh one.',
   bad_signature: 'This link is not valid.',
   malformed: 'This link is not valid.',
   unconfigured: 'The installation-post queue is not configured.',

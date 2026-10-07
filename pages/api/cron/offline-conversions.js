@@ -13,7 +13,7 @@
 
 import axios from 'axios';
 
-import { postDiscordOperationsMessage } from '../../../lib/discord-ops.js';
+import { deliverQAlert, offlineConversionFailureAlert } from '../../../lib/q-alert.js';
 import {
   CHANGE_RECORD,
   LOOKBACK_MS,
@@ -24,12 +24,20 @@ import {
   fetchCompletedSquarePaymentsForLocations,
   fetchSquareCustomers,
   filterPaymentsToOrder,
-  formatDiscordSummary,
   resolveSquareLocations,
   runDailyOfflineConversions,
   squareCredentials,
 } from '../../../lib/daily-offline-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+
+async function notifyFailure(alert, failure) {
+  if (!failure) return;
+  try {
+    await alert(failure);
+  } catch (error) {
+    console.error('[q-alert]', error.message);
+  }
+}
 
 function authorized(req) {
   const cronSecret = process.env.CRON_SECRET || '';
@@ -50,7 +58,8 @@ async function loadLedgerAndStore() {
   };
 }
 
-export default async function handler(req, res) {
+export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) {
+  return async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -153,16 +162,17 @@ export default async function handler(req, res) {
     };
     console.log('daily_offline_conversion_summary', compactSummary);
     console.log('daily_offline_conversion_orders', summary.orders);
-    const discord = await postDiscordOperationsMessage(formatDiscordSummary(publicSummary));
-    if (!discord.ok && !discord.skipped) {
-      console.error('[discord-error]', discord.envName, discord.error);
-    }
-    return res.status(200).json({ ...publicSummary, discordNotified: discord.ok === true });
+    await notifyFailure(alert, offlineConversionFailureAlert(publicSummary, { validateOnly }));
+    return res.status(200).json(publicSummary);
   } catch (error) {
     console.error('daily_offline_conversion_failed', { message: error.message });
+    await notifyFailure(alert, offlineConversionFailureAlert(null, { validateOnly, thrown: error }));
     return res.status(500).json({
       error: error.message || 'Daily offline conversion upload failed',
       changeRecord: CHANGE_RECORD,
     });
   }
 }
+}
+
+export default createOfflineConversionsHandler();

@@ -22,6 +22,15 @@ import {
 } from '../../../lib/zenbooker-square-invoice.mjs';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
+import { deliverQAlert } from '../../../lib/q-alert.js';
+import {
+  applyAssignment,
+  assignmentChanged,
+  fetchZenbookerJob,
+  isAssignmentEvent,
+  planUnassignedAlert,
+  resolveInstaller,
+} from '../../../lib/zenbooker-assignment.js';
 
 // ============================================================================
 // SQUARE CONFIG
@@ -164,19 +173,8 @@ async function readBookingAudit(jobId) {
   }
 }
 
-async function logDiscord(message) {
-  const token = process.env.DISCORD_Q_BOT_TOKEN || process.env.DISCORD_BOT_TOKEN;
-  const channelId = process.env.DISCORD_OPS_CHANNEL || '1472767806452924520';
-  if (!token) return;
-  try {
-    await axios.post(
-      `https://discord.com/api/v10/channels/${channelId}/messages`,
-      { content: message.slice(0, 1900) },
-      { headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' } }
-    );
-  } catch (err) {
-    console.warn('Discord alert failed:', err.response?.data || err.message);
-  }
+async function logOperations(message) {
+  console.warn('[zenbooker-square]', message);
 }
 
 // ============================================================================
@@ -1367,7 +1365,9 @@ export function createZenbookerToSquareHandler({
   createInvoice = createSquareInvoice,
   readAudit = readBookingAudit,
   writeAudit = writeBookingAudit,
-  operationsNotifier = logDiscord,
+  operationsNotifier = logOperations,
+  loadZenbookerJob = (id) => fetchZenbookerJob(id, { httpClient: axios }),
+  alert = deliverQAlert,
   attributionStore,
   loadAttributionStore = getDefaultAttributionStore,
   saveAttributionMapping = persistAttributionMapping,
@@ -1452,7 +1452,10 @@ export function createZenbookerToSquareHandler({
   try {
     const jobId        = resolveField(payload, FIELD_MAP.jobId);
     const jobNumber    = resolveField(payload, FIELD_MAP.jobNumber);
-    const eventType    = resolveField(payload, FIELD_MAP.eventType);
+    const eventType    = resolveField(payload, FIELD_MAP.eventType)
+      || req.headers?.event
+      || req.headers?.['x-zenbooker-event']
+      || null;
     const email        = resolveField(payload, FIELD_MAP.customerEmail);
     const phone        = resolveField(payload, FIELD_MAP.customerPhone);
     const totalAmount  = resolveField(payload, FIELD_MAP.totalAmount);
@@ -1481,27 +1484,60 @@ export function createZenbookerToSquareHandler({
       firstName = s.firstName; lastName = s.lastName;
     }
 
-    // Provider: ZenBooker sends assigned_providers[] array — take first entry
-    const rawProviders = resolveField(payload, FIELD_MAP.providerList);
-    const providerName = (Array.isArray(rawProviders) && rawProviders[0]?.name)
-      || resolveField(payload, FIELD_MAP.providerName)
-      || null;
-    const providerEmail = (Array.isArray(rawProviders) && rawProviders[0]?.email)
-      || resolveField(payload, FIELD_MAP.providerEmail)
-      || null;
+    // Empty provider lists are re-read from ZenBooker before the job is treated
+    // as unassigned. job.service_providers.assigned updates the stored installer
+    // without creating another Square customer, order, or invoice.
+    const dryRun = req.query.dryRun === '1'
+      || req.query.dry_run === '1'
+      || process.env.ZENBOOKER_SQUARE_INVOICE_DRY_RUN === '1';
+    const installer = jobId
+      ? await resolveInstaller(payload, jobId, loadZenbookerJob)
+      : { name: null, email: null, source: 'webhook', confirmed: false };
+    const lookedUp = resolveTechAssignment(installer.name);
+    const existingAudit = (!dryRun && jobId) ? await readAudit(jobId) : null;
+    let assignment = applyAssignment(existingAudit, {
+      providerName: installer.name,
+      providerEmail: installer.email,
+      assignmentMode: lookedUp.assignmentMode,
+      techSquareId: lookedUp.techSquareId,
+      resolvedProviderName: lookedUp.resolvedProviderName,
+      scheduledAt,
+      assignmentSource: installer.source,
+      confirmed: installer.confirmed,
+    });
+    if (jobId && planUnassignedAlert({
+      providerName: assignment.providerName,
+      scheduledAt: assignment.scheduledAt || scheduledAt,
+      alreadyAlerted: Boolean(assignment.unassignedAlertedAt),
+      dryRun,
+    })) {
+      try {
+        await alert({
+          kind: 'unassigned_job_soon',
+          subject: `Unassigned job ${jobNumber || jobId} starts within 24h`,
+          body: [
+            `Job ${jobNumber || jobId} is still unassigned after a ZenBooker check.`,
+            scheduledAt ? `Starts: ${scheduledAt}` : null,
+            jobCity ? `City: ${jobCity}` : null,
+            eventType ? `Event: ${eventType}` : null,
+          ].filter(Boolean).join('\n'),
+        });
+        assignment = { ...assignment, unassignedAlertedAt: new Date().toISOString() };
+      } catch (alertError) {
+        console.error('[q-alert] unassigned job alert failed', alertError.message);
+      }
+    }
+    const providerName = assignment.providerName;
+    const providerEmail = assignment.providerEmail;
+    const techSquareId = assignment.techSquareId;
+    const resolvedProviderName = assignment.resolvedProviderName;
+    const assignmentMode = assignment.assignmentMode;
 
     const serviceGroups = extractServiceGroups(payload, fallbackServiceName, rawOptions);
     const rawServices = resolveField(payload, ['data.services', 'services', 'data.job.services']) || [];
     const serviceName = summarizeServiceNames(serviceGroups) || fallbackServiceName;
     const fieldSelections = serviceGroups.flatMap((group) => group.fieldSelections || []);
     const optionSelections = serviceGroups.flatMap((group) => group.optionSelections || []);
-
-    // Technician lookup / fallback
-    const {
-      techSquareId,
-      resolvedProviderName,
-      assignmentMode,
-    } = resolveTechAssignment(providerName);
 
     console.log('Extracted:', {
       jobId, jobNumber, eventType, serviceName,
@@ -1527,16 +1563,15 @@ export function createZenbookerToSquareHandler({
       return res.status(200).json({ skipped: true, reason: 'No ZenBooker job ID' });
     }
 
-    if (!email && !phone) {
-      return res.status(200).json({ skipped: true, reason: 'No customer email or phone' });
-    }
-
-    const dryRun = req.query.dryRun === '1'
-      || req.query.dry_run === '1'
-      || process.env.ZENBOOKER_SQUARE_INVOICE_DRY_RUN === '1';
-    const existingAudit = await readAudit(jobId);
     if (!dryRun && existingAudit?.squareInvoiceId) {
       console.log(`Square invoice already recorded for ZenBooker job ${jobId}: ${existingAudit.squareInvoiceId}`);
+      if (assignmentChanged(existingAudit, assignment) || isAssignmentEvent(eventType)) {
+        await writeAudit(jobId, {
+          ...existingAudit,
+          ...assignment,
+          jobNumber: jobNumber || existingAudit.jobNumber || null,
+        });
+      }
       await persistRouteMapping(jobId, existingAudit.squareCustomerId);
       return res.status(200).json({
         processed: true,
@@ -1547,6 +1582,28 @@ export function createZenbookerToSquareHandler({
         squareCustomerId: existingAudit.squareCustomerId || null,
         squareOrderId: existingAudit.squareOrderId || null,
         squareInvoiceId: existingAudit.squareInvoiceId || null,
+        providerName,
+        techName: resolvedProviderName || null,
+        techAssignmentMode: assignmentMode,
+        assignmentUpdated: assignmentChanged(existingAudit, assignment),
+      });
+    }
+
+    if (!email && !phone) {
+      if (!dryRun && (isAssignmentEvent(eventType) || installer.confirmed || providerName)) {
+        await writeAudit(jobId, {
+          ...(existingAudit || {}),
+          ...assignment,
+          jobId,
+          jobNumber: jobNumber || existingAudit?.jobNumber || null,
+        });
+      }
+      return res.status(200).json({
+        skipped: true,
+        reason: 'No customer email or phone',
+        jobId,
+        providerName,
+        techAssignmentMode: assignmentMode,
       });
     }
 
@@ -1692,6 +1749,14 @@ export function createZenbookerToSquareHandler({
       })),
       mappingWarnings,
       unknownOptions: appointmentModel.unknownOptions,
+      providerName,
+      providerEmail,
+      assignmentMode,
+      techSquareId,
+      resolvedProviderName,
+      scheduledAt: assignment.scheduledAt || scheduledAt || null,
+      assignmentSource: assignment.assignmentSource || null,
+      unassignedAlertedAt: assignment.unassignedAlertedAt || null,
     };
 
     if (!dryRun) {
@@ -1732,6 +1797,7 @@ export function createZenbookerToSquareHandler({
       invoiceError,
       techMatched:      !!techSquareId,
       techName:         resolvedProviderName || null,
+      providerName,
       techAssignmentMode: assignmentMode,
       lineCount:        invoiceModel.lineItems.length,
       subtotalCents:    invoiceModel.subtotalCents,
@@ -1743,6 +1809,15 @@ export function createZenbookerToSquareHandler({
 
   } catch (err) {
     console.error('ZenBooker→Square error:', err.message, err.stack);
+    try {
+      await alert({
+        kind: 'webhook_unhandled_error',
+        subject: 'ZenBooker webhook error',
+        body: err.message || 'Unhandled ZenBooker webhook error',
+      });
+    } catch (alertError) {
+      console.error('[q-alert] webhook error alert failed', alertError.message);
+    }
     return res.status(200).json({ processed: false, error: err.message });
     }
   };
