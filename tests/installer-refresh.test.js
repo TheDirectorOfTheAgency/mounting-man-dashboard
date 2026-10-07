@@ -123,13 +123,17 @@ test('scheduled cron skips outside Chicago hours and a forced run still updates'
     env: { CRON_SECRET: 'cron-secret' },
     now: () => Date.parse('2026-10-07T11:00:00Z'),
     loadKv: async () => ({
-      async scan() { return ['0', ['zb2sq:job-730395', 'zb2sq:review-index']]; },
       async get(key) { return stored.get(key) || null; },
       async set(key, value) { stored.set(key, value); },
     }),
-    loadJob: async () => {
+    listJobs: async () => {
       fetched += 1;
-      return { id: 'job-730395', assigned_providers: [{ name: 'Marshall Wayne' }] };
+      return [{
+        id: 'job-730395',
+        job_number: '730395',
+        start_date: initial.scheduledAt,
+        assigned_providers: [{ name: 'Marshall Wayne' }],
+      }];
     },
     resolveTech: resolveTechAssignment,
     alert: async () => { throw new Error('outside window must not alert'); },
