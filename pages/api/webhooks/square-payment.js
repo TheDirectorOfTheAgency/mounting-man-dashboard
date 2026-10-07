@@ -7,9 +7,9 @@
 //   3. Fetch customer details from Square API (phone, name)
 //   4. After 24h install-post dedup, stage the phone-first Upstash queue and
 //      send the operator photo ask (upload link). Woodward is woken only for
-//      confidence holds or an undeliverable photo ask (no Discord install-thread)
+//      confidence holds or an undeliverable photo ask
 //   5. If customer has phone → send review SMS via Twilio
-//   6. Log SMS/errors to Discord #operations (not the Installation Posts thread)
+//   6. Log routine outcomes. Urgent failures alert Q.
 //
 // Webhook URL:
 //   https://mounting-man-dashboard.vercel.app/api/webhooks/square-payment
@@ -29,7 +29,7 @@ import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js'
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 import { customerWithMergedInstallAddress } from '../../../lib/install-post-seeds.mjs';
-import { postDiscordOperationsMessage } from '../../../lib/discord-ops.js';
+import { deliverQAlert } from '../../../lib/q-alert.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
 
@@ -49,8 +49,6 @@ const TWILIO_FROM    = process.env.TWILIO_FROM_NUMBER || '+19526496388';
 
 // Google Review link
 const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
-
-// Discord logging — #operations. See lib/discord-ops.js.
 
 // Upstash Redis — for follow-up claim only
 const KV_URL   = process.env.KV_REST_API_URL;
@@ -85,17 +83,11 @@ const squareHeaders = () => ({
   'Content-Type':   'application/json',
 });
 
-/** Post a message to Discord #operations */
-async function logDiscord(message) {
-  const result = await postDiscordOperationsMessage(message);
-  if (result.skipped) {
-    console.log('[discord-skip]', message);
-    return;
-  }
-  if (!result.ok) {
-    console.error('[discord-error]', result.envName, result.error);
-  }
+function logOperations(message) {
+  console.log('[square-webhook]', message);
 }
+
+const FAILED_PAYMENT_STATUSES = new Set(['FAILED', 'CANCELED', 'CANCELLED', 'DECLINED']);
 
 /** Atomically claim one customer follow-up for a Square event. */
 async function kvClaimFollowUp(key, value, ttl) {
@@ -228,7 +220,8 @@ export function createSquarePaymentHandler({
   signatureKey = SQUARE_WEBHOOK_SIG_KEY,
   signatureVerifier = verifySquareSignature,
   httpClient = axios,
-  operationsNotifier = logDiscord,
+  operationsNotifier = logOperations,
+  alert = deliverQAlert,
   installPostNotifier = notifyQInstallPost,
   reviewSmsSender = sendReviewSms,
   attributionCoordinator,
@@ -329,6 +322,18 @@ export function createSquarePaymentHandler({
 
     if (!isInvoiceEvent && paymentStatus && paymentStatus !== 'COMPLETED') {
       console.log(`[square-webhook] Ignoring payment ${paymentId} with status ${paymentStatus}`);
+      const normalizedStatus = String(paymentStatus).toUpperCase();
+      if (FAILED_PAYMENT_STATUSES.has(normalizedStatus)) {
+        try {
+          await alert({
+            kind: 'square_payment_failed',
+            subject: `Square payment ${normalizedStatus.toLowerCase()} ${paymentId}`,
+            body: `Square payment ${paymentId} is ${normalizedStatus}. Amount $${amount}.`,
+          });
+        } catch (alertError) {
+          logger.warn('square_payment_alert_failed', { errorType: alertError?.name || 'Error' });
+        }
+      }
       return res.status(200).json({ status: 'ignored', event: eventType, paymentStatus, paymentId });
     }
 
@@ -532,7 +537,15 @@ export function createSquarePaymentHandler({
 
   } catch (err) {
     console.error('[square-webhook] Unhandled error:', err);
-    await operationsNotifier(`🚨 **Square webhook error**: ${err.message}`);
+    try {
+      await alert({
+        kind: 'webhook_unhandled_error',
+        subject: 'Square webhook error',
+        body: err.message || 'Unhandled Square webhook error',
+      });
+    } catch (alertError) {
+      logger.warn('square_webhook_alert_failed', { errorType: alertError?.name || 'Error' });
+    }
     return res.status(500).json({ error: 'Internal server error' });
     }
   };
@@ -549,7 +562,7 @@ async function sendReviewSms(job) {
 
   if (!TWILIO_SID || !TWILIO_TOKEN) {
     console.error('[twilio-skip] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN');
-    await logDiscord(`⚠️ **Twilio not configured** — couldn't send review SMS to ${firstName} (${phone})`);
+    console.error(`[twilio-skip] Review SMS not sent for payment ${paymentId}`);
     return false;
   }
 
@@ -578,7 +591,6 @@ async function sendReviewSms(job) {
     return true;
   } catch (err) {
     console.error('[twilio-error]', err.response?.data || err.message);
-    await logDiscord(`🚨 **Twilio SMS failed** for ${firstName} (${phone}): ${err.response?.data?.message || err.message}`);
     return false;
   }
 }

@@ -12,6 +12,7 @@ import {
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createOfflineConversionCoordinator } from '../../../lib/offline-conversion-coordinator.js';
 import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
+import { deliverQAlert } from '../../../lib/q-alert.js';
 import {
   applyBridgeToCandidate,
   bridgeMode,
@@ -221,6 +222,15 @@ export function createZenbookerWebhookHandler({
         jobRef,
         errorType: error.name || 'Error',
       });
+      try {
+        await deliverQAlert({
+          kind: 'webhook_unhandled_error',
+          subject: 'ZenBooker offline conversion webhook error',
+          body: error.message || 'Unhandled webhook error',
+        });
+      } catch (alertError) {
+        logger.error('q_alert_failed', { errorType: alertError.name || 'Error' });
+      }
       return res.status(200).json({
         processed: false,
         retryable: true,

@@ -286,6 +286,107 @@ test('provider mapping modes and dry-run no-write behavior remain intact', async
   }
 });
 
+test('installer assignment updates after creation without another Square invoice', async (t) => {
+  installSecret(t);
+  const audits = [];
+  let stored = null;
+  let orders = 0;
+  const alerts = [];
+  const fetched = [];
+  const soon = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const handler = createZenbookerToSquareHandler({
+    findCustomer: async () => ({ id: 'square-customer-1' }),
+    createCustomer: async () => assert.fail('existing customer must be reused'),
+    createOrder: async () => {
+      orders += 1;
+      return { order: { id: 'square-order-1' }, error: null };
+    },
+    createInvoice: async () => ({ invoice: { id: 'square-invoice-1', status: 'DRAFT' }, error: null }),
+    readAudit: async () => stored,
+    writeAudit: async (_id, audit) => {
+      audits.push(structuredClone(audit));
+      stored = structuredClone(audit);
+    },
+    loadZenbookerJob: async (id) => {
+      fetched.push(id);
+      return { id, assigned_providers: [] };
+    },
+    alert: async (value) => { alerts.push(value); },
+    attributionStore: {},
+    saveAttributionMapping: async () => ({ saved: true }),
+  });
+
+  const created = createResponse();
+  await handler(request(payload({
+    assigned_providers: [],
+    start_date: soon,
+    job_number: '730395',
+    service_address: { line1: '1 Main', city: 'Waconia', state: 'MN', postal_code: '55387' },
+  })), created);
+
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.body.providerName, null);
+  assert.equal(created.body.techAssignmentMode, 'defaulted_unassigned');
+  assert.deepEqual(fetched, ['job-123']);
+  assert.equal(orders, 1);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].kind, 'unassigned_job_soon');
+  assert.match(alerts[0].subject, /730395/);
+  assert.equal(audits[0].providerName, null);
+  assert.equal(audits[0].assignmentMode, 'defaulted_unassigned');
+  assert.equal(audits[0].squareInvoiceId, 'square-invoice-1');
+
+  const assignedBody = payload({
+    assigned_providers: [{ name: 'Marshall Wayne', email: 'marshall@example.com' }],
+    start_date: soon,
+    job_number: '730395',
+  });
+  assignedBody.type = 'job.service_providers.assigned';
+  const assigned = createResponse();
+  await handler(request(assignedBody), assigned);
+
+  assert.equal(assigned.statusCode, 200);
+  assert.equal(assigned.body.skipped, true);
+  assert.equal(assigned.body.squareInvoiceId, 'square-invoice-1');
+  assert.equal(assigned.body.providerName, 'Marshall Wayne');
+  assert.equal(assigned.body.techAssignmentMode, 'mapped_assigned');
+  assert.equal(orders, 1);
+  assert.deepEqual(fetched, ['job-123']);
+  assert.equal(alerts.length, 1);
+  const updated = audits.at(-1);
+  assert.equal(updated.providerName, 'Marshall Wayne');
+  assert.equal(updated.assignmentMode, 'mapped_assigned');
+  assert.equal(updated.squareInvoiceId, 'square-invoice-1');
+  assert.equal(updated.squareOrderId, 'square-order-1');
+});
+
+test('an empty provider list is re-read from ZenBooker before the job is unassigned', async (t) => {
+  installSecret(t);
+  const audits = [];
+  const handler = createZenbookerToSquareHandler({
+    findCustomer: async () => ({ id: 'square-customer-1' }),
+    createOrder: async () => ({ order: { id: 'square-order-1' }, error: null }),
+    createInvoice: async () => ({ invoice: { id: 'square-invoice-1', status: 'DRAFT' }, error: null }),
+    readAudit: async () => null,
+    writeAudit: async (_id, audit) => { audits.push(audit); },
+    loadZenbookerJob: async () => ({
+      assigned_providers: [{ name: 'Marshall Wayne', email: 'marshall@example.com' }],
+    }),
+    alert: async () => assert.fail('a refreshed assignment is not an unassigned alert'),
+    attributionStore: {},
+    saveAttributionMapping: async () => ({ saved: true }),
+  });
+  const res = createResponse();
+  await handler(request(payload({ assigned_providers: [] })), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.providerName, 'Marshall Wayne');
+  assert.equal(res.body.techAssignmentMode, 'mapped_assigned');
+  assert.equal(audits[0].providerName, 'Marshall Wayne');
+  assert.equal(audits[0].assignmentMode, 'mapped_assigned');
+  assert.equal(audits[0].assignmentSource, 'zenbooker_api');
+});
+
 test('webhook authentication blocks before Square or attribution side effects', async (t) => {
   installSecret(t);
   let sideEffects = 0;

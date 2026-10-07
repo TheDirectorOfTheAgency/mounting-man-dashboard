@@ -187,7 +187,7 @@ async function callCron(query, { square, env = {} } = {}) {
     SQUARE_LOCATION_ID: 'LOC_A',
     ...env,
   });
-  for (const key of ['KV_REST_API_URL', 'KV_REST_API_TOKEN', 'DISCORD_Q_BOT_TOKEN', 'DISCORD_BOT_TOKEN']) {
+  for (const key of ['KV_REST_API_URL', 'KV_REST_API_TOKEN', 'Q_ALERT_WEBHOOK_URL', 'Q_ALERT_WEBHOOK_AUTH', 'AGENTMAIL_API_KEY', 'AGENTMAIL_INBOX_ID']) {
     delete process.env[key];
   }
   const original = axios.get;
