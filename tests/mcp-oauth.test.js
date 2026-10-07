@@ -24,7 +24,9 @@ import {
   createTokenHandler,
   mintAuthorizationCode,
   pkceS256Challenge,
+  MCP_ZENBOOKER_CLIENT_ID,
   protectedResourceMetadata,
+  protectedResourceMetadataForPath,
 } from '../lib/mcp-oauth.mjs';
 import { createMountingManAdsApplyHandler } from '../pages/api/mcp/mounting-man-ads-apply.js';
 
@@ -137,6 +139,27 @@ test('protected resource metadata matches RFC 9728 shape for ads-apply', async (
   }), nested);
   assert.deepEqual(nested.body, expected);
   assert.equal(nested.body.resource, 'https://mounting-man-dashboard.vercel.app/api/mcp/mounting-man-ads-apply');
+
+  const zenbooker = response();
+  await handler(request({
+    method: 'GET',
+    query: { path: ['api', 'mcp', 'mounting-man-zenbooker'] },
+  }), zenbooker);
+  assert.deepEqual(zenbooker.body, protectedResourceMetadataForPath(['api', 'mcp', 'mounting-man-zenbooker']));
+  assert.equal(
+    zenbooker.body.resource,
+    'https://mounting-man-dashboard.vercel.app/api/mcp/mounting-man-zenbooker',
+  );
+});
+
+test('authorize accepts mounting-man-zenbooker client id', async () => {
+  const issued = await authorizeCode(AUTH_ENV, {
+    query: { client_id: MCP_ZENBOOKER_CLIENT_ID },
+  });
+  assert.equal(issued.res.statusCode, 302);
+  assert.equal(issued.query.client_id, 'mounting-man-zenbooker');
+  assert.ok(issued.code);
+  assert.equal(issued.res.headers.location.includes(AUTH_ENV.MCP_SQUARE_PAYROLL_SECRET), false);
 });
 
 test('authorization server metadata matches RFC 8414 shape', async () => {
