@@ -8,11 +8,11 @@
 // the Pro per-minute cron allowance (100 jobs per project).
 
 import { deliverQAlert } from '../../../lib/q-alert.js';
-import { fetchZenbookerJob } from '../../../lib/zenbooker-assignment.js';
 import {
   INSTALLER_AUDIT_TTL_SECONDS,
   isInstallerRefreshHours,
-  listStoredAudits,
+  listUpcomingZenbookerJobs,
+  loadStoredAuditsForJobs,
   refreshUnassignedInstallers,
 } from '../../../lib/installer-refresh.js';
 import { resolveTechAssignment } from '../webhooks/zenbooker-to-square.js';
@@ -37,7 +37,7 @@ export function createInstallerRefreshHandler({
   env = process.env,
   now = () => Date.now(),
   loadKv,
-  loadJob = (jobId) => fetchZenbookerJob(jobId, { env }),
+  listJobs = (at) => listUpcomingZenbookerJobs({ env, now: at }),
   resolveTech = resolveTechAssignment,
   alert = deliverQAlert,
 } = {}) {
@@ -58,10 +58,10 @@ export function createInstallerRefreshHandler({
       : (await import('@vercel/kv')).kv;
     if (!kv) return res.status(500).json({ error: 'KV not available' });
 
-    const audits = await listStoredAudits(kv);
+    const jobs = await listJobs(at.getTime());
+    const pairs = await loadStoredAuditsForJobs(kv, jobs);
     const rows = await refreshUnassignedInstallers({
-      audits,
-      loadJob,
+      pairs,
       resolveTech,
       alert,
       now: at.getTime(),
@@ -75,7 +75,7 @@ export function createInstallerRefreshHandler({
     return res.status(200).json({
       ok: true,
       forced,
-      scanned: audits.length,
+      scanned: jobs.length,
       checked: rows.filter((row) => row.status === 'checked').length,
       updated: rows.filter((row) => row.updated).map(publicRow),
       alerted: rows.filter((row) => row.alerted).map(publicRow),
