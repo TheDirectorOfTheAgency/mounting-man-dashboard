@@ -18,6 +18,10 @@
     {
       "path": "/api/cron/offline-conversions",
       "schedule": "20 14 * * *"
+    },
+    {
+      "path": "/api/cron/installer-refresh",
+      "schedule": "*/30 12-23,0-3 * * *"
     }
   ]
 }
