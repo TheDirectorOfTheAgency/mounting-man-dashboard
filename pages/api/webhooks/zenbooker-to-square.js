@@ -1122,7 +1122,7 @@ function isUnassignedProvider(providerName) {
   return key === 'unassigned' || key === 'not assigned' || key === 'none' || key === 'n/a';
 }
 
-function resolveTechAssignment(providerName) {
+export function resolveTechAssignment(providerName) {
   if (isUnassignedProvider(providerName)) {
     return {
       techSquareId: DEFAULT_TECH_ID,
@@ -1485,8 +1485,9 @@ export function createZenbookerToSquareHandler({
     }
 
     // Empty provider lists are re-read from ZenBooker before the job is treated
-    // as unassigned. job.service_providers.assigned updates the stored installer
-    // without creating another Square customer, order, or invoice.
+    // as unassigned. A later assignment event updates the stored installer
+    // without creating another Square customer, order, or invoice. The
+    // installer-refresh cron covers assignments that never send a webhook.
     const dryRun = req.query.dryRun === '1'
       || req.query.dry_run === '1'
       || process.env.ZENBOOKER_SQUARE_INVOICE_DRY_RUN === '1';
@@ -1514,7 +1515,7 @@ export function createZenbookerToSquareHandler({
       try {
         await alert({
           kind: 'unassigned_job_soon',
-          subject: `Unassigned job ${jobNumber || jobId} starts within 24h`,
+          subject: `Unassigned job ${jobNumber || jobId} starts within 2h`,
           body: [
             `Job ${jobNumber || jobId} is still unassigned after a ZenBooker check.`,
             scheduledAt ? `Starts: ${scheduledAt}` : null,
