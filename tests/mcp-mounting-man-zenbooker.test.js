@@ -29,6 +29,11 @@ import {
   straightLineDriveMinutes,
 } from '../lib/zenbooker-jobs-feed.mjs';
 import { GET_ADS_SUMMARY } from '../lib/car-tools-ads.mjs';
+import {
+  GET_MISSED_CALLS,
+  GET_NEW_LEADS,
+  GET_NEW_REVIEWS,
+} from '../lib/car-tools-inbound.mjs';
 import { createMountingManZenbookerHandler } from '../pages/api/mcp/mounting-man-zenbooker.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -272,6 +277,9 @@ test('initialize and tools/list accept the payroll secret, cron secret, and quer
     GET_MORNING_BRIEF,
     GET_TOMORROW,
     GET_ADS_SUMMARY,
+    GET_MISSED_CALLS,
+    GET_NEW_LEADS,
+    GET_NEW_REVIEWS,
   ]);
   assert.match(listed.body.result.tools[0].description, /The Mounting Man/);
   assert.match(listed.body.result.tools[0].description, /ZenBooker/);
