@@ -54,6 +54,15 @@ import {
   getNewLeads,
   getNewReviews,
 } from '../../../lib/car-tools-inbound.mjs';
+import {
+  GET_JOB_PAYMENT_STATUS,
+  GET_PAYMENTS,
+  GET_SUPPLIES_FOR_DAY,
+  createCarToolsSquareClient,
+  getJobPaymentStatus,
+  getPayments,
+  getSuppliesForDay,
+} from '../../../lib/car-tools-money.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -226,6 +235,60 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: GET_PAYMENTS,
+    description:
+      "What came in today. Use this when Marshall asks what came in today, how much did I collect this week, or what Square collected yesterday. Read-only Square COMPLETED payments for The Mounting Man in America/Chicago. day may be today, yesterday, or this_week. Returns Square collected totals with tips and refunds when Square provides them, plus each payment's customer name when known, amount, and time. These are Square collected payments, not ZenBooker booked amounts from get_day_summary. Does not write to Square.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        day: {
+          type: 'string',
+          description: 'today, yesterday, or this_week. Defaults to today.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_JOB_PAYMENT_STATUS,
+    description:
+      "Did this job pay. Use this when Marshall asks did the Johnson job pay, is job 730395 paid, or was the last job paid. Read-only ZenBooker job matched to Square collected payments using ZenBooker invoice lines and Square order metadata. Pass customer name, job id, job number, or query last for the most recent finished job. Returns paid, unpaid, partial, or unknown with amount and time when known. Lists multiple matches briefly instead of guessing. Does not write to Square or ZenBooker.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        customer_name: {
+          type: 'string',
+          description: 'Customer last name or full name to search.',
+        },
+        job_id: {
+          type: 'string',
+          description: 'ZenBooker job id.',
+        },
+        job_number: {
+          type: 'string',
+          description: 'ZenBooker job number, for example 730395.',
+        },
+        query: {
+          type: 'string',
+          description: 'Customer name or last to mean the most recent finished job.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_SUPPLIES_FOR_DAY,
+    description:
+      "What do I need for tomorrow. Use this when Marshall asks what do I need for tomorrow, what should I bring today, or what supplies are on the schedule. Read-only supply tally from that day's non-cancelled ZenBooker jobs: TV mounts by type, HDMI cables, soundbar brackets, in-wall kits, and unmapped services listed by name without guessing. day defaults to tomorrow and may be today, tomorrow, or YYYY-MM-DD. Per job and in total. No inventory counts and no low-stock claims.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        day: {
+          type: 'string',
+          description: 'today, tomorrow, or YYYY-MM-DD in America/Chicago. Defaults to tomorrow.',
+        },
+      },
+    },
+  },
 ];
 
 const TOOL_RUNNERS = {
@@ -241,9 +304,19 @@ const TOOL_RUNNERS = {
   [GET_MISSED_CALLS]: getMissedCalls,
   [GET_NEW_LEADS]: getNewLeads,
   [GET_NEW_REVIEWS]: getNewReviews,
+  [GET_PAYMENTS]: getPayments,
+  [GET_JOB_PAYMENT_STATUS]: getJobPaymentStatus,
+  [GET_SUPPLIES_FOR_DAY]: getSuppliesForDay,
 };
 
-const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job', 'invalid_range', 'invalid_since']);
+const VALIDATION_CODES = new Set([
+  'invalid_date',
+  'invalid_days',
+  'invalid_job',
+  'invalid_range',
+  'invalid_since',
+  'invalid_day',
+]);
 
 function sendJson(res, statusCode, body, extraHeaders = {}) {
   Object.entries({
@@ -298,7 +371,7 @@ async function dispatchMcp(body, deps) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
       instructions:
-        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Use get_next_job for 'who's my next customer' or 'call my next customer', get_day_summary for 'what did I make today' (ZenBooker booked amounts, not Square collected payments), get_morning_brief for 'brief me on today', and get_tomorrow for 'what's tomorrow look like'. Use get_ads_summary for 'how are the ads doing' or 'what did I spend on ads today'. Never create, update, cancel, or reschedule a job.",
+        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Use get_next_job for 'who's my next customer' or 'call my next customer', get_day_summary for 'what did I make today' (ZenBooker booked amounts, not Square collected payments), get_morning_brief for 'brief me on today', and get_tomorrow for 'what's tomorrow look like'. Use get_ads_summary for 'how are the ads doing' or 'what did I spend on ads today'. Use get_missed_calls for missed calls and voicemails, get_new_leads for new leads, and get_new_reviews for Google reviews. Use get_payments for Square collected money, get_job_payment_status for whether a job paid, and get_supplies_for_day for what to bring. Never create, update, cancel, or reschedule a job.",
     });
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
@@ -394,6 +467,9 @@ export function createMountingManZenbookerHandler(overrides = {}) {
       : createZenbookerReadClientFromEnv(env);
     const deps = {
       client,
+      squareClient: overrides.squareClient !== undefined
+        ? overrides.squareClient
+        : createCarToolsSquareClient(env),
       now,
       logger,
       env,
