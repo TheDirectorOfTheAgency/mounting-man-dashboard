@@ -63,6 +63,11 @@ import {
   getPayments,
   getSuppliesForDay,
 } from '../../../lib/car-tools-money.mjs';
+import {
+  TEXT_NEXT_CUSTOMER_ETA,
+  textNextCustomerEta,
+  textNextCustomerEtaTool,
+} from '../../../lib/car-tools-eta-text.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -289,6 +294,7 @@ const TOOLS = [
       },
     },
   },
+  textNextCustomerEtaTool,
 ];
 
 const TOOL_RUNNERS = {
@@ -307,6 +313,7 @@ const TOOL_RUNNERS = {
   [GET_PAYMENTS]: getPayments,
   [GET_JOB_PAYMENT_STATUS]: getJobPaymentStatus,
   [GET_SUPPLIES_FOR_DAY]: getSuppliesForDay,
+  [TEXT_NEXT_CUSTOMER_ETA]: textNextCustomerEta,
 };
 
 const VALIDATION_CODES = new Set([
@@ -482,6 +489,9 @@ export function createMountingManZenbookerHandler(overrides = {}) {
       placesClient: overrides.placesClient !== undefined
         ? overrides.placesClient
         : createGooglePlacesClientFromEnv(env, { fetchImpl: overrides.fetchImpl }),
+      kv: overrides.kv,
+      sendSms: overrides.sendSms,
+      httpClient: overrides.httpClient,
     };
     const body = req.body && typeof req.body === 'object' ? req.body : {};
 
