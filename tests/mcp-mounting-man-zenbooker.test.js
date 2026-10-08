@@ -13,13 +13,20 @@ import {
 } from '../lib/mcp-oauth.mjs';
 import { chicagoDayBounds } from '../lib/square-reporting-feed.mjs';
 import {
+  GET_DAY_SUMMARY,
   GET_JOB,
   GET_JOBS_FOR_DAY,
+  GET_MORNING_BRIEF,
+  GET_NEXT_JOB,
   GET_ROUTE_FOR_DAY,
+  GET_TOMORROW,
   GET_UPCOMING_JOBS,
   MCP_ZENBOOKER_CLIENT_ID,
+  ZENBOOKER_BOOKED_LABEL,
+  createNominatimGeocoder,
   createZenbookerReadClient,
   googleMapsDirectionsUrl,
+  straightLineDriveMinutes,
 } from '../lib/zenbooker-jobs-feed.mjs';
 import { createMountingManZenbookerHandler } from '../pages/api/mcp/mounting-man-zenbooker.js';
 
@@ -171,17 +178,19 @@ function nextDayJob() {
   });
 }
 
-function handlerWith(client, env = { MCP_SQUARE_PAYROLL_SECRET: SECRET }) {
+function handlerWith(client, env = { MCP_SQUARE_PAYROLL_SECRET: SECRET }, extras = {}) {
   return createMountingManZenbookerHandler({
     env,
     client,
-    now: NOW,
+    now: extras.now || NOW,
     logger: { error() {}, warn() {} },
+    geocode: extras.geocode,
+    fetchImpl: extras.fetchImpl,
   });
 }
 
-async function callTool(client, name, args = {}, env) {
-  const handler = handlerWith(client, env);
+async function callTool(client, name, args = {}, env, extras) {
+  const handler = handlerWith(client, env, extras);
   const res = response();
   await handler(authorized({
     body: {
@@ -252,10 +261,26 @@ test('initialize and tools/list accept the payroll secret, cron secret, and quer
     body: { jsonrpc: '2.0', id: 2, method: 'tools/list' },
   }), listed);
   const names = listed.body.result.tools.map((tool) => tool.name);
-  assert.deepEqual(names, [GET_JOBS_FOR_DAY, GET_UPCOMING_JOBS, GET_JOB, GET_ROUTE_FOR_DAY]);
+  assert.deepEqual(names, [
+    GET_JOBS_FOR_DAY,
+    GET_UPCOMING_JOBS,
+    GET_JOB,
+    GET_ROUTE_FOR_DAY,
+    GET_NEXT_JOB,
+    GET_DAY_SUMMARY,
+    GET_MORNING_BRIEF,
+    GET_TOMORROW,
+  ]);
   assert.match(listed.body.result.tools[0].description, /The Mounting Man/);
   assert.match(listed.body.result.tools[0].description, /ZenBooker/);
   assert.match(listed.body.result.tools[3].description, /route me to my jobs/);
+  const byName = Object.fromEntries(listed.body.result.tools.map((tool) => [tool.name, tool.description]));
+  assert.match(byName[GET_NEXT_JOB], /who's my next customer/i);
+  assert.match(byName[GET_NEXT_JOB], /call my next customer/i);
+  assert.match(byName[GET_DAY_SUMMARY], /what did I make today/i);
+  assert.match(byName[GET_DAY_SUMMARY], /not Square collected payments/);
+  assert.match(byName[GET_MORNING_BRIEF], /brief me on today/i);
+  assert.match(byName[GET_TOMORROW], /what's tomorrow look like/i);
 
   const query = response();
   await handler(request({
@@ -525,4 +550,353 @@ test('protected resource metadata and OAuth accept client id mounting-man-zenboo
   assert.equal(issued.body.token_type, 'Bearer');
   assert.equal(issued.body.access_token, SECRET);
   assert.equal(JSON.stringify({ ...issued.body, access_token: '[redacted]' }).includes(SECRET), false);
+});
+
+function voiceClient(jobs) {
+  return {
+    async listJobs() { return jobs; },
+    async getJob() { throw new Error('voice tools must not fetch one job'); },
+  };
+}
+
+const WACONIA = { lat: 44.8508, lng: -93.7869 };
+const MINNEAPOLIS = { lat: 44.9778, lng: -93.265 };
+const EARLY = new Date('2026-10-07T13:00:00.000Z');
+
+test('get_next_job returns the in-progress stop plus the one after it', async () => {
+  const current = waconiaJob({
+    customer: { name: 'Pat Waconia', phone: '(612) 555-0101', email: 'secret@example.com' },
+  });
+  const client = voiceClient([
+    minneapolisJob(),
+    cancelledJob(),
+    lateJob(),
+    nextDayJob(),
+    current,
+  ]);
+  const res = await callTool(client, GET_NEXT_JOB, {});
+  const feed = res.body.result.structuredContent;
+  assert.equal(res.statusCode, 200);
+  assert.equal(feed.found, true);
+  assert.equal(feed.in_progress, true);
+  assert.equal(feed.timezone, 'America/Chicago');
+  assert.equal(feed.job.customer_name, 'Pat Waconia');
+  assert.equal(feed.job.job_number, '730395');
+  assert.equal(feed.job.in_progress, true);
+  assert.equal(feed.job.phone_e164, '+16125550101');
+  assert.equal(feed.job.tel_link, 'tel:+16125550101');
+  assert.equal(feed.job.sms_link, 'sms:+16125550101');
+  assert.equal(feed.job.installer, 'Marshall Wayne');
+  assert.deepEqual(feed.job.services, ['TV Mounting']);
+  assert.match(feed.job.notes, /Gate code 1234/);
+  assert.equal(feed.job.google_maps_url.includes(' '), false);
+  assert.equal(feed.job.google_maps_url, googleMapsDirectionsUrl([feed.job.service_address]));
+  assert.equal(
+    feed.job.apple_maps_url,
+    `https://maps.apple.com/?daddr=${encodeURIComponent(feed.job.service_address)}&dirflg=d`,
+  );
+  assert.equal(feed.following_job.job_number, '730400');
+  assert.equal(feed.following_job.customer_name, 'Sam Lake');
+  assert.equal(feed.following_job.phone_e164, '+16125550199');
+  assert.equal(feed.following_job.tel_link, 'tel:+16125550199');
+  assert.equal(feed.job.customer_name === 'Cancelled Customer', false);
+  assert.match(feed.spoken, /Pat Waconia/);
+  assert.match(feed.spoken, /Sam Lake/);
+  assertNoSecrets(res.body);
+
+  const waiting = await callTool(client, GET_NEXT_JOB, {}, undefined, { now: EARLY });
+  const later = waiting.body.result.structuredContent;
+  assert.equal(later.in_progress, false);
+  assert.equal(later.job.job_number, '730395');
+  assert.equal(later.job.in_progress, false);
+  assert.equal(later.following_job, null);
+
+  const done = waconiaJob({ status: 'Complete', completed_at: '2026-10-07T15:30:00.000Z' });
+  const afterDone = await callTool(voiceClient([done, minneapolisJob(), cancelledJob()]), GET_NEXT_JOB, {});
+  assert.equal(afterDone.body.result.structuredContent.job.job_number, '730400');
+  assert.equal(afterDone.body.result.structuredContent.in_progress, false);
+
+  const enRoute = waconiaJob({ status: 'En-route' });
+  const rolling = await callTool(
+    voiceClient([enRoute, minneapolisJob()]),
+    GET_NEXT_JOB,
+    {},
+    undefined,
+    { now: EARLY },
+  );
+  assert.equal(rolling.body.result.structuredContent.in_progress, true);
+  assert.equal(rolling.body.result.structuredContent.job.customer_name, 'Pat Waconia');
+  assert.equal(rolling.body.result.structuredContent.following_job.customer_name, 'Sam Lake');
+
+  const skipped = await callTool(voiceClient([cancelledJob(), nextDayJob()]), GET_NEXT_JOB, {});
+  const tomorrowStop = skipped.body.result.structuredContent;
+  assert.equal(tomorrowStop.job.customer_name, 'Next Day');
+  assert.equal(tomorrowStop.job.date, '2026-10-08');
+  assert.equal(JSON.stringify(tomorrowStop).includes('Cancelled Customer'), false);
+
+  const unusable = waconiaJob({
+    customer: { name: 'Short Number', phone: '555-1212' },
+  });
+  const badPhone = await callTool(voiceClient([unusable]), GET_NEXT_JOB, {}, undefined, { now: EARLY });
+  assert.equal(badPhone.body.result.structuredContent.job.customer_phone, '555-1212');
+  assert.equal(badPhone.body.result.structuredContent.job.phone_e164, null);
+  assert.equal(badPhone.body.result.structuredContent.job.tel_link, null);
+  assert.equal(badPhone.body.result.structuredContent.job.sms_link, null);
+
+  const none = await callTool(voiceClient([]), GET_NEXT_JOB, {});
+  assert.equal(none.body.result.structuredContent.found, false);
+  assert.equal(none.body.result.structuredContent.job, null);
+  assert.match(none.body.result.structuredContent.spoken, /no upcoming jobs/i);
+});
+
+test('get_day_summary counts booked ZenBooker prices and skips cancelled and missing prices', async () => {
+  const done = waconiaJob({
+    status: 'Complete',
+    invoice: { total: '100.00' },
+    customer: { name: 'Done Customer', phone: '6125550101', email: 'secret@example.com' },
+  });
+  const unpriced = minneapolisJob();
+  unpriced.invoice = {};
+  unpriced.customer = { name: 'No Price', phone: '6125550199', email: 'other-secret@example.com' };
+  const skipped = cancelledJob();
+  skipped.invoice = { total: 999 };
+  const calls = [];
+  const client = {
+    async listJobs(query) {
+      calls.push(query);
+      return [skipped, unpriced, done];
+    },
+    async getJob() { throw new Error('summary must not fetch one job'); },
+  };
+  const res = await callTool(client, GET_DAY_SUMMARY, {});
+  const feed = res.body.result.structuredContent;
+  assert.equal(feed.date, '2026-10-07');
+  assert.equal(feed.revenue_basis, ZENBOOKER_BOOKED_LABEL);
+  assert.equal(feed.job_count, 2);
+  assert.equal(feed.completed_count, 1);
+  assert.equal(feed.remaining_count, 1);
+  assert.equal(feed.booked_revenue.amount, 100);
+  assert.equal(feed.booked_revenue.currency, 'USD');
+  assert.equal(feed.booked_revenue.priced_job_count, 1);
+  assert.equal(feed.booked_revenue.unpriced_job_count, 1);
+  assert.equal(feed.booked_revenue.label, ZENBOOKER_BOOKED_LABEL);
+  assert.equal(feed.jobs[0].customer_name, 'Done Customer');
+  assert.equal(feed.jobs[0].state, 'completed');
+  assert.deepEqual(feed.jobs[0].price, { amount: 100, currency: 'USD' });
+  assert.equal(feed.jobs[1].price, null);
+  assert.equal(feed.jobs[1].price_note, 'ZenBooker gave no price for this job');
+  assert.equal(feed.jobs[1].state, 'remaining');
+  assert.equal(JSON.stringify(feed).includes('999'), false);
+  assert.equal(JSON.stringify(feed).includes('Cancelled Customer'), false);
+  assert.match(feed.spoken, /100 dollars/);
+  assert.match(feed.spoken, /ZenBooker gave no price/);
+  assert.match(feed.spoken, /not Square collected payments/);
+  assert.equal(/[#*`|]/.test(feed.spoken), false);
+  assert.equal(calls[0].includeCancelled, false);
+  assertNoSecrets(res.body);
+
+  const empty = await callTool(voiceClient([]), GET_DAY_SUMMARY, {});
+  const blank = empty.body.result.structuredContent;
+  assert.equal(blank.job_count, 0);
+  assert.equal(blank.completed_count, 0);
+  assert.equal(blank.remaining_count, 0);
+  assert.equal(blank.booked_revenue.amount, null);
+  assert.equal(blank.jobs.length, 0);
+  assert.match(blank.spoken, /no jobs today/i);
+  assert.match(blank.spoken, /not Square collected payments/);
+
+  const bad = await callTool(voiceClient([]), GET_DAY_SUMMARY, { date: 'today' });
+  assert.equal(bad.body.error.code, -32602);
+});
+
+test('get_morning_brief speaks the day and survives a geocode failure', async () => {
+  const first = waconiaJob({ job_notes: 'bring a soundbar bracket' });
+  const second = minneapolisJob();
+  const jobs = [first, cancelledJob(), second, nextDayJob()];
+  let lookups = 0;
+  const geocode = async (address) => {
+    lookups += 1;
+    if (address.includes('Waconia')) return WACONIA;
+    if (address.includes('Minneapolis')) return MINNEAPOLIS;
+    return null;
+  };
+  const res = await callTool(voiceClient(jobs), GET_MORNING_BRIEF, {}, undefined, { geocode });
+  const feed = res.body.result.structuredContent;
+  const minutes = straightLineDriveMinutes(WACONIA, MINNEAPOLIS);
+  assert.equal(feed.date, '2026-10-07');
+  assert.equal(feed.job_count, 2);
+  assert.equal(res.body.result.content[0].text, feed.brief);
+  assert.equal(feed.brief.includes('\n'), false);
+  assert.equal(/[#*`|]/.test(feed.brief), false);
+  assert.match(feed.brief, /You have 2 jobs today/);
+  assert.match(feed.brief, /The first one starts at 9:00 AM\./);
+  assert.match(feed.brief, /First, 9:00 AM to 11:00 AM in Waconia, Pat Waconia, TV Mounting/);
+  assert.match(feed.brief, /bring a soundbar bracket/);
+  assert.match(feed.brief, /Last, 5:00 PM in Minneapolis, Sam Lake, MantelMount/);
+  assert.match(feed.brief, /Call on arrival/);
+  assert.match(feed.brief, new RegExp(`About ${minutes} minutes from Waconia to Minneapolis, a rough estimate`));
+  assert.match(feed.brief, new RegExp(`From the first stop to the last is about ${minutes} minutes, a rough estimate`));
+  assert.match(feed.brief, /35 miles per hour/);
+  assert.equal(feed.brief.includes('Cancelled Customer'), false);
+  assert.equal(feed.google_maps_url, googleMapsDirectionsUrl([
+    '100 Main St, Waconia, MN 55387',
+    '500 Hennepin Ave, Minneapolis, MN 55403, USA',
+  ]));
+  assert.equal(feed.brief.endsWith(feed.google_maps_url), true);
+  assert.equal(feed.drive_times.legs[0].minutes, minutes);
+  assert.equal(feed.drive_times.first_to_last_minutes, minutes);
+  assert.equal(lookups, 2);
+  assertNoSecrets(res.body);
+
+  let cachedCalls = 0;
+  const cached = async () => {
+    cachedCalls += 1;
+    return WACONIA;
+  };
+  const repeat = waconiaJob({
+    id: '1710000000000x333',
+    job_number: '730333',
+    start_date: '2026-10-07T18:00:00.000Z',
+    customer: { name: 'Pat Two', phone: '6125550102' },
+    job_notes: 'bring a soundbar bracket',
+  });
+  const cachedBrief = await callTool(
+    voiceClient([first, repeat]),
+    GET_MORNING_BRIEF,
+    {},
+    undefined,
+    { geocode: cached },
+  );
+  assert.equal(cachedCalls, 1);
+  assert.match(cachedBrief.body.result.structuredContent.brief, /Pat Two/);
+  assert.match(cachedBrief.body.result.structuredContent.brief, /About 1 minute from Waconia to Waconia, a rough estimate/);
+
+  const located = waconiaJob({
+    service_address: {
+      line1: '100 Main St',
+      city: 'Waconia',
+      state: 'MN',
+      postal_code: '55387',
+      lat: WACONIA.lat,
+      lng: WACONIA.lng,
+    },
+  });
+  const locatedNext = minneapolisJob();
+  locatedNext.service_address = { ...locatedNext.service_address, lat: MINNEAPOLIS.lat, lng: MINNEAPOLIS.lng };
+  const offline = await callTool(
+    voiceClient([located, locatedNext]),
+    GET_MORNING_BRIEF,
+    {},
+    undefined,
+    { geocode: async () => { throw new Error('network should not be called'); } },
+  );
+  assert.equal(offline.body.result.structuredContent.drive_times.legs[0].minutes, minutes);
+
+  let failedLookups = 0;
+  const failing = async () => {
+    failedLookups += 1;
+    throw new Error('nominatim down');
+  };
+  const broken = await callTool(voiceClient(jobs), GET_MORNING_BRIEF, {}, undefined, { geocode: failing });
+  const failed = broken.body.result.structuredContent;
+  assert.equal(broken.statusCode, 200);
+  assert.equal(failed.job_count, 2);
+  assert.match(failed.brief, /bring a soundbar bracket/);
+  assert.match(failed.brief, /location lookup failed/);
+  assert.equal(/\babout \d+ minutes\b/i.test(failed.brief), false);
+  assert.equal(failed.brief.includes('rough estimate'), false);
+  assert.equal(failed.drive_times.basis, 'unavailable');
+  assert.equal(failed.drive_times.first_to_last_minutes, null);
+  assert.equal(failed.brief.endsWith(failed.google_maps_url), true);
+  assert.equal(failedLookups, 2);
+  assert.equal(failed.brief.includes('Cancelled Customer'), false);
+
+  const empty = await callTool(voiceClient([]), GET_MORNING_BRIEF, {}, undefined, {
+    geocode: async () => { throw new Error('no jobs to locate'); },
+  });
+  assert.equal(empty.body.result.content[0].text, 'You have no jobs today.');
+  assert.equal(empty.body.result.structuredContent.google_maps_url, null);
+});
+
+test('get_tomorrow matches get_jobs_for_day for the next Chicago day', async () => {
+  const cancelledTomorrow = waconiaJob({
+    id: '1710000000000x919',
+    job_number: '730919',
+    canceled: true,
+    start_date: '2026-10-08T18:00:00.000Z',
+    customer: { name: 'Cancelled Tomorrow', phone: '6125550919' },
+  });
+  const client = voiceClient([
+    waconiaJob(),
+    lateJob(),
+    cancelledJob(),
+    nextDayJob(),
+    cancelledTomorrow,
+  ]);
+  const res = await callTool(client, GET_TOMORROW, { date: '2026-01-01' });
+  const feed = res.body.result.structuredContent;
+  const day = await callTool(client, GET_JOBS_FOR_DAY, { date: '2026-10-08' });
+  const listed = day.body.result.structuredContent;
+  assert.equal(feed.date, '2026-10-08');
+  assert.equal(feed.tool, GET_TOMORROW);
+  assert.deepEqual({ ...feed, tool: listed.tool }, listed);
+  assert.deepEqual(feed.jobs.map((job) => job.job_number), ['730222']);
+  assert.equal(feed.jobs[0].customer_name, 'Next Day');
+  assert.equal(JSON.stringify(feed).includes('Cancelled Tomorrow'), false);
+  assertNoSecrets(res.body);
+
+  const withCancelled = await callTool(client, GET_TOMORROW, { include_cancelled: true });
+  const numbers = withCancelled.body.result.structuredContent.jobs.map((job) => job.job_number);
+  assert.deepEqual(numbers, ['730222', '730919']);
+
+  const direct = response();
+  await handlerWith(client)(authorized({ body: { name: GET_TOMORROW } }), direct);
+  assert.equal(direct.statusCode, 200);
+  assert.equal(direct.body.tool, GET_TOMORROW);
+  assert.equal(direct.body.date, '2026-10-08');
+});
+
+test('nominatim geocoder sends GET with a User-Agent, caches, and returns null on failure', async () => {
+  const calls = [];
+  const sleeps = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({
+      url: String(url),
+      method: options.method,
+      ua: options.headers['User-Agent'],
+      hasBody: Object.prototype.hasOwnProperty.call(options, 'body'),
+    });
+    if (String(url).includes('Waconia')) {
+      return { ok: true, async json() { return [{ lat: '44.85', lon: '-93.79' }]; } };
+    }
+    if (String(url).includes('explode')) {
+      throw new Error('socket');
+    }
+    return { ok: false, status: 429, async json() { return { error: 'slow down' }; } };
+  };
+  const geocode = createNominatimGeocoder({
+    fetchImpl,
+    minIntervalMs: 1000,
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  const first = await geocode('100 Main St, Waconia, MN');
+  const again = await geocode('100 main st, waconia, mn');
+  assert.deepEqual(first, { lat: 44.85, lng: -93.79 });
+  assert.deepEqual(again, first);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'GET');
+  assert.equal(calls[0].hasBody, false);
+  assert.match(calls[0].ua, /MountingManZenbooker\/1\.0/);
+  assert.match(calls[0].url, /nominatim\.openstreetmap\.org/);
+  const missed = await geocode('unknown place');
+  assert.equal(missed, null);
+  assert.equal(calls.length, 2);
+  assert.equal(sleeps.length, 1);
+  assert.equal(sleeps[0] >= 900, true);
+  const exploded = createNominatimGeocoder({
+    fetchImpl,
+    minIntervalMs: 0,
+    sleep: async () => {},
+  });
+  assert.equal(await exploded('explode please'), null);
 });
