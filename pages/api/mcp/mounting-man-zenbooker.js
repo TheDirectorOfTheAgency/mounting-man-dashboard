@@ -44,6 +44,16 @@ import {
   GET_ADS_SUMMARY_TOOL,
   getAdsSummary,
 } from '../../../lib/car-tools-ads.mjs';
+import {
+  GET_MISSED_CALLS,
+  GET_NEW_LEADS,
+  GET_NEW_REVIEWS,
+  createCallRailClientFromEnv,
+  createGooglePlacesClientFromEnv,
+  getMissedCalls,
+  getNewLeads,
+  getNewReviews,
+} from '../../../lib/car-tools-inbound.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -174,6 +184,48 @@ const TOOLS = [
     },
   },
   GET_ADS_SUMMARY_TOOL,
+  {
+    name: GET_MISSED_CALLS,
+    description:
+      "Who called me and any missed calls. Use this when Marshall asks who called me, any missed calls, or voicemails. Read-only CallRail lookup for unanswered inbound calls and voicemails since a time (since defaults to start of today in America/Chicago). Returns caller name when known, phone with tel link, time, tracking source, and voicemail transcription when CallRail provides one. Without CallRail credentials, says call tracking is not connected yet.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: {
+          type: 'string',
+          description: 'ISO timestamp or America/Chicago YYYY-MM-DD. Defaults to start of today.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_NEW_LEADS,
+    description:
+      "Any new leads. Use this when Marshall asks any new leads or who wants service. Read-only leads since a time (since defaults to start of today in America/Chicago) from new ZenBooker online or website bookings, CallRail form submissions, and CallRail first-time callers when CallRail is configured. Says which leads have no booked job yet when that can be told. Thumbtack, Angi, and Yelp are not connected here.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: {
+          type: 'string',
+          description: 'ISO timestamp or America/Chicago YYYY-MM-DD. Defaults to start of today.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_NEW_REVIEWS,
+    description:
+      "Any new reviews. Use this when Marshall asks any new reviews or what people said on Google. Read-only Google Places lookup for the few most recent reviews on the business (Google only returns up to five). since defaults to seven days ago in America/Chicago. Returns reviewer first name, stars, time, review text, and a suggested reply in Mr. Wayne's friendly owner voice (text only, never posted). Full Business Profile reviews need OAuth that is not set up yet. Without Google Places credentials, says reviews are not connected yet.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: {
+          type: 'string',
+          description: 'ISO timestamp or America/Chicago YYYY-MM-DD. Defaults to seven days ago.',
+        },
+      },
+    },
+  },
 ];
 
 const TOOL_RUNNERS = {
@@ -186,9 +238,12 @@ const TOOL_RUNNERS = {
   [GET_MORNING_BRIEF]: getMorningBrief,
   [GET_TOMORROW]: getTomorrow,
   [GET_ADS_SUMMARY]: getAdsSummary,
+  [GET_MISSED_CALLS]: getMissedCalls,
+  [GET_NEW_LEADS]: getNewLeads,
+  [GET_NEW_REVIEWS]: getNewReviews,
 };
 
-const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job', 'invalid_range']);
+const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job', 'invalid_range', 'invalid_since']);
 
 function sendJson(res, statusCode, body, extraHeaders = {}) {
   Object.entries({
@@ -264,10 +319,10 @@ async function dispatchMcp(body, deps) {
   if (method === 'tools/call') {
     try {
       const feed = await runTool(params?.name, toolArguments(params), deps);
-      const text = feed?.tool === GET_MORNING_BRIEF && typeof feed.brief === 'string'
-        ? feed.brief
-        : feed?.tool === GET_ADS_SUMMARY && typeof feed.spoken === 'string'
-          ? feed.spoken
+      const text = typeof feed?.spoken === 'string'
+        ? feed.spoken
+        : feed?.tool === GET_MORNING_BRIEF && typeof feed.brief === 'string'
+          ? feed.brief
           : JSON.stringify(feed, null, 2);
       return jsonRpcResult(id, {
         content: [{ type: 'text', text }],
@@ -345,6 +400,12 @@ export function createMountingManZenbookerHandler(overrides = {}) {
       geocode: overrides.geocode,
       fetchImpl: overrides.fetchImpl,
       queryGoogleAds: overrides.queryGoogleAds,
+      callRailClient: overrides.callRailClient !== undefined
+        ? overrides.callRailClient
+        : createCallRailClientFromEnv(env, { fetchImpl: overrides.fetchImpl }),
+      placesClient: overrides.placesClient !== undefined
+        ? overrides.placesClient
+        : createGooglePlacesClientFromEnv(env, { fetchImpl: overrides.fetchImpl }),
     };
     const body = req.body && typeof req.body === 'object' ? req.body : {};
 
