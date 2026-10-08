@@ -408,6 +408,33 @@ test('a missing booking session uses summary click ids and keeps an existing sum
   assertNoClickValues(JSON.stringify(res.body));
 });
 
+test('a later missing booking session does not reuse a stored exact session click', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const store = createAttributionStore(createFakeKv());
+  const matchedCalls = [];
+  await seedCapture(store, { session: 'session-A', at: T0 });
+  await store.saveJobMapping({ jobId: 'job-1', squareCustomerId: 'square-customer-1' });
+  await deliver(handlerFor(store, { mode: 'live', calls: matchedCalls }), {
+    id: 'job-1',
+    created: T0,
+    booking_session: 'session-A',
+  });
+  assert.equal(matchedCalls.length, 1);
+  assert.equal(matchedCalls[0].gclid, GCLID);
+  assert.equal((await store.getJobBridge('job-1')).source, 'exact_session');
+
+  const laterCalls = [];
+  await deliver(handlerFor(store, { mode: 'live', calls: laterCalls }), {
+    id: 'job-1',
+    created: T0,
+    booking_session: 'session-B',
+  });
+  assert.equal(laterCalls.some((call) => call.gclid === GCLID), false);
+  assert.equal(decisions(lines).at(-1).reason, 'session_not_found');
+  assertNoClickValues(lines.join('\n'));
+});
+
 test('a missing booking session does not fall back to the time window', async (t) => {
   t.after(installTestEnvironment());
   const lines = captureLogs(t);
