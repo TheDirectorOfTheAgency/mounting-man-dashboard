@@ -53,10 +53,6 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: "frame-ancestors 'self' https://www.themountingman.com https://themountingman.com https://themountingman.webflow.io",
           },
-          {
-            key: 'X-Frame-Options',
-            value: 'ALLOWALL',
-          },
         ],
       },
       {
@@ -65,10 +61,6 @@ const nextConfig = {
           {
             key: 'Content-Security-Policy',
             value: "frame-ancestors 'self' https://www.themountingman.com https://themountingman.com https://themountingman.webflow.io",
-          },
-          {
-            key: 'X-Frame-Options',
-            value: 'ALLOWALL',
           },
         ],
       },

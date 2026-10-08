@@ -13,7 +13,7 @@
 const REDIS_URL = 'https://devoted-minnow-39394.upstash.io';
 const REDIS_TOKEN = process.env.KV_REST_API_TOKEN;
 const QUEUE_KEY = 'agency:context:siri_queue';
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN; // 8283042895:AAF...
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const MARSHALL_CHAT_ID = '8564673592';
 const EXPECTED_SECRET = (process.env.TELL_Q_SECRET || 'siri_shortcut_2026').split('\n')[0].trim();
 

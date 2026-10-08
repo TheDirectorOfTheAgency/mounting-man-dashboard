@@ -63,40 +63,44 @@ async function fetchLiveGoogleAdsData() {
   weekAgo.setDate(weekAgo.getDate() - 7);
   const weekAgoStr = `${weekAgo.getFullYear()}-${String(weekAgo.getMonth() + 1).padStart(2, '0')}-${String(weekAgo.getDate()).padStart(2, '0')}`;
 
-  // Query 1: This month spend (all campaigns)
-  const thisMonthResults = await queryGoogleAds(
-    accessToken,
-    developerToken,
-    `SELECT metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${monthStart}' AND '${today}'`
-  );
+  // 30 days ago
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const thirtyDaysAgoStr = `${thirtyDaysAgo.getFullYear()}-${String(thirtyDaysAgo.getMonth() + 1).padStart(2, '0')}-${String(thirtyDaysAgo.getDate()).padStart(2, '0')}`;
+
+  // Same four read queries as before, issued together. Spend math is unchanged.
+  const [thisMonthResults, thisWeekResults, dailyResults, campaignResults] = await Promise.all([
+    queryGoogleAds(
+      accessToken,
+      developerToken,
+      `SELECT metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${monthStart}' AND '${today}'`
+    ),
+    queryGoogleAds(
+      accessToken,
+      developerToken,
+      `SELECT metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${weekAgoStr}' AND '${today}'`
+    ),
+    queryGoogleAds(
+      accessToken,
+      developerToken,
+      `SELECT segments.date, metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${thirtyDaysAgoStr}' AND '${today}' ORDER BY segments.date ASC`
+    ),
+    queryGoogleAds(
+      accessToken,
+      developerToken,
+      `SELECT campaign.name, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks FROM campaign WHERE segments.date BETWEEN '${monthStart}' AND '${today}' AND metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC`
+    ),
+  ]);
 
   let thisMonthSpend = 0;
   for (const row of thisMonthResults) {
     thisMonthSpend += Number(row.metrics?.costMicros || 0) / 1000000;
   }
 
-  // Query 2: This week spend (last 7 days)
-  const thisWeekResults = await queryGoogleAds(
-    accessToken,
-    developerToken,
-    `SELECT metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${weekAgoStr}' AND '${today}'`
-  );
-
   let thisWeekSpend = 0;
   for (const row of thisWeekResults) {
     thisWeekSpend += Number(row.metrics?.costMicros || 0) / 1000000;
   }
-
-  // Query 3: Daily spend for last 30 days (for chart)
-  const thirtyDaysAgo = new Date(now);
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  const thirtyDaysAgoStr = `${thirtyDaysAgo.getFullYear()}-${String(thirtyDaysAgo.getMonth() + 1).padStart(2, '0')}-${String(thirtyDaysAgo.getDate()).padStart(2, '0')}`;
-
-  const dailyResults = await queryGoogleAds(
-    accessToken,
-    developerToken,
-    `SELECT segments.date, metrics.cost_micros FROM customer WHERE segments.date BETWEEN '${thirtyDaysAgoStr}' AND '${today}' ORDER BY segments.date ASC`
-  );
 
   // Bucket into weekly breakdown
   const weeklyMap = {};
@@ -113,13 +117,6 @@ async function fetchLiveGoogleAdsData() {
   const weeklyBreakdown = Object.entries(weeklyMap)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([week, spend]) => ({ week, spend: Math.round(spend * 100) / 100 }));
-
-  // Query 4: Campaign-level spend this month (for detailed view)
-  const campaignResults = await queryGoogleAds(
-    accessToken,
-    developerToken,
-    `SELECT campaign.name, campaign.status, metrics.cost_micros, metrics.impressions, metrics.clicks FROM campaign WHERE segments.date BETWEEN '${monthStart}' AND '${today}' AND metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC`
-  );
 
   const campaigns = campaignResults.map((row) => ({
     name: row.campaign?.name || 'Unknown',

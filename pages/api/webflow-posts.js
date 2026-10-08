@@ -1,9 +1,18 @@
 // pages/api/webflow-posts.js
 import axios from 'axios';
 
+let cachedPayload = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION_MS = 15 * 60 * 1000;
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  const now = Date.now();
+  if (cachedPayload && now - cacheTimestamp < CACHE_DURATION_MS) {
+    return res.status(200).json(cachedPayload);
   }
 
   try {
@@ -41,13 +50,16 @@ export default async function handler(req, res) {
     const draft = allItems.filter(item => item.isDraft).length;
     const archived = allItems.filter(item => item.isArchived).length;
 
-    res.status(200).json({
+    const payload = {
       published,
       draft,
       archived,
       total: allItems.length,
       lastUpdated: new Date().toISOString(),
-    });
+    };
+    cachedPayload = payload;
+    cacheTimestamp = now;
+    res.status(200).json(payload);
   } catch (error) {
     console.error('Webflow API error:', error.response?.data || error.message);
     res.status(500).json({
