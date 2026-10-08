@@ -20,21 +20,29 @@ import {
   wantsEventStream,
 } from '../../../lib/mcp-http.mjs';
 import {
+  GET_DAY_SUMMARY,
   GET_JOB,
   GET_JOBS_FOR_DAY,
+  GET_MORNING_BRIEF,
+  GET_NEXT_JOB,
   GET_ROUTE_FOR_DAY,
+  GET_TOMORROW,
   GET_UPCOMING_JOBS,
   MCP_ZENBOOKER_CLIENT_ID,
   createZenbookerReadClientFromEnv,
+  getDaySummary,
   getJob,
   getJobsForDay,
+  getMorningBrief,
+  getNextJob,
   getRouteForDay,
+  getTomorrow,
   getUpcomingJobs,
 } from '../../../lib/zenbooker-jobs-feed.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
-  version: '1.0.0',
+  version: '1.1.0',
   title: 'Mounting Man ZenBooker Jobs',
 };
 
@@ -109,6 +117,57 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: GET_NEXT_JOB,
+    description:
+      "Who's my next customer. Use this when Marshall asks who's my next customer, call my next customer, text my next customer, or where the next TV-mounting job is. Read-only ZenBooker lookup for The Mounting Man in America/Chicago. Returns the next job that is not cancelled and not complete, today first, otherwise the next day that has one. Includes the customer name, phone in E.164 plus a tel link and an sms link (phone_e164, tel_link, sms_link), the address, the time window, the services, the notes, the installer, a Google Maps directions link, and an Apple Maps link. If a job is in progress now, returns that job with in_progress true and the job after it. Does not call, text, book, or change any job.",
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: GET_DAY_SUMMARY,
+    description:
+      "What did I make today. Use this when Marshall asks what did I make today, how much is booked today, or for a summary of the day's jobs. Read-only ZenBooker booked amounts for The Mounting Man, not Square collected payments. Counts jobs, completed versus remaining, total booked revenue from ZenBooker job prices, and each job's price and status for one America/Chicago day. If ZenBooker gives no price, says so and does not guess. Does not read Square and does not change any job.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: {
+          type: 'string',
+          description: 'America/Chicago calendar date as YYYY-MM-DD. Defaults to today.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_MORNING_BRIEF,
+    description:
+      "Brief me on today. Use this when Marshall asks brief me on today, give me my morning brief, or read today's route out loud. Read-only voice brief of The Mounting Man's ZenBooker jobs for one America/Chicago day, written as plain spoken sentences with no markdown or tables. Includes how many jobs, the first start time, each job in order with the time, city, service, and notable notes, rough drive times between stops and from the first stop to the last, and the full multi-stop Google Maps route link at the end. Does not change any job.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: {
+          type: 'string',
+          description: 'America/Chicago calendar date as YYYY-MM-DD. Defaults to today.',
+        },
+      },
+    },
+  },
+  {
+    name: GET_TOMORROW,
+    description:
+      "What's tomorrow look like. Use this when Marshall asks what's tomorrow look like, what jobs are tomorrow, or how tomorrow is shaping up. Read-only shortcut for The Mounting Man's ZenBooker jobs tomorrow in America/Chicago, with the same fields as get_jobs_for_day. Does not change any job.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_cancelled: {
+          type: 'boolean',
+          description: 'When true, include cancelled jobs. Defaults to false.',
+        },
+      },
+    },
+  },
 ];
 
 const TOOL_RUNNERS = {
@@ -116,6 +175,10 @@ const TOOL_RUNNERS = {
   [GET_UPCOMING_JOBS]: getUpcomingJobs,
   [GET_JOB]: getJob,
   [GET_ROUTE_FOR_DAY]: getRouteForDay,
+  [GET_NEXT_JOB]: getNextJob,
+  [GET_DAY_SUMMARY]: getDaySummary,
+  [GET_MORNING_BRIEF]: getMorningBrief,
+  [GET_TOMORROW]: getTomorrow,
 };
 
 const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job']);
@@ -173,7 +236,7 @@ async function dispatchMcp(body, deps) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
       instructions:
-        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Never create, update, cancel, or reschedule a job.",
+        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Use get_next_job for 'who's my next customer' or 'call my next customer', get_day_summary for 'what did I make today' (ZenBooker booked amounts, not Square collected payments), get_morning_brief for 'brief me on today', and get_tomorrow for 'what's tomorrow look like'. Never create, update, cancel, or reschedule a job.",
     });
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
@@ -194,8 +257,11 @@ async function dispatchMcp(body, deps) {
   if (method === 'tools/call') {
     try {
       const feed = await runTool(params?.name, toolArguments(params), deps);
+      const text = feed?.tool === GET_MORNING_BRIEF && typeof feed.brief === 'string'
+        ? feed.brief
+        : JSON.stringify(feed, null, 2);
       return jsonRpcResult(id, {
-        content: [{ type: 'text', text: JSON.stringify(feed, null, 2) }],
+        content: [{ type: 'text', text }],
         structuredContent: feed,
       });
     } catch (error) {
@@ -262,7 +328,13 @@ export function createMountingManZenbookerHandler(overrides = {}) {
     const client = overrides.client !== undefined
       ? overrides.client
       : createZenbookerReadClientFromEnv(env);
-    const deps = { client, now, logger };
+    const deps = {
+      client,
+      now,
+      logger,
+      geocode: overrides.geocode,
+      fetchImpl: overrides.fetchImpl,
+    };
     const body = req.body && typeof req.body === 'object' ? req.body : {};
 
     if (isJsonRpcRequest(body)) {
