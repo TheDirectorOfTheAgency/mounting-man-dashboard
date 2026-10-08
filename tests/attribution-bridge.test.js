@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { considerIncomingJob } from '../lib/attribution-bridge.js';
+import { considerIncomingJob, defaultListJobs } from '../lib/attribution-bridge.js';
 import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createZenbookerWebhookHandler } from '../pages/api/webhooks/zenbooker.js';
 import { completedPayload, createRequest, createResponse, installTestEnvironment } from './webhook-test-helpers.js';
@@ -92,7 +92,7 @@ function handlerFor(store, { mode = 'shadow', calls = [] } = {}) {
   return createZenbookerWebhookHandler({
     attributionStore: store,
     attributionBridgeMode: mode,
-    listJobs: async () => null,
+    listJobs: async () => [],
     coordinator: {
       async registerJob(job) {
         calls.push(job);
@@ -192,7 +192,7 @@ test('a second job inside the window revokes the bridge', async (t) => {
   t.after(installTestEnvironment());
   const lines = captureLogs(t);
   const store = createAttributionStore(createFakeKv());
-  const listJobs = async () => null;
+  const listJobs = async () => [];
   await seedCapture(store, { session: 'session-one-job', at: T0 });
   const first = {
     type: 'job.created',
@@ -323,4 +323,199 @@ test('conversion_summary click ids win over the window and attach only in live m
   assert.equal(liveCalls[0].gclid, 'summary-gclid-win');
   assert.equal(liveCalls[0].gbraid, null);
   assertNoClickValues(lines.join('\n'));
+});
+
+test('a top-level job envelope records created time and summary click ids', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const envelopes = [
+    {
+      id: 'job-nested',
+      payload: {
+        data: {
+          job: {
+            id: 'job-nested',
+            created: T0,
+            customer: { id: CUSTOMER },
+          },
+        },
+      },
+    },
+    {
+      id: 'job-top',
+      payload: {
+        data: { type: 'job.created' },
+        job: {
+          id: 'job-top',
+          created: T0,
+          customer: { id: CUSTOMER },
+          conversion_summary: { gclid: 'summary-gclid-win' },
+        },
+      },
+    },
+  ];
+
+  for (const envelope of envelopes) {
+    const store = createAttributionStore(createFakeKv());
+    await seedCapture(store, { session: `session-${envelope.id}`, at: T0 });
+    const decision = await considerIncomingJob({
+      payload: envelope.payload,
+      store,
+      listJobs: async () => [],
+    });
+    assert.equal(decision.jobId, envelope.id);
+    assert.equal(decision.decision, 'bridge');
+    const bridge = await store.getJobBridge(envelope.id);
+    assert.equal(bridge.gclid, envelope.id === 'job-top' ? 'summary-gclid-win' : GCLID);
+    assert.equal(bridge.source, envelope.id === 'job-top' ? 'conversion_summary' : 'window');
+  }
+  assert.equal(decisions(lines).at(-1).reason, 'summary_click_ids');
+  assertNoClickValues(lines.join('\n'));
+});
+
+test('a missing booking session uses summary click ids and keeps an existing summary', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const store = createAttributionStore(createFakeKv());
+  const calls = [];
+  await seedCapture(store, { session: 'session-other-job', at: T0, gclid: 'window-gclid-other' });
+  await store.saveJobMapping({ jobId: 'job-session-miss', squareCustomerId: 'square-customer-1' });
+  const res = await deliver(handlerFor(store, { mode: 'live', calls }), {
+    id: 'job-session-miss',
+    created: T0,
+    booking_session: 'session-missing',
+    conversion_summary: { gclid: 'summary-gclid-win' },
+  });
+
+  assert.equal(res.body.status, 'observed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].gclid, 'summary-gclid-win');
+  assert.equal((await store.getJobBridge('job-session-miss')).source, 'conversion_summary');
+  assert.equal(decisions(lines).at(-1).reason, 'summary_click_ids');
+
+  const keptCalls = [];
+  await deliver(handlerFor(store, { mode: 'live', calls: keptCalls }), {
+    id: 'job-session-miss',
+    created: T0,
+    booking_session: 'session-still-missing',
+  });
+  assert.equal(keptCalls.length, 1);
+  assert.equal(keptCalls[0].gclid, 'summary-gclid-win');
+  assert.equal((await store.getJobBridge('job-session-miss')).source, 'conversion_summary');
+  assert.equal((await store.getJobBridge('job-session-miss')).gclid, 'summary-gclid-win');
+  assert.equal(decisions(lines).at(-1).reason, 'summary_click_ids');
+  assertNoClickValues(lines.join('\n'));
+  assertNoClickValues(JSON.stringify(res.body));
+});
+
+test('a missing booking session does not fall back to the time window', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const store = createAttributionStore(createFakeKv());
+  const calls = [];
+  await seedCapture(store, { session: 'session-window-only', at: T0 });
+  await store.saveJobMapping({ jobId: 'job-no-window-fallback', squareCustomerId: 'square-customer-1' });
+  const res = await deliver(handlerFor(store, { mode: 'live', calls }), {
+    id: 'job-no-window-fallback',
+    created: T0,
+    booking_session: 'session-missing',
+  });
+
+  assert.equal(calls.length, 0);
+  assert.equal(res.body.reason, 'NO_PAID_ACQUISITION');
+  assert.equal(await store.getJobBridge('job-no-window-fallback'), null);
+  assert.equal(decisions(lines).at(-1).reason, 'session_not_found');
+  assertNoClickValues(lines.join('\n'));
+});
+
+test('an unavailable job listing does not create a window bridge', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const store = createAttributionStore(createFakeKv());
+  await seedCapture(store, { session: 'session-unlisted', at: T0 });
+  const decision = await considerIncomingJob({
+    payload: {
+      data: {
+        id: 'job-unlisted',
+        created: T0,
+        customer: { id: CUSTOMER },
+      },
+    },
+    store,
+    listJobs: async () => null,
+  });
+
+  assert.equal(decision.reason, 'job_count_unavailable');
+  assert.equal(decision.decision, 'no_bridge');
+  assert.equal(await store.getJobBridge('job-unlisted'), null);
+  const missingKey = await defaultListJobs({
+    zenCustomerId: CUSTOMER,
+    createdAfter: T0,
+    createdBefore: T0,
+    env: {},
+    fetchImpl: async () => {
+      throw new Error('should not fetch');
+    },
+  });
+  assert.deepEqual(missingKey, { error: true });
+  const badBody = await defaultListJobs({
+    zenCustomerId: CUSTOMER,
+    createdAfter: T0,
+    createdBefore: T0,
+    env: { ZENBOOKER_API_KEY: 'test-key' },
+    fetchImpl: async () => ({
+      ok: true,
+      text: async () => '{"results":{"id":"not-a-list"}}',
+    }),
+  });
+  assert.deepEqual(badBody, { error: true });
+  assertNoClickValues(lines.join('\n'));
+});
+
+test('a completed top-level job envelope attaches summary click ids only in live mode', async (t) => {
+  t.after(installTestEnvironment());
+  const lines = captureLogs(t);
+  const job = {
+    id: 'job-envelope-live',
+    status: 'completed',
+    created_by: 'customer',
+    created: T0,
+    completed_at: '2026-07-09T18:30:00-05:00',
+    booking_session: 'session-missing',
+    customer: {
+      id: CUSTOMER,
+      email: 'test.person@example.com',
+      phone: '6125550100',
+      first_name: 'Test',
+      last_name: 'Person',
+    },
+    tracking: { source: 'direct' },
+    conversion_summary: { gclid: 'summary-gclid-win' },
+  };
+
+  const shadowStore = createAttributionStore(createFakeKv());
+  const shadowCalls = [];
+  const shadowRes = createResponse();
+  await handlerFor(shadowStore, { calls: shadowCalls })(createRequest({
+    event: 'job.completed',
+    job,
+  }), shadowRes);
+  assert.equal(shadowCalls.length, 0);
+  assert.equal(shadowRes.body.reason, 'NO_PAID_ACQUISITION');
+  assert.equal((await shadowStore.getJobBridge('job-envelope-live')).source, 'conversion_summary');
+
+  const liveStore = createAttributionStore(createFakeKv());
+  const liveCalls = [];
+  await liveStore.saveJobMapping({ jobId: 'job-envelope-live', squareCustomerId: 'square-customer-1' });
+  const liveRes = createResponse();
+  await handlerFor(liveStore, { mode: 'live', calls: liveCalls })(createRequest({
+    event: 'job.completed',
+    job,
+  }), liveRes);
+  assert.equal(liveRes.body.status, 'observed');
+  assert.equal(liveCalls.length, 1);
+  assert.equal(liveCalls[0].gclid, 'summary-gclid-win');
+  assert.equal(decisions(lines).at(-1).reason, 'summary_click_ids');
+  assertNoClickValues(lines.join('\n'));
+  assertNoClickValues(JSON.stringify(liveRes.body));
 });
