@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 
 // ─── HUD GAUGE ─────────────────────────────────────────────
@@ -175,13 +175,18 @@ export default function Dashboard({ initialData = {} }) {
       const res = await fetch('/api/square-revenue');
       if (res.ok) {
         const json = await res.json();
-        if (!json.error && squareData) {
-          setSquareData(prev => ({
-            ...prev,
-            today: json.today,
-            thisMonth: json.thisMonth,
-          }));
-          setLastUpdated(new Date());
+        if (!json.error) {
+          let applied = false;
+          setSquareData((prev) => {
+            if (!prev) return prev;
+            applied = true;
+            return {
+              ...prev,
+              today: json.today,
+              thisMonth: json.thisMonth,
+            };
+          });
+          if (applied) setLastUpdated(new Date());
         }
       }
     } catch (err) {
@@ -213,6 +218,11 @@ export default function Dashboard({ initialData = {} }) {
     }
   };
 
+  // Keep the 5-minute refresh on the latest closure. The effect itself
+  // stays mount-only so the interval is not reset on every render.
+  const fetchTodayRevenueRef = useRef(fetchTodayRevenue);
+  fetchTodayRevenueRef.current = fetchTodayRevenue;
+
   // Data polling
   useEffect(() => {
     fetchAllData();
@@ -228,7 +238,7 @@ export default function Dashboard({ initialData = {} }) {
 
     // Square revenue: every 5 minutes, always — no manual refresh needed
     const revenueInterval = setInterval(() => {
-      fetchTodayRevenue();
+      fetchTodayRevenueRef.current();
     }, 5 * 60 * 1000);
 
     return () => {
