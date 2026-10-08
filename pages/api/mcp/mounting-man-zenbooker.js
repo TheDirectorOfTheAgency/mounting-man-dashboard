@@ -39,6 +39,11 @@ import {
   getTomorrow,
   getUpcomingJobs,
 } from '../../../lib/zenbooker-jobs-feed.mjs';
+import {
+  GET_ADS_SUMMARY,
+  GET_ADS_SUMMARY_TOOL,
+  getAdsSummary,
+} from '../../../lib/car-tools-ads.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -168,6 +173,7 @@ const TOOLS = [
       },
     },
   },
+  GET_ADS_SUMMARY_TOOL,
 ];
 
 const TOOL_RUNNERS = {
@@ -179,9 +185,10 @@ const TOOL_RUNNERS = {
   [GET_DAY_SUMMARY]: getDaySummary,
   [GET_MORNING_BRIEF]: getMorningBrief,
   [GET_TOMORROW]: getTomorrow,
+  [GET_ADS_SUMMARY]: getAdsSummary,
 };
 
-const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job']);
+const VALIDATION_CODES = new Set(['invalid_date', 'invalid_days', 'invalid_job', 'invalid_range']);
 
 function sendJson(res, statusCode, body, extraHeaders = {}) {
   Object.entries({
@@ -236,7 +243,7 @@ async function dispatchMcp(body, deps) {
       capabilities: { tools: { listChanged: false } },
       serverInfo: SERVER_INFO,
       instructions:
-        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Use get_next_job for 'who's my next customer' or 'call my next customer', get_day_summary for 'what did I make today' (ZenBooker booked amounts, not Square collected payments), get_morning_brief for 'brief me on today', and get_tomorrow for 'what's tomorrow look like'. Never create, update, cancel, or reschedule a job.",
+        "Read-only ZenBooker feed of The Mounting Man's TV-mounting jobs in America/Chicago. Use get_jobs_for_day for 'what jobs do I have today', get_upcoming_jobs for the coming days, get_job for one job id or job number, and get_route_for_day for 'route me to my jobs' (Google Maps multi-stop URL plus Apple Maps for the first stop). Use get_next_job for 'who's my next customer' or 'call my next customer', get_day_summary for 'what did I make today' (ZenBooker booked amounts, not Square collected payments), get_morning_brief for 'brief me on today', and get_tomorrow for 'what's tomorrow look like'. Use get_ads_summary for 'how are the ads doing' or 'what did I spend on ads today'. Never create, update, cancel, or reschedule a job.",
     });
   }
   if (method === 'notifications/initialized' || method === 'initialized') {
@@ -259,7 +266,9 @@ async function dispatchMcp(body, deps) {
       const feed = await runTool(params?.name, toolArguments(params), deps);
       const text = feed?.tool === GET_MORNING_BRIEF && typeof feed.brief === 'string'
         ? feed.brief
-        : JSON.stringify(feed, null, 2);
+        : feed?.tool === GET_ADS_SUMMARY && typeof feed.spoken === 'string'
+          ? feed.spoken
+          : JSON.stringify(feed, null, 2);
       return jsonRpcResult(id, {
         content: [{ type: 'text', text }],
         structuredContent: feed,
@@ -332,8 +341,10 @@ export function createMountingManZenbookerHandler(overrides = {}) {
       client,
       now,
       logger,
+      env,
       geocode: overrides.geocode,
       fetchImpl: overrides.fetchImpl,
+      queryGoogleAds: overrides.queryGoogleAds,
     };
     const body = req.body && typeof req.body === 'object' ? req.body : {};
 

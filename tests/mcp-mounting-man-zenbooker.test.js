@@ -28,6 +28,7 @@ import {
   googleMapsDirectionsUrl,
   straightLineDriveMinutes,
 } from '../lib/zenbooker-jobs-feed.mjs';
+import { GET_ADS_SUMMARY } from '../lib/car-tools-ads.mjs';
 import { createMountingManZenbookerHandler } from '../pages/api/mcp/mounting-man-zenbooker.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -270,6 +271,7 @@ test('initialize and tools/list accept the payroll secret, cron secret, and quer
     GET_DAY_SUMMARY,
     GET_MORNING_BRIEF,
     GET_TOMORROW,
+    GET_ADS_SUMMARY,
   ]);
   assert.match(listed.body.result.tools[0].description, /The Mounting Man/);
   assert.match(listed.body.result.tools[0].description, /ZenBooker/);
@@ -281,6 +283,7 @@ test('initialize and tools/list accept the payroll secret, cron secret, and quer
   assert.match(byName[GET_DAY_SUMMARY], /not Square collected payments/);
   assert.match(byName[GET_MORNING_BRIEF], /brief me on today/i);
   assert.match(byName[GET_TOMORROW], /what's tomorrow look like/i);
+  assert.match(byName[GET_ADS_SUMMARY], /how are the ads doing/i);
 
   const query = response();
   await handler(request({
