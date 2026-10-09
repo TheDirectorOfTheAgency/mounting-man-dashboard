@@ -118,6 +118,7 @@ export function createBookingIdentityHandler({
         const activeKV = kvClient === undefined ? await getDefaultKV() : kvClient;
         store = activeKV ? createAttributionStore(activeKV) : null;
       }
+      // Resolve only through a session-to-job link; customer ID and recency are insufficient.
       const result = await lookup({ customerId, bookingSession, store });
       const durationMs = Date.now() - startedAt;
       const jobsSeen = typeof result.jobsSeen === 'number' ? result.jobsSeen : undefined;

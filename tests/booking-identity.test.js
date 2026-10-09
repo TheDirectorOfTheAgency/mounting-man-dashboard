@@ -9,8 +9,8 @@ import {
   lookupBookingIdentity,
   normalizeEmailForEnhancedConversions,
   normalizePhoneForEnhancedConversions,
-  recentJobWindowMs,
 } from '../lib/booking-identity.js';
+import { opaqueRef } from '../lib/offline-conversion-eligibility.js';
 import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createBookingIdentityHandler, createRateLimiter } from '../pages/api/attribution/booking-identity.js';
 import { createResponse } from './webhook-test-helpers.js';
@@ -373,6 +373,7 @@ test('lookup uses the job-scoped mapping when the job has no booking_session', a
   assert.equal(result.found, true);
   assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
   assert.equal(JSON.stringify(result).includes('identity-click-secret'), false);
+  assert.equal(result.path, 'stored');
   assert.equal(await store.getJobIdForSession('session-other'), null);
 });
 
@@ -407,6 +408,7 @@ test('lookup bridges one in-window capture to the only in-window job without a s
   });
   assert.equal(result.found, true);
   assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
+  assert.equal(result.path, 'window');
   assert.equal(await store.getJobIdForSession('session-window'), 'job-window');
   assert.equal(JSON.stringify(result).includes('identity-click-secret'), false);
 });
@@ -443,93 +445,87 @@ test('lookup does not bridge when two jobs were created inside the window', asyn
   assert.equal(await store.getJobIdForSession('session-two-jobs'), null);
 });
 
-test('recent_customer_job resolves zb-shaped job without session, capture, or mapping', async () => {
-  const store = createAttributionStore(bridgeKv());
-  let bridgeWrites = 0;
-  const origSave = store.saveJobBridge.bind(store);
-  store.saveJobBridge = async (...args) => {
-    bridgeWrites += 1;
-    return origSave(...args);
+test('random booking session with an existing customer and recent job returns HTTP 404', async (t) => {
+  for (const attributionStore of [null, createAttributionStore(bridgeKv())]) {
+    await t.test(attributionStore ? 'empty capture store' : 'no store', async () => {
+      const handler = createBookingIdentityHandler({
+        attributionStore,
+        logger: captureLogger(),
+        lookup: (options) => lookupBookingIdentity({
+          ...options,
+          env: { ZENBOOKER_API_KEY: 'key' },
+          httpClient: httpClientReturning([zbJob()]),
+          now: NOW,
+        }),
+      });
+      const res = createResponse();
+      await handler(request({ body: { customer_id: 'cust-1', booking_session: 'random-session' } }), res);
+      assert.equal(res.statusCode, 404);
+      assert.deepEqual(res.body, { found: false, errorCode: 'BOOKING_NOT_FOUND' });
+    });
+  }
+});
+
+test('every identity path rejects jobs with missing or mismatched customer IDs', async (t) => {
+  for (const path of ['exact_session', 'stored', 'window']) {
+    for (const id of [undefined, null, '', 'cust-other']) {
+      await t.test(`${path}: customer ID ${String(id)}`, async () => {
+        const store = createAttributionStore(bridgeKv());
+        const capture = await store.saveBookingAttribution({
+          zenCustomerId: 'cust-1',
+          bookingSession: 'session-check',
+          capturedAt: new Date(NOW - 60 * 1000).toISOString(),
+        });
+        if (path === 'stored') {
+          await store.saveJobBridge({ jobId: 'job-check', sessionRef: capture.sessionRef, source: 'window' });
+        }
+        const result = await lookupBookingIdentity({
+          customerId: 'cust-1',
+          bookingSession: 'session-check',
+          store,
+          env: { ZENBOOKER_API_KEY: 'key' },
+          httpClient: httpClientReturning([zbJob({
+            id: 'job-check',
+            booking_session: path === 'exact_session' ? 'session-check' : undefined,
+            customer: { id, email: SECRET_EMAIL, phone: SECRET_PHONE },
+          })]),
+          now: NOW,
+        });
+        assert.deepEqual(result, { found: false, reason: 'not_found', jobsSeen: 1 });
+        if (path !== 'stored') assert.equal(await store.getJobIdForSession('session-check'), null);
+      });
+    }
+  }
+});
+
+test('window requires exactly one capture matching both the session and customer', async (t) => {
+  const capture = {
+    sessionRef: opaqueRef('session-window'),
+    customerId: 'cust-1',
+    capturedAt: new Date(NOW - 60 * 1000).toISOString(),
   };
-  const result = await lookupBookingIdentity({
-    customerId: 'cust-1',
-    bookingSession: 'session-organic',
-    store,
-    env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: httpClientReturning([zbJob()]),
-    now: NOW,
-  });
-  assert.equal(result.found, true);
-  assert.equal(result.path, 'recent_customer_job');
-  assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
-  assert.equal(bridgeWrites, 0);
-});
-
-test('recent_customer_job resolves when capture list is still empty', async () => {
-  const store = createAttributionStore(bridgeKv());
-  const result = await lookupBookingIdentity({
-    customerId: 'cust-1',
-    bookingSession: 'session-race',
-    store,
-    env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: httpClientReturning([zbJob({ id: 'race-job' })]),
-    now: NOW,
-  });
-  assert.equal(result.found, true);
-  assert.equal(result.path, 'recent_customer_job');
-});
-
-test('recent_customer_job respects RECENT_JOB_MS and picks the newest in-window job', async () => {
-  const store = createAttributionStore(bridgeKv());
-  const stale = await lookupBookingIdentity({
-    customerId: 'cust-1',
-    bookingSession: 'session-stale',
-    store,
-    env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: httpClientReturning([
-      zbJob({ id: 'old', created: new Date(NOW - 3 * 60 * 60 * 1000).toISOString() }),
-    ]),
-    now: NOW,
-  });
-  assert.equal(stale.reason, 'not_found');
-
-  const mixed = await lookupBookingIdentity({
-    customerId: 'cust-1',
-    bookingSession: 'session-mixed',
-    store,
-    env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: httpClientReturning([
-      zbJob({
-        id: 'ancient',
-        created: new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString(),
-        customer: { id: 'cust-1', email: 'ancient@example.com', phone: '6125550001' },
-      }),
-      zbJob({
-        id: 'recent',
-        created: new Date(NOW - 20 * 60 * 1000).toISOString(),
-        customer: { id: 'cust-1', email: 'recent@example.com', phone: '6125550002' },
-      }),
-    ]),
-    now: NOW,
-  });
-  assert.equal(mixed.found, true);
-  assert.equal(mixed.path, 'recent_customer_job');
-  assert.equal(mixed.userData.sha256_email_address, sha('recent@example.com'));
-});
-
-test('recent_customer_job rejects jobs for a different customer id', async () => {
-  const store = createAttributionStore(bridgeKv());
-  const result = await lookupBookingIdentity({
-    customerId: 'cust-1',
-    bookingSession: 'session-wrong-cust',
-    store,
-    env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: httpClientReturning([
-      zbJob({ customer: { id: 'cust-2', email: SECRET_EMAIL, phone: SECRET_PHONE } }),
-    ]),
-    now: NOW,
-  });
-  assert.equal(result.reason, 'not_found');
+  const cases = {
+    'missing customer': [{ ...capture, customerId: undefined }],
+    'wrong customer': [{ ...capture, customerId: 'cust-other' }],
+    'wrong session': [{ ...capture, sessionRef: opaqueRef('other-session') }],
+    'duplicate session': [capture, { ...capture }],
+  };
+  for (const [name, captures] of Object.entries(cases)) {
+    await t.test(name, async () => {
+      const result = await lookupBookingIdentity({
+        customerId: 'cust-1',
+        bookingSession: 'session-window',
+        store: {
+          async listCaptures() { return captures; },
+          async saveJobBridge() { assert.fail('must not write an unverified bridge'); },
+        },
+        env: { ZENBOOKER_API_KEY: 'key' },
+        httpClient: httpClientReturning([zbJob()]),
+        now: NOW,
+      });
+      assert.deepEqual(result, { found: false, reason: 'not_found', jobsSeen: 1 });
+    });
+  }
 });
 
 test('zenbooker fetch retries timeout once then succeeds; 404 is not retried', async () => {
@@ -626,8 +622,16 @@ test('handler not_found logs path durationMs and upstreamKind without PII', asyn
   assert.equal(JSON.stringify(logger.logs).includes(SECRET_EMAIL), false);
 });
 
-test('BOOKING_IDENTITY_RECENT_MS clamps to 5 min and 2 h', () => {
-  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: '0' }), 5 * 60 * 1000);
-  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: '1' }), 5 * 60 * 1000);
-  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: String(10 * 60 * 60 * 1000) }), 2 * 60 * 60 * 1000);
+test('capture store exposes customerId only for a verified persisted customer reference', async () => {
+  const kv = bridgeKv();
+  const store = createAttributionStore(kv);
+  await store.saveBookingAttribution({ zenCustomerId: 'cust-1', bookingSession: 'session-check' });
+  assert.equal((await store.listCaptures('cust-1'))[0].customerId, 'cust-1');
+  const key = `attrib:capture:${opaqueRef('cust-1')}:${opaqueRef('session-check')}`;
+  const saved = await kv.get(key);
+  assert.equal(JSON.stringify(saved).includes('cust-1'), false);
+  for (const customerRef of [undefined, opaqueRef('cust-other')]) {
+    await kv.set(key, { ...saved, customerRef, customerId: 'cust-1' });
+    assert.equal((await store.listCaptures('cust-1'))[0].customerId, null);
+  }
 });
