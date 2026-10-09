@@ -141,7 +141,7 @@ test('failed Square payments alert Q and a normal payment does not', async () =>
     followUpClaim: async () => 'claimed',
     operationsNotifier: async () => {},
     installPostNotifier: async () => {},
-    reviewSmsSender: async () => true,
+    reviewRequestStager: async () => ({ status: 'staged' }),
     attributionCoordinator: { async registerPayment() { return { status: 'observed' }; } },
     alert: async (value) => { alerts.push(value); },
   };
@@ -188,7 +188,7 @@ test('failed Square payments alert Q and a normal payment does not', async () =>
       },
     },
   }, paidRes);
-  assert.equal(paidRes.body.status, 'sms_sent');
+  assert.equal(paidRes.body.status, 'payment_processed');
   assert.equal(alerts.length, 1);
 });
 

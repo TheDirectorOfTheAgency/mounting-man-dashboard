@@ -68,6 +68,20 @@ import {
   textNextCustomerEta,
   textNextCustomerEtaTool,
 } from '../../../lib/car-tools-eta-text.mjs';
+import {
+  APPROVE_REVIEW_REPLY_DRAFT,
+  APPROVE_REVIEW_REQUEST,
+  LIST_REVIEW_REPLY_DRAFTS,
+  LIST_STAGED_REVIEW_REQUESTS,
+  SKIP_REVIEW_REPLY_DRAFT,
+  SKIP_REVIEW_REQUEST,
+  approveReviewReplyDraftTool,
+  approveReviewRequestTool,
+  listReviewReplyDrafts,
+  listStagedReviewRequests,
+  skipReviewReplyDraftTool,
+  skipReviewRequestTool,
+} from '../../../lib/review-loop-tools.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -295,6 +309,86 @@ const TOOLS = [
     },
   },
   textNextCustomerEtaTool,
+  {
+    name: LIST_STAGED_REVIEW_REQUESTS,
+    description:
+      'List staged review-request emails after Square payments. Read-only unless approving. Each item is a neutral Google review ask (email only, never SMS) waiting for Marshall\'s approval. Use approve_review_request or skip_review_request to act on one payment id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description: 'Filter by status: staged, approved, sent, or skipped. Defaults to staged.',
+        },
+        include_email: {
+          type: 'boolean',
+          description: 'When true, include customer email in the response. Defaults to false.',
+        },
+      },
+    },
+  },
+  {
+    name: APPROVE_REVIEW_REQUEST,
+    description:
+      'Approve one staged review-request email by Square payment id. Sends email only when REVIEW_REQUEST_SEND_ENABLED is true in Vercel; otherwise marks approved for manual send. Never sends SMS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payment_id: { type: 'string', description: 'Square payment id from list_staged_review_requests.' },
+      },
+      required: ['payment_id'],
+    },
+  },
+  {
+    name: SKIP_REVIEW_REQUEST,
+    description: 'Skip a staged review-request email by Square payment id without sending.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payment_id: { type: 'string', description: 'Square payment id.' },
+      },
+      required: ['payment_id'],
+    },
+  },
+  {
+    name: LIST_REVIEW_REPLY_DRAFTS,
+    description:
+      'List reply drafts for new Google reviews (and Yelp when connected). Read-only suggested replies — nothing is posted to Google or Yelp automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description: 'Filter: draft, approved, or skipped. Defaults to draft.',
+        },
+      },
+    },
+  },
+  {
+    name: APPROVE_REVIEW_REPLY_DRAFT,
+    description:
+      'Mark a review reply draft approved for Marshall to paste manually. Does not post to Google or Yelp.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Review source, usually google.' },
+        review_id: { type: 'string', description: 'Stable review id from list_review_reply_drafts.' },
+      },
+      required: ['review_id'],
+    },
+  },
+  {
+    name: SKIP_REVIEW_REPLY_DRAFT,
+    description: 'Skip a review reply draft without posting.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Review source, usually google.' },
+        review_id: { type: 'string', description: 'Stable review id.' },
+      },
+      required: ['review_id'],
+    },
+  },
 ];
 
 const TOOL_RUNNERS = {
@@ -314,6 +408,12 @@ const TOOL_RUNNERS = {
   [GET_JOB_PAYMENT_STATUS]: getJobPaymentStatus,
   [GET_SUPPLIES_FOR_DAY]: getSuppliesForDay,
   [TEXT_NEXT_CUSTOMER_ETA]: textNextCustomerEta,
+  [LIST_STAGED_REVIEW_REQUESTS]: listStagedReviewRequests,
+  [APPROVE_REVIEW_REQUEST]: approveReviewRequestTool,
+  [SKIP_REVIEW_REQUEST]: skipReviewRequestTool,
+  [LIST_REVIEW_REPLY_DRAFTS]: listReviewReplyDrafts,
+  [APPROVE_REVIEW_REPLY_DRAFT]: approveReviewReplyDraftTool,
+  [SKIP_REVIEW_REPLY_DRAFT]: skipReviewReplyDraftTool,
 };
 
 const VALIDATION_CODES = new Set([
