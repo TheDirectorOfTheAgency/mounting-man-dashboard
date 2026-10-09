@@ -1,20 +1,22 @@
-# Review loop go-live (TMM play #2)
+# Review request go-live (TMM play #2)
 
-Staging-only until Marshall approves production merge. Nothing sends or posts automatically until env flags and per-item approvals are in place.
+Staging-only until Marshall approves production merge. **Review replies are out of scope** — Marshall handles Google/Yelp replies himself. This feature only stages neutral post-payment review **request** emails for approval.
 
 ## What ships
 
-1. **Review requests** — Square `payment.*` / completed payments stage an email draft in Vercel KV (idempotent per `paymentId`). Status: `staged` → `approved` → `sent` | `skipped`. **No SMS.**
-2. **Reply drafts** — Daily cron (`/api/cron/review-reply-drafts`, ~7 PM America/Chicago via `0 0 * * *` UTC) pulls new Google reviews via Places (`get_new_reviews` logic) and stores reply drafts. Yelp is stubbed with a TODO. **Nothing is posted to Google or Yelp.**
+**Review requests** — Square completed payments stage an email draft in Vercel KV (idempotent per `paymentId`) when `GOOGLE_REVIEW_URL` is set and the customer has email. Status: `staged` → `approved` → `sent` | `skipped`. **No auto-send by default. No SMS.**
+
+Email sends only when both are true:
+
+1. `REVIEW_REQUEST_SEND_ENABLED=true` (defaults off)
+2. Operator runs `approve_review_request` for that `payment_id`
 
 ## Required environment variables
 
 | Variable | Required for | Notes |
 |----------|----------------|-------|
-| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Staging + drafts | Same Upstash KV as attribution / install-post dedup |
-| `GOOGLE_REVIEW_URL` | Staging review requests | Staging **refuses** if missing |
-| `GOOGLE_PLACES_API_KEY` + `GOOGLE_PLACE_ID` | Reply draft cron | Cron degrades gracefully if missing |
-| `CRON_SECRET` | Cron auth | `Authorization: Bearer $CRON_SECRET` |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Staging queue | Same Upstash KV as attribution / install-post dedup |
+| `GOOGLE_REVIEW_URL` | Staging | Webhook **refuses** to stage if missing |
 | `MCP_SQUARE_PAYROLL_SECRET` | Grok/car MCP tools | Same as other mounting-man MCP routes |
 
 ### Optional (email send on approve)
@@ -25,38 +27,31 @@ Staging-only until Marshall approves production merge. Nothing sends or posts au
 | `RESEND_API_KEY` | — | Resend REST API |
 | `REVIEW_REQUEST_FROM_EMAIL` | — | e.g. `Marshall <hello@themountingman.com>` |
 
-The app does **not** currently wire Gmail API or Zapier send for review requests; Resend is the implemented channel. Marshall can still copy the staged `emailBody` from the MCP list and send manually while `REVIEW_REQUEST_SEND_ENABLED` is off.
+Resend is the implemented send channel. With the send flag off, copy `emailBody` from `list_staged_review_requests` (`include_email: true`) and send manually.
 
 ## Operator approval (Grok / car MCP)
 
-Connector: `mounting-man-zenbooker` on `https://mounting-man-dashboard.vercel.app/api/mcp/mounting-man-zenbooker`
+Connector: `mounting-man-zenbooker` — `https://mounting-man-dashboard.vercel.app/api/mcp/mounting-man-zenbooker`
 
-Auth: `Authorization: Bearer <MCP_SQUARE_PAYROLL_SECRET>` (or OAuth PKCE flow already configured for Grok).
+Auth: `Authorization: Bearer <MCP_SQUARE_PAYROLL_SECRET>` (or existing OAuth PKCE for Grok).
 
 | Tool | Action |
 |------|--------|
 | `list_staged_review_requests` | Read queue (`status` defaults to `staged`) |
 | `approve_review_request` | `{ "payment_id": "..." }` — sends only if send flag on |
 | `skip_review_request` | `{ "payment_id": "..." }` |
-| `list_review_reply_drafts` | Read reply drafts (`status` defaults to `draft`) |
-| `approve_review_reply_draft` | `{ "review_id": "...", "source": "google" }` — marks approved; **does not post** |
-| `skip_review_reply_draft` | Same ids |
 
-## Policy reminders
+## Policy
 
 - Ask **every** paid customer the same neutral way (no sentiment gating, no incentives).
-- Reply drafts are personal; low-star drafts apologize and invite offline resolution.
 
 ## Flip-on checklist
 
-1. Set `GOOGLE_REVIEW_URL` in Vercel (production preview/staging first).
-2. Confirm KV connected to the project.
-3. Deploy branch to staging; trigger a test Square payment or use `scripts/review-loop-dry-run.mjs` locally.
-4. In Grok, run `list_staged_review_requests` and approve one test with `skip_review_request` or `approve_review_request` while send flag is **off**.
-5. Configure Resend domain + `RESEND_API_KEY` + `REVIEW_REQUEST_FROM_EMAIL`.
-6. Set `REVIEW_REQUEST_SEND_ENABLED=true` only when ready for automatic email on approve.
-7. Set `GOOGLE_PLACES_API_KEY` + `GOOGLE_PLACE_ID`; verify cron via `curl -H "Authorization: Bearer $CRON_SECRET" https://<preview>/api/cron/review-reply-drafts`.
-8. Review `list_review_reply_drafts` daily; paste approved replies into Google Business Profile manually (until a future GBP write path exists).
+1. Set `GOOGLE_REVIEW_URL` on staging/preview.
+2. Confirm KV on the Vercel project.
+3. Deploy PR preview; complete a test payment or run `scripts/review-loop-dry-run.mjs`.
+4. Grok: `list_staged_review_requests` → `skip_review_request` or `approve_review_request` while `REVIEW_REQUEST_SEND_ENABLED` is **off**.
+5. When ready for auto-send on approve: Resend domain, `RESEND_API_KEY`, `REVIEW_REQUEST_FROM_EMAIL`, then `REVIEW_REQUEST_SEND_ENABLED=true`.
 
 ## Dry run
 
@@ -64,4 +59,4 @@ Auth: `Authorization: Bearer <MCP_SQUARE_PAYROLL_SECRET>` (or OAuth PKCE flow al
 GOOGLE_REVIEW_URL=https://g.page/r/.../review node scripts/review-loop-dry-run.mjs
 ```
 
-Sample output (redacted): `docs/review-loop-dry-run-sample.md`.
+Sample: `docs/review-loop-dry-run-sample.md`.

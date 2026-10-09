@@ -22,10 +22,6 @@
     {
       "path": "/api/cron/installer-refresh",
       "schedule": "*/30 12-23,0-3 * * *"
-    },
-    {
-      "path": "/api/cron/review-reply-drafts",
-      "schedule": "0 0 * * *"
     }
   ]
 }

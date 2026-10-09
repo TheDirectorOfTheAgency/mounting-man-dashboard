@@ -69,17 +69,11 @@ import {
   textNextCustomerEtaTool,
 } from '../../../lib/car-tools-eta-text.mjs';
 import {
-  APPROVE_REVIEW_REPLY_DRAFT,
   APPROVE_REVIEW_REQUEST,
-  LIST_REVIEW_REPLY_DRAFTS,
   LIST_STAGED_REVIEW_REQUESTS,
-  SKIP_REVIEW_REPLY_DRAFT,
   SKIP_REVIEW_REQUEST,
-  approveReviewReplyDraftTool,
   approveReviewRequestTool,
-  listReviewReplyDrafts,
   listStagedReviewRequests,
-  skipReviewReplyDraftTool,
   skipReviewRequestTool,
 } from '../../../lib/review-loop-tools.mjs';
 
@@ -350,45 +344,6 @@ const TOOLS = [
       required: ['payment_id'],
     },
   },
-  {
-    name: LIST_REVIEW_REPLY_DRAFTS,
-    description:
-      'List reply drafts for new Google reviews (and Yelp when connected). Read-only suggested replies — nothing is posted to Google or Yelp automatically.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        status: {
-          type: 'string',
-          description: 'Filter: draft, approved, or skipped. Defaults to draft.',
-        },
-      },
-    },
-  },
-  {
-    name: APPROVE_REVIEW_REPLY_DRAFT,
-    description:
-      'Mark a review reply draft approved for Marshall to paste manually. Does not post to Google or Yelp.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        source: { type: 'string', description: 'Review source, usually google.' },
-        review_id: { type: 'string', description: 'Stable review id from list_review_reply_drafts.' },
-      },
-      required: ['review_id'],
-    },
-  },
-  {
-    name: SKIP_REVIEW_REPLY_DRAFT,
-    description: 'Skip a review reply draft without posting.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        source: { type: 'string', description: 'Review source, usually google.' },
-        review_id: { type: 'string', description: 'Stable review id.' },
-      },
-      required: ['review_id'],
-    },
-  },
 ];
 
 const TOOL_RUNNERS = {
@@ -411,9 +366,6 @@ const TOOL_RUNNERS = {
   [LIST_STAGED_REVIEW_REQUESTS]: listStagedReviewRequests,
   [APPROVE_REVIEW_REQUEST]: approveReviewRequestTool,
   [SKIP_REVIEW_REQUEST]: skipReviewRequestTool,
-  [LIST_REVIEW_REPLY_DRAFTS]: listReviewReplyDrafts,
-  [APPROVE_REVIEW_REPLY_DRAFT]: approveReviewReplyDraftTool,
-  [SKIP_REVIEW_REPLY_DRAFT]: skipReviewReplyDraftTool,
 };
 
 const VALIDATION_CODES = new Set([

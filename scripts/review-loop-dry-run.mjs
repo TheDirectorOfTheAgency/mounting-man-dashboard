@@ -1,15 +1,11 @@
 #!/usr/bin/env node
-// Dry-run review loop: sample Square payments + sample reviews → stdout (no KV, no send).
+// Dry-run review requests: sample Square payments → stdout (no KV write to prod, no send).
 
 import {
   buildReviewRequestEmailBody,
   stageReviewRequestForPayment,
 } from '../lib/review-request.mjs';
 import { createReviewLoopStore } from '../lib/review-loop-store.mjs';
-import {
-  buildReplyDraftText,
-  reviewStableId,
-} from '../lib/review-reply-drafts.mjs';
 
 const FIXTURE_PAYMENTS = [
   {
@@ -34,21 +30,6 @@ const FIXTURE_PAYMENTS = [
   },
 ];
 
-const FIXTURE_REVIEWS = [
-  {
-    reviewer_first_name: 'Morgan',
-    stars: 5,
-    time: '2026-10-08T18:00:00Z',
-    text: 'Marshall was on time and the mount looks perfect in our living room.',
-  },
-  {
-    reviewer_first_name: 'Drew',
-    stars: 2,
-    time: '2026-10-07T14:00:00Z',
-    text: 'Cable management was not what we discussed.',
-  },
-];
-
 function memoryKv() {
   const strings = new Map();
   const sets = new Map();
@@ -64,7 +45,7 @@ function memoryKv() {
   };
 }
 
-function redactEmailBody(body, firstName, city) {
+function redactEmailBody(body, firstName) {
   return String(body)
     .replace(/@[^\s]+/g, '@redacted.example')
     .replace(new RegExp(firstName, 'gi'), firstName);
@@ -76,7 +57,9 @@ async function main() {
   const store = createReviewLoopStore(memoryKv());
 
   const lines = [];
-  lines.push('# Review loop dry-run (local memory KV only)');
+  lines.push('# Review request dry-run (local memory KV only)');
+  lines.push('');
+  lines.push('Marshall replies to Google/Yelp reviews himself; this dry-run covers **paid-job review requests** only.');
   lines.push('');
   lines.push('## Staged review-request emails');
   lines.push('');
@@ -99,26 +82,12 @@ async function main() {
     lines.push(`### ${payment.firstName} — ${payment.city}`);
     lines.push('');
     lines.push('```');
-    lines.push(redactEmailBody(body, payment.firstName, payment.city));
+    lines.push(redactEmailBody(body, payment.firstName));
     lines.push('```');
     lines.push('');
   }
 
-  lines.push('## Reply drafts (sample Google reviews)');
-  lines.push('');
-  for (const review of FIXTURE_REVIEWS) {
-    const id = reviewStableId(review, 'google');
-    const draft = buildReplyDraftText(review);
-    lines.push(`### ${review.reviewer_first_name} (${review.stars}★) — id \`${id}\``);
-    lines.push('');
-    lines.push('```');
-    lines.push(draft);
-    lines.push('```');
-    lines.push('');
-  }
-
-  const output = lines.join('\n');
-  console.log(output);
+  console.log(lines.join('\n'));
 }
 
 main().catch((error) => {

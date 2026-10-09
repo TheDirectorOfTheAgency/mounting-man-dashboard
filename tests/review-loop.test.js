@@ -10,12 +10,6 @@ import {
   sendReviewRequestEmail,
   stageReviewRequestForPayment,
 } from '../lib/review-request.mjs';
-import {
-  buildReplyDraftText,
-  reviewStableId,
-  syncGoogleReplyDrafts,
-} from '../lib/review-reply-drafts.mjs';
-
 function memoryKv() {
   const strings = new Map();
   const sets = new Map();
@@ -182,29 +176,4 @@ test('approveReviewRequest does not send when send flag is off', async () => {
   assert.equal(out.ok, true);
   assert.equal(out.record.status, 'approved');
   assert.equal(fetchCalls.length, 0);
-});
-
-test('syncGoogleReplyDrafts degrades when Places not configured', async () => {
-  const store = createReviewLoopStore(memoryKv());
-  const result = await syncGoogleReplyDrafts({
-    store,
-    env: {},
-    placesClient: null,
-  });
-  assert.equal(result.created, 0);
-  assert.equal(result.degraded, true);
-});
-
-test('reply draft id is stable and draft text stays calm on low stars', () => {
-  const review = {
-    reviewer_first_name: 'Jane',
-    stars: 2,
-    time: '2026-10-01T12:00:00Z',
-    text: 'Installer was late and rushed.',
-  };
-  const id = reviewStableId(review, 'google');
-  assert.equal(id, reviewStableId(review, 'google'));
-  const draft = buildReplyDraftText(review);
-  assert.match(draft, /sorry|make it right/i);
-  assert.doesNotMatch(draft, /wrong|liar|ridiculous/i);
 });
