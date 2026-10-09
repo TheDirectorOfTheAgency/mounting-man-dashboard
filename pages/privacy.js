@@ -2,7 +2,7 @@ export default function Privacy() {
   return (
     <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 20px', fontFamily: 'sans-serif', lineHeight: 1.7 }}>
       <h1>Privacy Policy</h1>
-      <p><strong>The Mounting Man</strong> — Last updated: July 10, 2026</p>
+      <p><strong>The Mounting Man</strong> — Last updated: October 9, 2026</p>
 
       <h2>1. Information We Collect</h2>
       <p>When you book a service, we collect your name, contact information, and address necessary to complete your installation. We do not sell your personal information to third parties.</p>
@@ -19,6 +19,7 @@ export default function Privacy() {
       <h2>5. Advertising Measurement</h2>
       <p>We may securely share hashed contact information and service outcome data with advertising platforms, including Google, to measure whether advertising led to a booked and completed service. We do not sell this information.</p>
       <p>We may share booking and payment information, such as your email address, phone number, and the amount you paid, with advertising platforms such as Google to measure the performance of our ads.</p>
+      <p>We may also share hashed (SHA-256) customer contact information, such as your email address and phone number, with advertising partners such as Google to show you relevant ads, to avoid showing ads to existing customers (Google Customer Match), and to measure ad performance. To opt out, email us at <a href="mailto:mntvmounting@gmail.com">mntvmounting@gmail.com</a> or update your Google ad settings at <a href="https://adssettings.google.com" target="_blank" rel="noopener">https://adssettings.google.com</a>.</p>
 
       <h2>6. Data Security</h2>
       <p>We take reasonable precautions to protect your information. However, no method of transmission over the internet is 100% secure.</p>
