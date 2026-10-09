@@ -111,6 +111,7 @@ export function createBookingIdentityHandler({
     }
 
     const ref = bookingRef(customerId, bookingSession);
+    const startedAt = Date.now();
     try {
       let store = attributionStore;
       if (store === undefined) {
@@ -118,13 +119,24 @@ export function createBookingIdentityHandler({
         store = activeKV ? createAttributionStore(activeKV) : null;
       }
       const result = await lookup({ customerId, bookingSession, store });
+      const durationMs = Date.now() - startedAt;
+      const jobsSeen = typeof result.jobsSeen === 'number' ? result.jobsSeen : undefined;
       if (!result.found) {
-        logger.info('booking_identity_not_found', { bookingRef: ref, reason: result.reason });
+        logger.info('booking_identity_not_found', {
+          bookingRef: ref,
+          reason: result.reason,
+          upstreamKind: result.upstreamKind,
+          path: result.path,
+          jobsSeen,
+          durationMs,
+        });
         return res.status(404).json({ found: false, errorCode: 'BOOKING_NOT_FOUND' });
       }
       logger.info('booking_identity_resolved', {
         bookingRef: ref,
         fields: Object.keys(result.userData),
+        path: result.path,
+        durationMs,
       });
       return res.status(200).json({ found: true, user_data: result.userData });
     } catch (error) {

@@ -4,9 +4,12 @@ import test from 'node:test';
 
 import {
   hashedUserData,
+  LOOKUP_RETRY_TIMEOUT_MS,
+  LOOKUP_TIMEOUT_MS,
   lookupBookingIdentity,
   normalizeEmailForEnhancedConversions,
   normalizePhoneForEnhancedConversions,
+  recentJobWindowMs,
 } from '../lib/booking-identity.js';
 import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createBookingIdentityHandler, createRateLimiter } from '../pages/api/attribution/booking-identity.js';
@@ -22,6 +25,17 @@ function job(overrides = {}) {
     id: 'job-1',
     created: new Date(NOW - 60 * 60 * 1000).toISOString(),
     booking_session: 'session-exact',
+    customer: { id: 'cust-1', email: SECRET_EMAIL, phone: SECRET_PHONE },
+    ...overrides,
+  };
+}
+
+function zbJob(overrides = {}) {
+  return {
+    id: 'zb-job-1',
+    created: new Date(NOW - 30 * 1000).toISOString(),
+    status: 'scheduled',
+    job_number: '1001',
     customer: { id: 'cust-1', email: SECRET_EMAIL, phone: SECRET_PHONE },
     ...overrides,
   };
@@ -97,6 +111,7 @@ test('lookup matches the exact session for the customer inside the 48h window', 
     now: NOW,
   });
   assert.equal(result.found, true);
+  assert.equal(result.path, 'exact_session');
   assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
   assert.equal(result.userData.sha256_phone_number, sha('+16125551234'));
   const url = new URL(calls[0].url);
@@ -127,14 +142,23 @@ test('lookup rejects wrong session, wrong customer, expired booking, and missing
 });
 
 test('lookup treats upstream failures and unparsable bodies as not found', async () => {
+  const calls = [];
   const failing = await lookupBookingIdentity({
     customerId: 'cust-1',
     bookingSession: 'session-exact',
     env: { ZENBOOKER_API_KEY: 'key' },
-    httpClient: { get: async () => { throw new Error('boom'); } },
+    httpClient: {
+      get: async () => {
+        calls.push(1);
+        const err = new Error('boom');
+        err.code = 'ECONNABORTED';
+        throw err;
+      },
+    },
     now: NOW,
   });
-  assert.deepEqual(failing, { found: false, reason: 'upstream_error' });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(failing, { found: false, reason: 'upstream_error', upstreamKind: 'timeout', jobsSeen: 0 });
   const garbage = await lookupBookingIdentity({
     customerId: 'cust-1',
     bookingSession: 'session-exact',
@@ -142,7 +166,7 @@ test('lookup treats upstream failures and unparsable bodies as not found', async
     httpClient: { get: async () => ({ data: '<html>' }) },
     now: NOW,
   });
-  assert.deepEqual(garbage, { found: false, reason: 'upstream_error' });
+  assert.deepEqual(garbage, { found: false, reason: 'upstream_error', upstreamKind: 'parse', jobsSeen: 0 });
 });
 
 test('lookup parses a string body with bare empty coordinates', async () => {
@@ -186,6 +210,10 @@ test('endpoint returns only hashes and logs no plain identifiers', async () => {
   for (const secret of ['jane', 'Jane', 'gmail', '5551234', 'cust-1', 'session-exact']) {
     assert.equal(rendered.includes(secret), false, `leaked ${secret}`);
   }
+  const resolvedLog = logger.logs.find(([event]) => event === 'booking_identity_resolved');
+  assert.ok(resolvedLog);
+  assert.equal(resolvedLog[1].path, 'exact_session');
+  assert.equal(typeof resolvedLog[1].durationMs, 'number');
 });
 
 test('endpoint answers preflight and rejects foreign origins', async () => {
@@ -398,11 +426,208 @@ test('lookup does not bridge when two jobs were created inside the window', asyn
     store,
     env: { ZENBOOKER_API_KEY: 'key' },
     httpClient: httpClientReturning([
-      job({ id: 'job-a', booking_session: undefined, created: new Date(NOW - 2 * 60 * 1000).toISOString() }),
-      job({ id: 'job-b', booking_session: undefined, created: new Date(NOW - 4 * 60 * 1000).toISOString() }),
+      job({
+        id: 'job-a',
+        booking_session: undefined,
+        created: new Date(NOW - 45 * 60 * 1000).toISOString(),
+      }),
+      job({
+        id: 'job-b',
+        booking_session: undefined,
+        created: new Date(NOW - 50 * 60 * 1000).toISOString(),
+      }),
     ]),
     now: NOW,
   });
-  assert.deepEqual(result, { found: false, reason: 'not_found' });
+  assert.deepEqual(result, { found: false, reason: 'not_found', jobsSeen: 2 });
   assert.equal(await store.getJobIdForSession('session-two-jobs'), null);
+});
+
+test('recent_customer_job resolves zb-shaped job without session, capture, or mapping', async () => {
+  const store = createAttributionStore(bridgeKv());
+  let bridgeWrites = 0;
+  const origSave = store.saveJobBridge.bind(store);
+  store.saveJobBridge = async (...args) => {
+    bridgeWrites += 1;
+    return origSave(...args);
+  };
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-organic',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([zbJob()]),
+    now: NOW,
+  });
+  assert.equal(result.found, true);
+  assert.equal(result.path, 'recent_customer_job');
+  assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
+  assert.equal(bridgeWrites, 0);
+});
+
+test('recent_customer_job resolves when capture list is still empty', async () => {
+  const store = createAttributionStore(bridgeKv());
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-race',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([zbJob({ id: 'race-job' })]),
+    now: NOW,
+  });
+  assert.equal(result.found, true);
+  assert.equal(result.path, 'recent_customer_job');
+});
+
+test('recent_customer_job respects RECENT_JOB_MS and picks the newest in-window job', async () => {
+  const store = createAttributionStore(bridgeKv());
+  const stale = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-stale',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      zbJob({ id: 'old', created: new Date(NOW - 3 * 60 * 60 * 1000).toISOString() }),
+    ]),
+    now: NOW,
+  });
+  assert.equal(stale.reason, 'not_found');
+
+  const mixed = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-mixed',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      zbJob({
+        id: 'ancient',
+        created: new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        customer: { id: 'cust-1', email: 'ancient@example.com', phone: '6125550001' },
+      }),
+      zbJob({
+        id: 'recent',
+        created: new Date(NOW - 20 * 60 * 1000).toISOString(),
+        customer: { id: 'cust-1', email: 'recent@example.com', phone: '6125550002' },
+      }),
+    ]),
+    now: NOW,
+  });
+  assert.equal(mixed.found, true);
+  assert.equal(mixed.path, 'recent_customer_job');
+  assert.equal(mixed.userData.sha256_email_address, sha('recent@example.com'));
+});
+
+test('recent_customer_job rejects jobs for a different customer id', async () => {
+  const store = createAttributionStore(bridgeKv());
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-wrong-cust',
+    store,
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: httpClientReturning([
+      zbJob({ customer: { id: 'cust-2', email: SECRET_EMAIL, phone: SECRET_PHONE } }),
+    ]),
+    now: NOW,
+  });
+  assert.equal(result.reason, 'not_found');
+});
+
+test('zenbooker fetch retries timeout once then succeeds; 404 is not retried', async () => {
+  const calls = [];
+  const retryClient = {
+    async get(_url, options) {
+      calls.push(options.timeout);
+      if (calls.length === 1) {
+        const err = new Error('timeout');
+        err.code = 'ECONNABORTED';
+        throw err;
+      }
+      return { data: { results: [job()] } };
+    },
+  };
+  const ok = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-exact',
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: retryClient,
+    now: NOW,
+  });
+  assert.equal(ok.found, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0], LOOKUP_TIMEOUT_MS);
+  assert.equal(calls[1], LOOKUP_RETRY_TIMEOUT_MS);
+
+  const notFoundCalls = [];
+  const notFoundClient = {
+    async get() {
+      notFoundCalls.push(1);
+      const err = new Error('missing');
+      err.response = { status: 404 };
+      throw err;
+    },
+  };
+  const missing = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-exact',
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: notFoundClient,
+    now: NOW,
+  });
+  assert.equal(notFoundCalls.length, 1);
+  assert.equal(missing.upstreamKind, 'http_404');
+
+  const doubleTimeout = {
+    async get() {
+      const err = new Error('timeout');
+      err.code = 'ECONNABORTED';
+      throw err;
+    },
+  };
+  const exhausted = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-exact',
+    env: { ZENBOOKER_API_KEY: 'key' },
+    httpClient: doubleTimeout,
+    now: NOW,
+  });
+  assert.deepEqual(exhausted, {
+    found: false,
+    reason: 'upstream_error',
+    upstreamKind: 'timeout',
+    jobsSeen: 0,
+  });
+});
+
+test('handler not_found logs path durationMs and upstreamKind without PII', async () => {
+  const logger = captureLogger();
+  const handler = createBookingIdentityHandler({
+    logger,
+    lookup: async () => ({
+      found: false,
+      reason: 'upstream_error',
+      upstreamKind: 'timeout',
+      path: undefined,
+      jobsSeen: 0,
+    }),
+  });
+  const res = createResponse();
+  await handler(request(), res);
+  assert.equal(res.statusCode, 404);
+  const notFoundLog = logger.logs.find(([event]) => event === 'booking_identity_not_found');
+  assert.deepEqual(notFoundLog[1], {
+    bookingRef: notFoundLog[1].bookingRef,
+    reason: 'upstream_error',
+    upstreamKind: 'timeout',
+    path: undefined,
+    jobsSeen: 0,
+    durationMs: notFoundLog[1].durationMs,
+  });
+  assert.equal(typeof notFoundLog[1].durationMs, 'number');
+  assert.equal(JSON.stringify(logger.logs).includes(SECRET_EMAIL), false);
+});
+
+test('BOOKING_IDENTITY_RECENT_MS clamps to 5 min and 2 h', () => {
+  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: '0' }), 5 * 60 * 1000);
+  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: '1' }), 5 * 60 * 1000);
+  assert.equal(recentJobWindowMs({ BOOKING_IDENTITY_RECENT_MS: String(10 * 60 * 60 * 1000) }), 2 * 60 * 60 * 1000);
 });

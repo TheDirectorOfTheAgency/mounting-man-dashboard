@@ -117,9 +117,9 @@ test('thank-you pushes booking_confirmed without user_data when the lookup excee
     setTimeout,
     JSON,
   });
-  await new Promise((resolve) => setTimeout(resolve, 2300));
+  await new Promise((resolve) => setTimeout(resolve, 3300));
   assert.equal(aborted, true);
-  assert.ok(Date.now() - started >= 2000);
+  assert.ok(Date.now() - started >= 3000);
   assert.deepEqual(JSON.parse(JSON.stringify(window.dataLayer)), [{ event: 'booking_confirmed', booking_session: 's' }]);
 });
 
@@ -141,21 +141,68 @@ test('pages other than thank-you push nothing', async () => {
   assert.equal(fetchCalls.length, 0);
 });
 
-test('paid click-id capture POST is still sent immediately alongside the identity lookup', async () => {
+test('paid capture POST finishes before identity lookup starts', async () => {
   const stored = JSON.stringify({ paidMarker: 'gclid', gclid: 'click-1', sourceClass: 'google' });
+  let captureDone = false;
   const { dataLayer, fetchCalls, store } = await runHelper({
     url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
     storage: { tmm_paid_attribution_v1: stored },
-    fetchImpl: (requestUrl) => (requestUrl.endsWith('/api/attribution/booking')
-      ? jsonResponse(200, { captured: true })
-      : jsonResponse(404, { found: false })),
+    fetchImpl: (requestUrl) => {
+      if (requestUrl.endsWith('/api/attribution/booking')) {
+        captureDone = true;
+        return jsonResponse(200, { captured: true });
+      }
+      assert.equal(captureDone, true);
+      return jsonResponse(404, { found: false });
+    },
   });
   assert.match(fetchCalls[0].url, /\/api\/attribution\/booking$/);
   assert.equal(JSON.parse(fetchCalls[0].options.body).gclid, 'click-1');
   assert.equal(fetchCalls[0].options.keepalive, true);
   assert.equal(fetchCalls.length, 2);
+  assert.match(fetchCalls[1].url, /\/api\/attribution\/booking-identity$/);
   assert.equal('tmm_paid_attribution_v1' in store, false);
   assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1' }]);
+});
+
+test('unpaid thank-you calls identity immediately without waiting for capture', async () => {
+  const order = [];
+  const { fetchCalls } = await runHelper({
+    url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
+    fetchImpl: (requestUrl) => {
+      order.push(requestUrl.endsWith('/api/attribution/booking-identity') ? 'identity' : 'other');
+      return jsonResponse(404, { found: false });
+    },
+  });
+  assert.equal(fetchCalls.length, 1);
+  assert.deepEqual(order, ['identity']);
+});
+
+test('booking_confirmed fires once by 3000 ms when capture and identity hang', async () => {
+  const parsed = new URL('https://www.themountingman.com/thank-you?customer_id=c&booking_session=s');
+  const stored = JSON.stringify({ paidMarker: 'gclid', gclid: 'click-1' });
+  const window = { location: { pathname: parsed.pathname, search: parsed.search }, dataLayer: [] };
+  const started = Date.now();
+  vm.runInNewContext(source, {
+    window,
+    URLSearchParams,
+    localStorage: {
+      getItem: (key) => (key === 'tmm_paid_attribution_v1' ? stored : null),
+      setItem() {},
+      removeItem() {},
+    },
+    fetch: () => new Promise(() => {}),
+    AbortController,
+    Promise,
+    setTimeout,
+    JSON,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+  assert.ok(Date.now() - started >= 3000);
+  assert.deepEqual(JSON.parse(JSON.stringify(window.dataLayer)), [{
+    event: 'booking_confirmed',
+    booking_session: 's',
+  }]);
 });
 
 test('capture POST failure does not stop booking_confirmed', async () => {
