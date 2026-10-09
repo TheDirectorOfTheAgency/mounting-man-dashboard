@@ -63,7 +63,7 @@ function dependencies(overrides = {}) {
     installPost: [],
     logs: [],
     operations: [],
-    sms: [],
+    reviewRequests: [],
   };
   return {
     calls,
@@ -92,7 +92,10 @@ function dependencies(overrides = {}) {
       },
       operationsNotifier: async (message) => { calls.operations.push(message); },
       installPostNotifier: async (value) => { calls.installPost.push(value); },
-      reviewSmsSender: async (value) => { calls.sms.push(value); return true; },
+      reviewRequestStager: async (value) => {
+        calls.reviewRequests.push(value);
+        return { status: 'staged' };
+      },
       attributionCoordinator: {
         async registerPayment(value, options) {
           calls.attribution.push({ value, options });
@@ -113,14 +116,14 @@ test('preserves origin/main optional signature configuration and validates confi
   const unconfiguredRes = createResponse();
   await createSquarePaymentHandler(unconfigured.values)(paymentRequest(), unconfiguredRes);
   assert.equal(unconfiguredRes.statusCode, 200);
-  assert.equal(unconfigured.calls.sms.length, 1);
+  assert.equal(unconfigured.calls.reviewRequests.length, 1);
 
   const invalid = dependencies({ signatureVerifier: () => false });
   const invalidRes = createResponse();
   await createSquarePaymentHandler(invalid.values)(paymentRequest(), invalidRes);
   assert.equal(invalidRes.statusCode, 401);
   assert.equal(invalid.calls.installPost.length, 0);
-  assert.equal(invalid.calls.sms.length, 0);
+  assert.equal(invalid.calls.reviewRequests.length, 0);
 
   const notifierFailure = dependencies({
     signatureVerifier: () => false,
@@ -135,21 +138,22 @@ test('preserves origin/main optional signature configuration and validates confi
   );
 });
 
-test('payment.created and payment.updated preserve Q, review SMS, and observe-only attribution paths', async () => {
+test('payment.created and payment.updated preserve install-post, review staging, and observe-only attribution paths', async () => {
   for (const eventType of ['payment.created', 'payment.updated', 'payment.completed']) {
     const deps = dependencies();
     const res = createResponse();
     await createSquarePaymentHandler(deps.values)(paymentRequest(eventType), res);
 
     assert.equal(res.statusCode, 200);
-    assert.equal(res.body.status, 'sms_sent');
+    assert.equal(res.body.status, 'payment_processed');
     assert.equal(res.body.attributionStatus, 'observed');
+    assert.equal(res.body.reviewRequestStatus, 'staged');
     assert.equal(deps.calls.installPost.length, 1);
-    assert.equal(deps.calls.sms.length, 1);
+    assert.equal(deps.calls.reviewRequests.length, 1);
     assert.equal(deps.calls.attribution.length, 1);
     assert.deepEqual(
       deps.calls.logs.find(([event]) => event === 'square_payment_processed'),
-      ['square_payment_processed', { attributionStatus: 'observed', reviewSmsStatus: 'sent' }],
+      ['square_payment_processed', { attributionStatus: 'observed', reviewRequestStatus: 'staged' }],
     );
     assert.deepEqual(deps.calls.attribution[0].value, {
       paymentId: 'payment-1',
@@ -258,7 +262,7 @@ test('partially paid invoice preserves install-post handling without synthesizin
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.installPost[0].eventType, 'invoice.payment_made');
   assert.equal(deps.calls.installPost[0].amountCents, 10000);
-  assert.equal(deps.calls.sms.length, 0);
+  assert.equal(deps.calls.reviewRequests.length, 1);
   assert.equal(deps.calls.attribution.length, 0);
 });
 
@@ -273,13 +277,13 @@ test('paired invoice and payment events record exactly one canonical payment att
 
   assert.equal(invoiceRes.body.status, 'invoice_processed');
   assert.equal(invoiceRes.body.attributionStatus, 'not_applicable');
-  assert.equal(paymentRes.body.status, 'sms_sent');
+  assert.equal(paymentRes.body.status, 'payment_processed');
   assert.equal(paymentRes.body.attributionStatus, 'observed');
   assert.equal(deps.calls.attribution.length, 1);
   assert.equal(deps.calls.attribution[0].value.paymentId, 'payment-1');
 });
 
-test('install-post notifier failure cannot suppress review SMS', async () => {
+test('install-post notifier failure cannot suppress review-request staging', async () => {
   const deps = dependencies({
     installPostNotifier: async () => { throw new Error('Woodward exploded'); },
   });
@@ -287,15 +291,15 @@ test('install-post notifier failure cannot suppress review SMS', async () => {
   await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.status, 'sms_sent');
-  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(res.body.status, 'payment_processed');
+  assert.equal(deps.calls.reviewRequests.length, 1);
   assert.equal(
     deps.calls.logs.some(([event]) => event === 'square_install_post_notify_failed'),
     true,
   );
 });
 
-test('attribution failure cannot suppress install-post notification or review SMS', async () => {
+test('attribution failure cannot suppress install-post notification or review staging', async () => {
   const deps = dependencies({
     attributionCoordinator: {
       async registerPayment() {
@@ -308,10 +312,10 @@ test('attribution failure cannot suppress install-post notification or review SM
 
   assert.equal(res.statusCode, 503);
   assert.equal(res.body.retryable, true);
-  assert.equal(res.body.status, 'sms_sent');
+  assert.equal(res.body.status, 'payment_processed');
   assert.equal(res.body.attributionStatus, 'failed');
   assert.equal(deps.calls.installPost.length, 1);
-  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(deps.calls.reviewRequests.length, 1);
 });
 
 test('duplicate payment retries transient attribution failure without repeating follow-up', async () => {
@@ -354,7 +358,7 @@ test('duplicate payment retries transient attribution failure without repeating 
   assert.equal(attributionAttempts, 2);
   assert.equal(deps.calls.followUpClaims.length, 2);
   assert.equal(deps.calls.installPost.length, 1);
-  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(deps.calls.reviewRequests.length, 1);
 });
 
 test('unavailable follow-up claim returns retryable without sending customer follow-up', async () => {
@@ -377,7 +381,7 @@ test('unavailable follow-up claim returns retryable without sending customer fol
   assert.equal(res.body.status, 'follow_up_claim_unavailable');
   assert.equal(res.body.retryable, true);
   assert.equal(deps.calls.installPost.length, 0);
-  assert.equal(deps.calls.sms.length, 0);
+  assert.equal(deps.calls.reviewRequests.length, 0);
 });
 
 test('concurrent duplicate deliveries permit exactly one customer follow-up', async () => {
@@ -400,10 +404,10 @@ test('concurrent duplicate deliveries permit exactly one customer follow-up', as
   ]);
 
   assert.equal(deps.calls.installPost.length, 1);
-  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(deps.calls.reviewRequests.length, 1);
   assert.deepEqual(
     [firstRes.body.status, secondRes.body.status].sort(),
-    ['duplicate', 'sms_sent'],
+    ['duplicate', 'payment_processed'],
   );
 });
 
@@ -417,7 +421,7 @@ test('non-completed payments and unrelated events remain ignored before side eff
     await createSquarePaymentHandler(deps.values)(req, res);
     assert.equal(res.body.status, 'ignored');
     assert.equal(deps.calls.installPost.length, 0);
-    assert.equal(deps.calls.sms.length, 0);
+    assert.equal(deps.calls.reviewRequests.length, 0);
     assert.equal(deps.calls.attribution.length, 0);
   }
 });

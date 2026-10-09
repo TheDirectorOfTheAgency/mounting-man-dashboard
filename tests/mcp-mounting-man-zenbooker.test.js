@@ -290,6 +290,9 @@ test('initialize and tools/list accept the payroll secret, cron secret, and quer
     GET_JOB_PAYMENT_STATUS,
     GET_SUPPLIES_FOR_DAY,
     TEXT_NEXT_CUSTOMER_ETA,
+    'list_staged_review_requests',
+    'approve_review_request',
+    'skip_review_request',
   ]);
   assert.match(listed.body.result.tools[0].description, /The Mounting Man/);
   assert.match(listed.body.result.tools[0].description, /ZenBooker/);
