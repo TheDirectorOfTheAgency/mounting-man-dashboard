@@ -31,11 +31,18 @@ load, whichever is first (exactly once).
 - Identity resolution order (first match wins; `path` is logged server-side only):
   1. **exact_session** — job `booking_session` (or alias fields) equals the request session.
   2. **stored** — KV job-bridge mapping for this session.
-  3. **window** — unique in-window capture + job (writes bridge mapping for attribution).
-  4. **recent_customer_job** — most recent job for this customer created within the last
-     30 minutes (override `BOOKING_IDENTITY_RECENT_MS`, clamped 5 min–2 h). Does not
-     write bridge or click attribution. Limited to 3 successful resolves per
-     `booking_session` per hour (`attrib:identity-session:*` in KV).
+  3. **window** — exactly one in-window capture and job. The capture's `sessionRef`
+     must match the request `booking_session`, and its `customerId` must equal the
+     request `customer_id` (writes a bridge mapping for attribution). New captures
+     persist an opaque customer reference; the store exposes `customerId` in memory
+     only after verifying that reference. Legacy captures without the reference
+     cannot use the window path. Raw customer IDs remain absent from KV.
+- Every path requires the job's customer ID to be present and equal the request
+  `customer_id`; jobs with missing customer IDs cannot match.
+- The **recent_customer_job** fallback was removed because a customer's recent job
+  does not prove that the supplied `booking_session` belongs to that booking.
+  Returning email/phone hashes through that fallback exposed identifiers to callers
+  supplying an unrelated session. `BOOKING_IDENTITY_RECENT_MS` no longer applies.
 - Returns `200 { found: true, user_data: { sha256_email_address?, sha256_phone_number? } }`
   or `404 { found: false, errorCode: 'BOOKING_NOT_FOUND' }`. `400` bad reference,
   `403` origin, `429` rate limit (20 requests/minute/client, per serverless instance),
@@ -57,8 +64,9 @@ session field. Observed top-level keys include: `start_date`, `end_date`,
 `job_number`, `recurring_booking`, `min_providers_required`,
 `skill_tags_required`, `unable_to_auto_assign`, `job_offer`, `assigned_providers`,
 `rating`, `billing`, `invoice`, `id`, `created`. Identity therefore relies on stored
-bridges, the capture window, or the recent-customer-job fallback—not an exact session
-on the job object.
+bridges or a verified capture window when the job has no session field. Without
+a verified session-to-job link, identity returns 404 and `booking_confirmed` still
+fires without enhanced-conversion `user_data`.
 
 ## GTM (manual)
 
