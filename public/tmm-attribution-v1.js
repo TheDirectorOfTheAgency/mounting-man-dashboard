@@ -4,7 +4,9 @@
   var STORAGE_KEY = 'tmm_paid_attribution_v1';
   var CAPTURE_URL = 'https://mounting-man-dashboard.vercel.app/api/attribution/booking';
   var IDENTITY_URL = 'https://mounting-man-dashboard.vercel.app/api/attribution/booking-identity';
-  var IDENTITY_TIMEOUT_MS = 2000;
+  var IDENTITY_TIMEOUT_MS = 3000;
+  var PAGE_CONFIRM_MS = 3000;
+  var CAPTURE_WAIT_MS = 800;
   var params = new URLSearchParams(window.location.search);
 
   function cleanClass(value) {
@@ -18,6 +20,12 @@
   function clickValue(name) {
     if (!params.has(name)) return '';
     return String(params.get(name) || '').replace(/[^A-Za-z0-9._-]/g, '').slice(0, 512);
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, ms);
+    });
   }
 
   function readPaidAcquisition() {
@@ -48,11 +56,11 @@
 
   function captureBooking(customerId, bookingSession) {
     var stored = localStorage.getItem(STORAGE_KEY);
-    if (!customerId || !bookingSession || !stored) return;
+    if (!customerId || !bookingSession || !stored) return Promise.resolve();
 
     var storedAcquisition = JSON.parse(stored);
-    if (!storedAcquisition || !storedAcquisition.paidMarker) return;
-    fetch(CAPTURE_URL, {
+    if (!storedAcquisition || !storedAcquisition.paidMarker) return Promise.resolve();
+    return fetch(CAPTURE_URL, {
       method: 'POST',
       mode: 'cors',
       credentials: 'omit',
@@ -84,10 +92,13 @@
     return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : '';
   }
 
-  function resolveUserData(customerId, bookingSession) {
+  function resolveUserData(customerId, bookingSession, timeoutMs) {
     if (!customerId || !bookingSession || typeof fetch !== 'function') {
       return Promise.resolve(null);
     }
+    var budget = typeof timeoutMs === 'number' && timeoutMs > 0
+      ? Math.min(timeoutMs, IDENTITY_TIMEOUT_MS)
+      : IDENTITY_TIMEOUT_MS;
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var request = fetch(IDENTITY_URL, {
       method: 'POST',
@@ -114,7 +125,7 @@
       setTimeout(function () {
         if (controller) controller.abort();
         resolve(null);
-      }, IDENTITY_TIMEOUT_MS);
+      }, budget);
     });
     return Promise.race([request, timeout]);
   }
@@ -122,6 +133,7 @@
   var isThankYou = false;
   var customerId = '';
   var bookingSession = '';
+  var capturePromise = Promise.resolve();
   try {
     var acquisition = readPaidAcquisition();
     if (acquisition) localStorage.setItem(STORAGE_KEY, JSON.stringify(acquisition));
@@ -130,19 +142,26 @@
     if (isThankYou) {
       customerId = params.get('customer_id') || '';
       bookingSession = params.get('booking_session') || '';
-      captureBooking(customerId, bookingSession);
+      capturePromise = captureBooking(customerId, bookingSession);
     }
   } catch (_) {}
 
   if (isThankYou) {
     var pushed = false;
+    var pageDeadline = Date.now() + PAGE_CONFIRM_MS;
     var pushOnce = function (userData) {
       if (pushed) return;
       pushed = true;
       try { pushBookingConfirmed(bookingSession, userData); } catch (_) {}
     };
+    setTimeout(function () { pushOnce(null); }, PAGE_CONFIRM_MS);
     try {
-      resolveUserData(customerId, bookingSession).then(pushOnce, function () { pushOnce(null); });
+      Promise.race([capturePromise, wait(CAPTURE_WAIT_MS)])
+        .then(function () {
+          var remaining = pageDeadline - Date.now();
+          return resolveUserData(customerId, bookingSession, remaining);
+        })
+        .then(pushOnce, function () { pushOnce(null); });
     } catch (_) {
       pushOnce(null);
     }
