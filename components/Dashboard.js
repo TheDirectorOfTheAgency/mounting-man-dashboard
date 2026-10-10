@@ -626,8 +626,15 @@ export default function Dashboard({ initialData = {} }) {
             <div className="hud-panel-header">JOBS BY SOURCE</div>
             {sourceReport?.months?.[0] && (
               <div className="text-[9px] text-hud-text tracking-widest">
-                {sourceReport.months[0].month} // {sourceReport.months[0].jobs} JOBS // ${Number(sourceReport.months[0].revenue || 0).toLocaleString()}
-                {' '}// UNKNOWN {sourceReport.months[0].unknownJobs} // REPEAT {sourceReport.months[0].repeatJobs}
+                {sourceReport.months[0].month}
+                {' // '}
+                {sourceReport.months[0].jobs} JOBS
+                {' // $'}
+                {Number(sourceReport.months[0].revenue || 0).toLocaleString()}
+                {' // UNKNOWN '}
+                {sourceReport.months[0].unknownJobs}
+                {' // REPEAT '}
+                {sourceReport.months[0].repeatJobs}
               </div>
             )}
           </div>
