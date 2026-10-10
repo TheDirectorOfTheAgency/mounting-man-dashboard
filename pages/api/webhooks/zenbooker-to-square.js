@@ -13,6 +13,7 @@
 
 import axios from 'axios';
 import { considerIncomingJob } from '../../../lib/attribution-bridge.js';
+import { recordJobSource } from '../../../lib/job-source.js';
 import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
 import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
 import {
@@ -1410,6 +1411,9 @@ export function createZenbookerToSquareHandler({
       ? await loadAttributionStore()
       : attributionStore;
     await considerIncomingJob({ payload, store: bridgeStore });
+    if (bridgeStore?.saveJobSource) {
+      await recordJobSource({ store: bridgeStore, payload });
+    }
   } catch {
     console.log('ZB_BRIDGE_DECISION', JSON.stringify({
       jobId: null,
