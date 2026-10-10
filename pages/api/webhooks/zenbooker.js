@@ -20,6 +20,7 @@ import {
   logBridgeDecision,
   resolveCompletedBridge,
 } from '../../../lib/attribution-bridge.js';
+import { recordJobSource } from '../../../lib/job-source.js';
 
 let cachedKV;
 async function getDefaultKV() {
@@ -165,6 +166,18 @@ export function createZenbookerWebhookHandler({
           hasGclid: false,
           hasGbraid: false,
           hasWbraid: false,
+        });
+      }
+      try {
+        await recordJobSource({
+          store: activeStore,
+          payload: req.body,
+          candidate,
+        });
+      } catch (error) {
+        logger.error('job_source_record_failed', {
+          jobRef,
+          errorType: error?.name || 'Error',
         });
       }
       if (!candidate.acquisition?.paidEvidence) {

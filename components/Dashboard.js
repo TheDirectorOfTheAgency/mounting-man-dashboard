@@ -115,6 +115,7 @@ export default function Dashboard({ initialData = {} }) {
   const [adsData, setAdsData] = useState(initialData?.googleAds || null);
   const [telemetryData, setTelemetryData] = useState(initialData?.telemetry || null);
   const [threadLines, setThreadLines] = useState([]);
+  const [sourceReport, setSourceReport] = useState(null);
   const [loading, setLoading] = useState(!initialData?.square);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(new Date());
@@ -138,17 +139,19 @@ export default function Dashboard({ initialData = {} }) {
   const fetchAllData = async () => {
     try {
       setLoading(true);
-      const [squareRes, webflowRes, adsRes, telRes] = await Promise.all([
+      const [squareRes, webflowRes, adsRes, telRes, sourceRes] = await Promise.all([
         fetch('/api/square-revenue'),
         fetch('/api/webflow-posts'),
         fetch('/api/google-ads'),
         fetch('/api/telemetry'),
+        fetch('/api/attribution/sources'),
       ]);
 
       const squareJson = squareRes.ok ? await squareRes.json() : null;
       const webflowJson = webflowRes.ok ? await webflowRes.json() : null;
       const adsJson = adsRes.ok ? await adsRes.json() : null;
       const telJson = telRes.ok ? await telRes.json() : null;
+      const sourceJson = sourceRes.ok ? await sourceRes.json() : null;
 
       if (squareJson && !squareJson.error) {
         setSquareData(squareJson);
@@ -160,6 +163,7 @@ export default function Dashboard({ initialData = {} }) {
       if (webflowJson && !webflowJson.error) setWebflowData(webflowJson);
       if (adsJson && !adsJson.error) setAdsData(adsJson);
       if (telJson && !telJson.error) setTelemetryData(telJson);
+      if (sourceJson && !sourceJson.error) setSourceReport(sourceJson);
       setLastUpdated(new Date());
       setError(null);
     } catch (err) {
@@ -239,6 +243,10 @@ export default function Dashboard({ initialData = {} }) {
     // Square revenue: every 5 minutes, always — no manual refresh needed
     const revenueInterval = setInterval(() => {
       fetchTodayRevenueRef.current();
+      fetch('/api/attribution/sources')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((json) => { if (json && !json.error) setSourceReport(json); })
+        .catch(() => {});
     }, 5 * 60 * 1000);
 
     return () => {
@@ -610,6 +618,51 @@ export default function Dashboard({ initialData = {} }) {
             </div>
 
           </div>
+        </div>
+
+        {/* ═══ JOBS BY SOURCE ═══ */}
+        <div className="hud-panel p-4 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-3">
+            <div className="hud-panel-header">JOBS BY SOURCE</div>
+            {sourceReport?.months?.[0] && (
+              <div className="text-[9px] text-hud-text tracking-widest">
+                {sourceReport.months[0].month} // {sourceReport.months[0].jobs} JOBS // ${Number(sourceReport.months[0].revenue || 0).toLocaleString()}
+                {' '}// UNKNOWN {sourceReport.months[0].unknownJobs} // REPEAT {sourceReport.months[0].repeatJobs}
+              </div>
+            )}
+          </div>
+          {sourceReport?.months?.[0] ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {['byLastTouch', 'byFirstTouch'].map((side) => {
+                const month = sourceReport.months[0];
+                const title = side === 'byLastTouch' ? 'LAST TOUCH' : 'FIRST TOUCH';
+                const labels = sourceReport.labels || {};
+                return (
+                  <div key={side} className="min-w-0">
+                    <div className="text-[9px] text-hud-text-dim tracking-widest mb-2">{title}</div>
+                    {(month[side] || []).map((row) => {
+                      const name = row.detail
+                        ? `${labels[row.bucket] || row.bucket} (${row.detail})`
+                        : (labels[row.bucket] || row.bucket);
+                      return (
+                        <div key={`${side}-${row.bucket}-${row.detail || ''}`} className="flex items-center justify-between gap-3 py-1.5 border-b border-hud-border/30 text-[10px]">
+                          <span className="text-hud-text tracking-wider uppercase truncate">{name}</span>
+                          <span className="font-mono text-hud-white shrink-0">
+                            {row.jobs} · ${Number(row.revenue || 0).toLocaleString()} · {Math.round(row.share * 1000) / 10}%
+                            {row.repeatJobs ? ` · RPT ${row.repeatJobs}` : ''}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-[10px] text-hud-text-dim tracking-wider text-center py-4">
+              NO MATCHED JOBS YET
+            </div>
+          )}
         </div>
 
         {/* ═══ REVENUE TREND ═══ */}
