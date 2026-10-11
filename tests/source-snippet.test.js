@@ -27,7 +27,12 @@ function runSnippet({ url, nodes = [] }) {
     querySelectorAll() { return list; },
   };
   const window = {
-    location: { pathname: parsed.pathname, search: parsed.search, href: parsed.href },
+    location: {
+      hostname: parsed.hostname,
+      pathname: parsed.pathname,
+      search: parsed.search,
+      href: parsed.href,
+    },
     document,
     crypto: { getRandomValues(bytes) { bytes.fill(7); return bytes; } },
   };
@@ -35,6 +40,7 @@ function runSnippet({ url, nodes = [] }) {
   vm.runInNewContext(source, {
     window,
     document,
+    location: window.location,
     URL,
     URLSearchParams,
     localStorage: {
@@ -53,8 +59,28 @@ function runSnippet({ url, nodes = [] }) {
     encodeURIComponent,
     decodeURIComponent,
   });
-  return { fetchCalls, store, nodes: list };
+  return { fetchCalls, store, nodes: list, cookie: document.cookie };
 }
+
+test('pages.dev does nothing and www.themountingman.com still records the visit', () => {
+  const booking = 'https://widget.zenbooker.com/book/1680240992578x344708259820302200?embed=true';
+  const blocked = runSnippet({
+    url: 'https://preview.pages.dev/?utm_source=google&utm_medium=cpc',
+    nodes: [{ tag: 'A', attrs: { href: booking } }],
+  });
+  assert.deepEqual(blocked.store, {});
+  assert.equal(blocked.cookie, '');
+  assert.equal(blocked.nodes[0].getAttribute('href'), booking);
+  assert.equal(blocked.fetchCalls.length, 0);
+
+  const live = runSnippet({
+    url: 'https://www.themountingman.com/?utm_source=google&utm_medium=organic&utm_campaign=gbp',
+    nodes: [{ tag: 'A', attrs: { href: booking } }],
+  });
+  assert.equal(typeof live.store.tmm_source_v1, 'string');
+  assert.match(live.nodes[0].getAttribute('href'), /booking_session=tmm_[a-f0-9]{32}/);
+  assert.equal(live.fetchCalls.length, 1);
+});
 
 test('the snippet decorates ZenBooker links with booking_session and posts the touch', () => {
   const { fetchCalls, nodes } = runSnippet({
