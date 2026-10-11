@@ -140,6 +140,16 @@ for (const item of cases) {
   });
 }
 
+test('paid medium follows the source instead of defaulting to google ads', () => {
+  assert.equal(classifyTouch({ utmSource: 'facebook', utmMedium: 'cpc' }).bucket, 'facebook_instagram');
+  assert.equal(classifyTouch({ utmSource: 'instagram', utmMedium: 'ppc' }).bucket, 'facebook_instagram');
+  assert.equal(classifyTouch({ utmSource: 'meta', utmMedium: 'paid' }).bucket, 'facebook_instagram');
+  assert.equal(classifyTouch({ utmSource: 'bing', utmMedium: 'ppc' }).bucket, 'bing_other_search');
+  assert.equal(classifyTouch({ utmSource: 'microsoft', utmMedium: 'cpc' }).bucket, 'bing_other_search');
+  assert.equal(classifyTouch({ utmSource: 'google', utmMedium: 'cpc' }).bucket, 'google_ads');
+  assert.equal(classifyTouch({ utmSource: 'facebook', utmMedium: 'cpc', gclid: 'click-1' }).bucket, 'google_ads');
+});
+
 test('first touch stays put when the latest visit is a new source', () => {
   const visit = classifyVisit({
     first: { referrerHost: 'chatgpt.com' },
