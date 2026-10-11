@@ -1,5 +1,5 @@
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
-import { buildSourceReport } from '../../../lib/job-source.js';
+import { buildSourceReport, uniqueSourceJobs } from '../../../lib/job-source.js';
 import { SOURCE_LABELS } from '../../../lib/source-classifier.js';
 
 let cachedKV;
@@ -33,7 +33,7 @@ export function createSourceReportHandler({ attributionStore, kvClient } = {}) {
         const rows = await store.listJobSources(month);
         records.push(...rows);
       }
-      const report = buildSourceReport(records);
+      const report = buildSourceReport(uniqueSourceJobs(records));
       return res.status(200).json({ ...report, labels: SOURCE_LABELS });
     } catch {
       return res.status(200).json({ months: [], storage: 'unavailable', labels: SOURCE_LABELS });

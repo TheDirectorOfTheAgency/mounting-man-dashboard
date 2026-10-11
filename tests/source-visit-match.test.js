@@ -5,7 +5,7 @@ import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import { createZenbookerWebhookHandler } from '../pages/api/webhooks/zenbooker.js';
 import { createVisitHandler } from '../pages/api/attribution/visit.js';
 import { createSourceReportHandler } from '../pages/api/attribution/sources.js';
-import { buildSourceReport, recordJobSource } from '../lib/job-source.js';
+import { buildSourceReport, recordJobSource, rematchVisit } from '../lib/job-source.js';
 import { completedPayload, createRequest, createResponse, installTestEnvironment } from './webhook-test-helpers.js';
 
 const T0 = '2026-10-06T18:00:00.000Z';
@@ -39,6 +39,15 @@ function createFakeKv() {
     },
     async smembers(key) {
       return [...(sets.get(key) || new Set())];
+    },
+    async srem(key, ...members) {
+      const set = sets.get(key);
+      if (!set) return 0;
+      let removed = 0;
+      for (const member of members) {
+        if (set.delete(member)) removed += 1;
+      }
+      return removed;
     },
     async expire() {
       return 1;
@@ -246,4 +255,99 @@ test('visit capture stores the touch and returns nothing about the customer', as
     body: { booking_session: 'sess-visit' },
   }, foreign);
   assert.equal(foreign.statusCode, 403);
+});
+
+test('a late rematch keeps the revenue already stored for the job', async () => {
+  const store = createAttributionStore(createFakeKv());
+  await recordJobSource({
+    store,
+    payload: {
+      data: {
+        id: 'job-revenue',
+        created: CREATED,
+        invoice: { total: 499.5 },
+        customer: { id: CUSTOMER },
+      },
+    },
+  });
+  await store.recordObservedJob({
+    zenCustomerId: CUSTOMER,
+    jobId: 'job-revenue',
+    createdAt: CREATED,
+  });
+
+  const rows = await rematchVisit({
+    store,
+    zenCustomerId: CUSTOMER,
+    capturedAt: T0,
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].revenue, 499.5);
+  assert.equal(buildSourceReport(rows).months[0].revenue, 499.5);
+});
+
+test('a completion without a creation time keeps the original month and counts once', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  await recordJobSource({
+    store,
+    jobId: 'job-span',
+    createdAt: '2026-09-15T18:00:00.000Z',
+    revenue: 100,
+  });
+  await recordJobSource({
+    store,
+    payload: {
+      data: {
+        id: 'job-span',
+        completed_at: '2026-10-10T18:00:00.000Z',
+        invoice: { total: 100 },
+      },
+    },
+    candidate: { jobId: 'job-span', completedAt: '2026-10-10T18:00:00.000Z' },
+  });
+  const september = await kv.smembers('attrib:src-month:2026-09');
+  assert.equal(september.length, 1);
+  await kv.sadd('attrib:src-month:2026-10', september[0]);
+  await kv.sadd('attrib:src-months', '2026-10');
+
+  const res = createResponse();
+  await createSourceReportHandler({ attributionStore: store })({ method: 'GET' }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.months.length, 1);
+  assert.equal(res.body.months[0].month, '2026-09');
+  assert.equal(res.body.months[0].jobs, 1);
+  assert.equal(res.body.months[0].revenue, 100);
+  assert.equal(JSON.stringify(res.body).includes('job-span'), false);
+});
+
+test('replaying the earliest job after a later one does not mark it as a repeat', async () => {
+  const store = createAttributionStore(createFakeKv());
+  const later = await recordJobSource({
+    store,
+    jobId: 'job-later',
+    createdAt: '2026-10-20T15:00:00.000Z',
+    email: 'repeat@example.com',
+    revenue: 300,
+  });
+  const earlier = await recordJobSource({
+    store,
+    jobId: 'job-earlier',
+    createdAt: '2026-10-06T18:02:00.000Z',
+    email: 'repeat@example.com',
+    revenue: 200,
+  });
+  const replayedLater = await recordJobSource({
+    store,
+    jobId: 'job-later',
+    createdAt: '2026-10-20T15:00:00.000Z',
+    email: 'repeat@example.com',
+    revenue: 300,
+  });
+
+  assert.equal(later.repeat, false);
+  assert.equal(earlier.repeat, false);
+  assert.equal(replayedLater.repeat, true);
 });
