@@ -55,10 +55,20 @@ export function normalizeCapturedAcquisition(value = {}) {
   };
 }
 
-function applyCors(res, origin, allowedOrigin) {
+// TODO(Q, remove after the 2026-10-11 tmm cutover test booking): temporary extra
+// origins read from ATTRIBUTION_ALLOWED_ORIGINS (same env var visit.js already uses).
+// Removal: delete ATTRIBUTION_ALLOWED_ORIGINS in Vercel and redeploy, then revert this block.
+function temporaryExtraOrigins(env = process.env) {
+  return String(env?.ATTRIBUTION_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function applyCors(res, origin, allowedOrigin, extraOrigins = temporaryExtraOrigins()) {
   res.setHeader('Vary', 'Origin');
-  if (origin === allowedOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  if (origin && (origin === allowedOrigin || extraOrigins.includes(origin))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Max-Age', '600');
