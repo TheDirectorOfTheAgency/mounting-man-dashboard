@@ -1,6 +1,14 @@
 (function () {
   'use strict';
 
+  var ALLOWED_HOSTS = {
+    'themountingman.com': 1,
+    'www.themountingman.com': 1,
+    'themountingmanusa.com': 1,
+    'www.themountingmanusa.com': 1
+  };
+  if (!ALLOWED_HOSTS[location.hostname]) return;
+
   if (window.__tmmSourceV1) return;
   window.__tmmSourceV1 = true;
 
