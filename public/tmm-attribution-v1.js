@@ -11,12 +11,58 @@
   var RECORD_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
   var params = new URLSearchParams(window.location.search);
 
+  // Decode repeatedly (bounded) and Unicode-normalize before any PII check so
+  // %40, %2540, +, full-width digits or @ cannot slip through.
+  function deepDecode(value) {
+    var text = String(value == null ? '' : value);
+    for (var round = 0; round < 5; round += 1) {
+      var next = text.replace(/\+/g, ' ');
+      try {
+        next = decodeURIComponent(next);
+      } catch (_) {
+        next = next.replace(/%([0-9a-fA-F]{2})/g, function (m, hex) { return String.fromCharCode(parseInt(hex, 16)); });
+      }
+      if (next === text) break;
+      text = next;
+    }
+    if (typeof text.normalize === 'function') text = text.normalize('NFKC');
+    return text.toLowerCase();
+  }
+
+  function looksPersonal(value) {
+    var text = deepDecode(value);
+    if (/[@\uFE6B\uFF20]/.test(text) || /%40|\(at\)|\[at\]/.test(text)) return true;
+    if (/\d(?:[\s.\-()\/+_]*\d){6,}/.test(text)) return true;
+    return /[^\x20-\x7e]/.test(text);
+  }
+
   function cleanClass(value) {
-    return String(value || '')
+    if (!value || looksPersonal(value)) return '';
+    return deepDecode(value)
       .trim()
-      .toLowerCase()
       .replace(/[^a-z0-9_.-]/g, '')
       .slice(0, 64);
+  }
+
+  // Route template only: no query/fragment; non-slug, personal-looking or
+  // long-token segments become ":x", digit-heavy segments ":n".
+  function landingTemplate(pathname) {
+    var decoded = deepDecode(String(pathname || '/').split(/[?#]/)[0]).split(/[?#]/)[0];
+    if (decoded.charAt(0) !== '/') return null;
+    var segments = decoded.split('/').filter(Boolean);
+    if (segments.length > 6) return null;
+    var out = segments.map(function (segment) {
+      if (looksPersonal(segment)) return ':x';
+      if (segment.length > 60 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(segment)) return ':x';
+      if (segment.split('-').some(function (part) { return part.length > 24; })) return ':x';
+      if ((segment.match(/\d/g) || []).length >= 5) return ':n';
+      return segment;
+    });
+    if (looksPersonal('/' + out.join('/'))) {
+      for (var i = 0; i < out.length; i += 1) if (/\d/.test(out[i])) out[i] = ':n';
+      if (looksPersonal('/' + out.join('/'))) return null;
+    }
+    return ('/' + out.join('/') + (out.length && /\/$/.test(decoded) ? '/' : '')).slice(0, 200);
   }
 
   function clickValue(name) {
@@ -66,7 +112,8 @@
       var own = String((window.location && window.location.hostname) || '').toLowerCase().replace(/^www\./, '');
       var bare = host.replace(/^www\./, '');
       if (own && (bare === own || bare.slice(-own.length - 1) === '.' + own)) return 'self';
-      return host.slice(0, 100);
+      if (looksPersonal(host)) return '';
+      return /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host) ? host : '';
     } catch (_) {
       return '';
     }
@@ -86,7 +133,7 @@
     };
     acquisition.campaignClass = cleanClass(params.get('utm_campaign')) || null;
     acquisition.referrerHost = referrerHost() || null;
-    acquisition.landingPath = String((window.location && window.location.pathname) || '/').slice(0, 200);
+    acquisition.landingPath = landingTemplate(window.location && window.location.pathname);
     acquisition.firstSeenAt = new Date().toISOString();
     return acquisition;
   }
