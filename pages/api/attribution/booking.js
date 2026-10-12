@@ -3,6 +3,7 @@ import { createAttributionStore } from '../../../lib/offline-conversion-store.js
 import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
 import { originClass } from '../../../lib/booking-identity.js';
+import { classifyChannel, cleanHost, cleanPath } from '../../../lib/acquisition-channel.js';
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -43,11 +44,21 @@ function cleanClass(value) {
 
 export function normalizeCapturedAcquisition(value = {}) {
   const paidMarker = PAID_MARKERS.has(value.paidMarker) ? value.paidMarker : null;
+  const sourceClass = cleanClass(value.sourceClass);
+  const mediumClass = cleanClass(value.mediumClass);
+  const campaignClass = cleanClass(value.campaignClass);
+  const referrerHost = cleanHost(value.referrerHost);
+  const firstSeen = Date.parse(value.firstSeenAt || '');
   return {
+    channel: classifyChannel({ paidMarker, sourceClass, mediumClass, campaignClass, referrerHost }),
+    campaignClass,
+    referrerHost,
+    landingPath: cleanPath(value.landingPath),
+    firstSeenAt: Number.isNaN(firstSeen) ? null : new Date(firstSeen).toISOString(),
     paidEvidence: Boolean(paidMarker),
     paidMarker,
-    sourceClass: cleanClass(value.sourceClass),
-    mediumClass: cleanClass(value.mediumClass),
+    sourceClass,
+    mediumClass,
     hasCampaign: Boolean(value.hasCampaign),
     hasLandingContext: Boolean(value.hasLandingContext),
     hasGclid: paidMarker === 'gclid',
@@ -96,9 +107,6 @@ export function createBookingAttributionHandler({
     }
 
     const acquisition = normalizeCapturedAcquisition(body.acquisition);
-    if (!acquisition.paidEvidence) {
-      return res.status(400).json({ captured: false, errorCode: 'PAID_EVIDENCE_REQUIRED' });
-    }
     const bookingRef = opaqueRef(`${zenCustomerId}:${bookingSession}`).slice(0, 12);
 
     try {
@@ -142,11 +150,13 @@ export function createBookingAttributionHandler({
       logger.info('booking_attribution_captured', {
         bookingRef,
         paidMarker: acquisition.paidMarker,
+        channel: acquisition.channel,
       });
       return res.status(200).json({
         captured: true,
         bookingRef,
         paidMarker: acquisition.paidMarker,
+        channel: acquisition.channel,
       });
     } catch (error) {
       logger.error('booking_attribution_capture_failed', {

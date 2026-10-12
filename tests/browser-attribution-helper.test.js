@@ -61,7 +61,7 @@ function jsonResponse(status, body) {
 }
 
 test('thank-you pushes booking_confirmed once with hashed user_data', async () => {
-  const { dataLayer, fetchCalls } = await runHelper({
+  const { dataLayer, fetchCalls: allCalls } = await runHelper({
     url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
     fetchImpl: () => jsonResponse(200, {
       found: true,
@@ -73,6 +73,7 @@ test('thank-you pushes booking_confirmed once with hashed user_data', async () =
     booking_session: 'sess-1',
     user_data: { sha256_email_address: HASH_A, sha256_phone_number: HASH_B },
   }]);
+  const fetchCalls = allCalls.filter((call) => call.url.endsWith('/booking-identity'));
   assert.equal(fetchCalls.length, 1);
   assert.match(fetchCalls[0].url, /\/api\/attribution\/booking-identity$/);
   assert.deepEqual(JSON.parse(fetchCalls[0].options.body), {
@@ -165,17 +166,44 @@ test('paid capture POST finishes before identity lookup starts', async () => {
   assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1' }]);
 });
 
-test('unpaid thank-you calls identity immediately without waiting for capture', async () => {
+test('unpaid thank-you captures the session once, then calls identity', async () => {
   const order = [];
-  const { fetchCalls } = await runHelper({
+  const landing = JSON.stringify({ paidMarker: null, referrerHost: 'www.google.com', landingPath: '/', firstSeenAt: new Date().toISOString() });
+  const { fetchCalls, store } = await runHelper({
     url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
+    storage: { tmm_paid_attribution_v1: landing },
     fetchImpl: (requestUrl) => {
-      order.push(requestUrl.endsWith('/api/attribution/booking-identity') ? 'identity' : 'other');
-      return jsonResponse(404, { found: false });
+      order.push(requestUrl.endsWith('/api/attribution/booking-identity') ? 'identity' : 'capture');
+      return jsonResponse(requestUrl.endsWith('/booking') ? 200 : 404, { found: false });
     },
   });
-  assert.equal(fetchCalls.length, 1);
-  assert.deepEqual(order, ['identity']);
+  assert.deepEqual(order, ['capture', 'identity']);
+  const body = JSON.parse(fetchCalls[0].options.body);
+  assert.equal(body.acquisition.referrerHost, 'www.google.com');
+  assert.equal(store.tmm_attribution_sent_v1, 'sess-1');
+  // Reloading the thank-you page does not POST the capture again.
+  const again = await runHelper({
+    url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
+    storage: store,
+    fetchImpl: () => jsonResponse(404, { found: false }),
+  });
+  assert.equal(again.fetchCalls.filter((c) => c.url.endsWith('/booking')).length, 0);
+});
+
+test('organic landing is remembered without a network call; internal navigation keeps it', async () => {
+  const first = await runHelper({
+    url: 'https://www.themountingman.com/samsung-frame/?utm_source=chatgpt.com',
+    fetchImpl: () => jsonResponse(200, {}),
+  });
+  assert.equal(first.fetchCalls.length, 0);
+  const saved = JSON.parse(first.store.tmm_paid_attribution_v1);
+  assert.equal(saved.paidMarker, null);
+  assert.equal(saved.sourceClass, 'chatgpt.com');
+  assert.equal(saved.landingPath, '/samsung-frame/');
+  const second = await runHelper({ url: 'https://www.themountingman.com/pricing/', storage: first.store, fetchImpl: () => jsonResponse(200, {}) });
+  assert.equal(JSON.parse(second.store.tmm_paid_attribution_v1).landingPath, '/samsung-frame/');
+  const paid = await runHelper({ url: 'https://www.themountingman.com/?gclid=abc', storage: first.store, fetchImpl: () => jsonResponse(200, {}) });
+  assert.equal(JSON.parse(paid.store.tmm_paid_attribution_v1).paidMarker, 'gclid');
 });
 
 test('booking_confirmed fires once by 3000 ms when capture and identity hang', async () => {

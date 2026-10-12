@@ -7,6 +7,8 @@
   var IDENTITY_TIMEOUT_MS = 3000;
   var PAGE_CONFIRM_MS = 3000;
   var CAPTURE_WAIT_MS = 800;
+  var SENT_KEY = 'tmm_attribution_sent_v1';
+  var RECORD_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
   var params = new URLSearchParams(window.location.search);
 
   function cleanClass(value) {
@@ -54,12 +56,76 @@
     };
   }
 
-  function captureBooking(customerId, bookingSession) {
-    var stored = localStorage.getItem(STORAGE_KEY);
-    if (!customerId || !bookingSession || !stored) return Promise.resolve();
+  // Non-personal landing context only: host of the referrer, the landing path
+  // (no query string), UTM classes and click ids. Never names, emails or phones.
+  function referrerHost() {
+    try {
+      var ref = typeof document !== 'undefined' ? document.referrer : '';
+      if (!ref) return '';
+      var host = new URL(ref).hostname.toLowerCase();
+      var own = String((window.location && window.location.hostname) || '').toLowerCase().replace(/^www\./, '');
+      var bare = host.replace(/^www\./, '');
+      if (own && (bare === own || bare.slice(-own.length - 1) === '.' + own)) return 'self';
+      return host.slice(0, 100);
+    } catch (_) {
+      return '';
+    }
+  }
 
-    var storedAcquisition = JSON.parse(stored);
-    if (!storedAcquisition || !storedAcquisition.paidMarker) return Promise.resolve();
+  function readLandingAcquisition() {
+    var paid = readPaidAcquisition();
+    var acquisition = paid || {
+      paidMarker: null,
+      sourceClass: cleanClass(params.get('utm_source')) || null,
+      mediumClass: cleanClass(params.get('utm_medium')) || null,
+      hasCampaign: params.has('utm_campaign'),
+      hasLandingContext: true,
+      gclid: '',
+      gbraid: '',
+      wbraid: '',
+    };
+    acquisition.campaignClass = cleanClass(params.get('utm_campaign')) || null;
+    acquisition.referrerHost = referrerHost() || null;
+    acquisition.landingPath = String((window.location && window.location.pathname) || '/').slice(0, 200);
+    acquisition.firstSeenAt = new Date().toISOString();
+    return acquisition;
+  }
+
+  function readStored() {
+    try {
+      var value = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // One record per browser session: a paid landing always replaces it; an
+  // unpaid landing only fills an empty or expired slot (internal navigation,
+  // reloads and later organic visits never overwrite the original source).
+  function rememberLanding() {
+    var landing = readLandingAcquisition();
+    var existing = readStored();
+    if (landing.referrerHost === 'self' && existing) return;
+    var existingAt = existing && Date.parse(existing.firstSeenAt || '');
+    var expired = !existing || !existingAt || Date.now() - existingAt > RECORD_MAX_AGE_MS;
+    if (landing.paidMarker || expired) localStorage.setItem(STORAGE_KEY, JSON.stringify(landing));
+  }
+
+  function captureBooking(customerId, bookingSession) {
+    if (!customerId || !bookingSession) return Promise.resolve();
+    // POST once per booking session: reloads of the thank-you page do not resend.
+    if (localStorage.getItem(SENT_KEY) === bookingSession) return Promise.resolve();
+    var storedAcquisition = readStored() || {
+      paidMarker: null,
+      sourceClass: null,
+      mediumClass: null,
+      hasCampaign: false,
+      hasLandingContext: false,
+      referrerHost: null,
+      landingPath: null,
+    };
+    localStorage.setItem(SENT_KEY, bookingSession);
     return fetch(CAPTURE_URL, {
       method: 'POST',
       mode: 'cors',
@@ -77,7 +143,8 @@
       }),
     }).then(function (response) {
       if (response.ok) localStorage.removeItem(STORAGE_KEY);
-    }).catch(function () {});
+      else if (response.status >= 500) localStorage.removeItem(SENT_KEY);
+    }).catch(function () { localStorage.removeItem(SENT_KEY); });
   }
 
   function pushBookingConfirmed(bookingSession, userData) {
@@ -135,10 +202,8 @@
   var bookingSession = '';
   var capturePromise = Promise.resolve();
   try {
-    var acquisition = readPaidAcquisition();
-    if (acquisition) localStorage.setItem(STORAGE_KEY, JSON.stringify(acquisition));
-
     isThankYou = window.location.pathname.replace(/\/+$/, '') === '/thank-you';
+    if (!isThankYou) rememberLanding();
     if (isThankYou) {
       customerId = params.get('customer_id') || '';
       bookingSession = params.get('booking_session') || '';

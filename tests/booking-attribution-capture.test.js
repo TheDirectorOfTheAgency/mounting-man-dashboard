@@ -58,6 +58,11 @@ test('capture endpoint stores only sanitized paid evidence behind booking refere
     hasGclid: true,
     hasGbraid: false,
     hasWbraid: false,
+    channel: 'paid',
+    campaignClass: null,
+    referrerHost: null,
+    landingPath: null,
+    firstSeenAt: null,
   });
 
   assert.equal(saved[0].gclid, 'raw-click-id-must-be-ignored');
@@ -69,7 +74,7 @@ test('capture endpoint stores only sanitized paid evidence behind booking refere
   assert.equal(rendered.includes('booking-session-sensitive'), false);
 });
 
-test('capture endpoint rejects foreign origins and non-paid traffic', async () => {
+test('capture endpoint rejects foreign origins', async () => {
   const handler = createBookingAttributionHandler({
     attributionStore: { saveBookingAttribution: async () => assert.fail('must not save') },
     logger: { info() {}, warn() {}, error() {} },
@@ -79,13 +84,6 @@ test('capture endpoint rejects foreign origins and non-paid traffic', async () =
   await handler(request({ headers: { origin: 'https://example.com' } }), foreign);
   assert.equal(foreign.statusCode, 403);
 
-  const organic = createResponse();
-  await handler(
-    request({ body: { ...request().body, acquisition: { sourceClass: 'google' } } }),
-    organic
-  );
-  assert.equal(organic.statusCode, 400);
-  assert.equal(organic.body.errorCode, 'PAID_EVIDENCE_REQUIRED');
 });
 
 test('capture endpoint stores a raw wbraid beside sanitized acquisition', async () => {
@@ -137,4 +135,36 @@ test('normalization never retains raw click identifiers', () => {
   assert.equal(value.paidEvidence, true);
   assert.equal(value.hasWbraid, true);
   assert.equal(JSON.stringify(value).includes('raw-click-id'), false);
+});
+
+test('capture endpoint stores every unpaid session with a channel and only non-personal fields', async () => {
+  const saved = [];
+  const handler = createBookingAttributionHandler({
+    attributionStore: { saveBookingAttribution: async (v) => { saved.push(v); return { capturedAt: '2026-10-12T20:00:00.000Z' }; } },
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  const cases = [
+    [{ referrerHost: 'www.google.com', landingPath: '/samsung-frame-tv-mounting/' }, 'organic'],
+    [{ sourceClass: 'google', mediumClass: 'organic', campaignClass: 'gbp', referrerHost: 'www.google.com' }, 'gbp'],
+    [{ referrerHost: 'chatgpt.com' }, 'referral'],
+    [{ referrerHost: 'm.yelp.com' }, 'referral'],
+    [{}, 'direct'],
+    [{ referrerHost: 'self' }, 'direct'],
+    [{ paidMarker: 'paid_medium', sourceClass: 'bing', mediumClass: 'cpc' }, 'paid'],
+  ];
+  for (const [acquisition, channel] of cases) {
+    const res = createResponse();
+    await handler(request({ body: { customer_id: 'c-1', booking_session: 's-1', acquisition } }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.channel, channel, JSON.stringify(acquisition));
+  }
+  const res = createResponse();
+  await handler(request({ body: { customer_id: 'c-1', booking_session: 's-1', acquisition: {
+    referrerHost: 'a@b', landingPath: '/x?email=a@b.com', email: 'a@b.com', phone: '6125550100',
+  } } }), res);
+  const last = saved.at(-1);
+  assert.equal(last.acquisition.referrerHost, null);
+  assert.equal(last.acquisition.landingPath, '/x');
+  assert.equal(JSON.stringify(last).includes('a@b.com'), false);
+  assert.equal(JSON.stringify(last).includes('6125550100'), false);
 });
