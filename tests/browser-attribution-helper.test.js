@@ -180,7 +180,7 @@ test('unpaid thank-you captures the session once, then calls identity', async ()
   assert.deepEqual(order, ['capture', 'identity']);
   const body = JSON.parse(fetchCalls[0].options.body);
   assert.equal(body.acquisition.referrerHost, 'www.google.com');
-  assert.equal(store.tmm_attribution_sent_v1, 'sess-1');
+  assert.deepEqual(JSON.parse(store.tmm_attribution_sent_v1), ['sess-1']);
   // Reloading the thank-you page does not POST the capture again.
   const again = await runHelper({
     url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
