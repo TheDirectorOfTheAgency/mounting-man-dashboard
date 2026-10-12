@@ -3,132 +3,116 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 import {
-  deepDecode, looksPersonal, normalizeLandingPath, normalizeReferrerHost, normalizeClass,
+  looksPersonal, normalizeLandingPath, normalizeReferrerHost, normalizeClass,
 } from '../lib/attribution-sanitize.js';
 import { normalizeCapturedAcquisition } from '../pages/api/attribution/booking.js';
+import { classifyChannel } from '../lib/acquisition-channel.js';
 
-const EMAIL_VARIANTS = [
-  'jane.doe@example.com',
-  'jane.doe%40example.com',
-  'jane.doe%2540example.com',
-  'jane.doe%252540example.com',
-  'jane.doe＠example.com',
-  'jane.doe%EF%BC%A0example.com',
-  'jane+doe%40example.com',
-  'JANE.DOE%40EXAMPLE.COM',
-];
-const PHONE_VARIANTS = [
-  '6125550100',
-  '612-555-0100',
-  '612.555.0100',
-  '(612) 555-0100',
-  '612%20555%200100',
-  '612%2D555%2D0100',
-  '612%252D555%252D0100',
-  '+1+612+555+0100',
-  '%2B16125550100',
-  '６１２５５５０１００',
-  '612_555_0100',
-  '612/555/0100',
-];
-const SECRETS = ['jane', 'doe', '6125550100', '555', '0100'];
+const V = JSON.parse(fs.readFileSync(new URL('./fixtures/attribution-pii-vectors.json', import.meta.url), 'utf8'));
+const clientSource = fs.readFileSync(new URL('../public/tmm-attribution-v1.js', import.meta.url), 'utf8');
+const serverSource = fs.readFileSync(new URL('../lib/attribution-sanitize.js', import.meta.url), 'utf8');
+const core = (src) => src.slice(src.indexOf('/* PII-CORE-BEGIN'), src.indexOf('/* PII-CORE-END */'));
+const PERSONAL = [...V.emails, ...V.phones];
 
-function noSecrets(value) {
+function noSecrets(value, label) {
   const text = JSON.stringify(value).toLowerCase();
-  for (const secret of ['jane', '612', '0100', 'example.com']) {
-    assert.equal(text.includes(secret), false, `${secret} leaked in ${text}`);
-  }
+  for (const s of V.secrets) assert.equal(text.includes(s), false, `${s} leaked (${label}): ${text}`);
 }
 
-test('deepDecode is bounded and normalizes full-width characters', () => {
-  assert.equal(deepDecode('a%252540b'), 'a@b');
-  assert.equal(deepDecode('＠１'), '@1');
-  assert.equal(deepDecode('%E0%A4%A'), deepDecode('%E0%A4%A'));
+test('browser and server PII cores are byte-identical', () => {
+  assert.ok(core(clientSource).length > 1000);
+  assert.equal(core(clientSource), core(serverSource));
 });
 
-test('every encoded email and phone variant is detected', () => {
-  for (const v of [...EMAIL_VARIANTS, ...PHONE_VARIANTS]) assert.equal(looksPersonal(v), true, v);
-  for (const v of ['google', 'cpc', 'gbp', 'samsung-frame', '75-inch', '2026-fall']) assert.equal(looksPersonal(v), false, v);
+test('server: every shared personal vector is detected, safe vectors pass', () => {
+  for (const v of PERSONAL) assert.equal(looksPersonal(v), true, v);
+  for (const v of PERSONAL) assert.equal(normalizeClass(v), null, v);
+  for (const v of V.safe) assert.equal(looksPersonal(v), false, v);
+  for (const v of V.safe) assert.equal(normalizeClass(v), v);
 });
 
-test('landing paths become slug route templates', () => {
-  assert.equal(normalizeLandingPath('/samsung-frame-tv-mounting/'), '/samsung-frame-tv-mounting/');
-  assert.equal(normalizeLandingPath('/regions/twin-cities/pricing/?email=a@b.com#x'), '/regions/twin-cities/pricing/');
-  assert.equal(normalizeLandingPath('/install/75-inch-frame-eden-prairie/'), '/install/75-inch-frame-eden-prairie/');
-  for (const v of [...EMAIL_VARIANTS, ...PHONE_VARIANTS]) {
-    const path = normalizeLandingPath(`/thank/${v}/`);
-    assert.ok(path === null || path.startsWith('/thank/:'), `${v} -> ${path}`);
-    noSecrets(path);
+test('server: paths and hosts follow the shared expectations', () => {
+  for (const [input, out] of Object.entries(V.paths)) assert.equal(normalizeLandingPath(input), out, input);
+  for (const [input, out] of Object.entries(V.hosts)) assert.equal(normalizeReferrerHost(input), out, input);
+  for (const v of PERSONAL) {
+    noSecrets(normalizeLandingPath(`/thank/${v}/`), v);
+    noSecrets(normalizeLandingPath(`/${encodeURIComponent(v)}/x/`), v);
+    noSecrets(normalizeReferrerHost(`https://${encodeURIComponent(v)}@m.yelp.com/`), v);
+    noSecrets(normalizeReferrerHost(v), v);
   }
-  assert.equal(normalizeLandingPath('/a/AbCdEfGhIjKlMnOpQrStUvWxYz0123/'), '/a/:x/');
-  assert.equal(normalizeLandingPath('/a/abcdefghijklmnopqrstuvwxyz/'), '/a/:x/');
-  assert.equal(normalizeLandingPath('/job/12345/'), '/job/:n/');
-  assert.equal(normalizeLandingPath('/a%2Fjane%40example.com/'), '/a/:x/');
-  assert.equal(normalizeLandingPath('relative'), null);
-});
-
-test('referrer is a validated host only', () => {
-  assert.equal(normalizeReferrerHost('www.google.com'), 'www.google.com');
-  assert.equal(normalizeReferrerHost('https://chatgpt.com/c/abc?x=1'), 'chatgpt.com');
-  assert.equal(normalizeReferrerHost('self'), 'self');
-  for (const v of [
-    'https://jane%40example.com@evil.com/', 'jane@example.com', 'jane%2540example.com',
-    '612-555-0100.example.com', '6125550100.com', 'exa mple.com', 'localhost', 'a'.repeat(300) + '.com',
-    'xn--ls8h.la/path', 'ｅｘａｍｐｌｅ＠ｇｍａｉｌ．ｃｏｍ',
-  ]) {
-    const host = normalizeReferrerHost(v);
-    assert.ok(host === null || /^[a-z0-9.-]+$/.test(host), `${v} -> ${host}`);
-    if (host) noSecrets(host);
-  }
-  assert.equal(normalizeReferrerHost('https://u:p@evil.com/'), null);
-});
-
-test('UTM classes drop encoded emails and phones', () => {
-  assert.equal(normalizeClass('google'), 'google');
-  for (const v of [...EMAIL_VARIANTS, ...PHONE_VARIANTS]) assert.equal(normalizeClass(v), null, v);
+  assert.equal(normalizeLandingPath('/612/555/0100/'), '/:n/:n/:n/');
 });
 
 test('server ignores client sanitization: raw bypass payloads are normalized', () => {
-  for (const email of EMAIL_VARIANTS) {
-    for (const phone of PHONE_VARIANTS.slice(0, 6)) {
-      const acq = normalizeCapturedAcquisition({
-        sourceClass: email, mediumClass: phone, campaignClass: `${email}-${phone}`,
-        referrerHost: `https://${email}/`, landingPath: `/x/${email}/${phone}/?q=${email}`,
-      });
-      noSecrets(acq);
-    }
+  for (const e of V.emails) for (const p of V.phones) {
+    noSecrets(normalizeCapturedAcquisition({
+      sourceClass: e, mediumClass: p, campaignClass: `${e}${p}`,
+      referrerHost: `https://${e}/`, landingPath: `/x/${e}/${p}/?q=${e}`,
+    }), `${e} ${p}`);
   }
 });
 
-const source = fs.readFileSync(new URL('../public/tmm-attribution-v1.js', import.meta.url), 'utf8');
-function runLanding(url, referrer) {
-  const parsed = new URL(url);
-  const store = {};
-  vm.runInNewContext(source, {
-    window: { location: { pathname: parsed.pathname, search: parsed.search, hostname: parsed.hostname }, dataLayer: [] },
-    document: { referrer },
-    URLSearchParams, URL, Promise, setTimeout, clearTimeout, JSON, AbortController,
+test('Google Maps short links classify as GBP', () => {
+  assert.equal(classifyChannel({ referrerHost: 'maps.app.goo.gl' }), 'gbp');
+  assert.equal(classifyChannel({ referrerHost: 'g.page' }), 'gbp');
+});
+
+function runClient(url, { referrer = '', storage = {}, fetchImpl } = {}) {
+  const u = new URL(url); const store = { ...storage }; const calls = [];
+  vm.runInNewContext(clientSource, {
+    window: { location: { pathname: u.pathname, search: u.search, hostname: u.hostname }, dataLayer: [] },
+    document: { referrer }, URLSearchParams, URL, Promise, setTimeout, clearTimeout, JSON, AbortController,
     localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
-    fetch: () => Promise.resolve({ ok: true, json: async () => ({}) }),
+    fetch: (r, o) => { calls.push({ url: r, body: o.body }); return (fetchImpl || (() => Promise.resolve({ ok: true, status: 200, json: async () => ({}) })))(r, o); },
   });
-  return JSON.parse(store.tmm_paid_attribution_v1);
+  return { store, calls };
 }
 
-test('client script stores only templates, hosts and clean classes for bypass payloads', () => {
-  for (const email of EMAIL_VARIANTS) {
-    for (const phone of ['612-555-0100', '612%2520555%25200100', '６１２５５５０１００']) {
-      const enc = encodeURIComponent(email);
-      const rec = runLanding(
-        `https://www.themountingman.com/x/${enc}/${encodeURIComponent(phone)}/?utm_source=${enc}&utm_medium=${encodeURIComponent(phone)}&utm_campaign=${enc}`,
-        `https://${enc}@m.yelp.com/biz/${enc}?p=${phone}`,
-      );
-      noSecrets(rec);
-      assert.equal(rec.referrerHost === null || rec.referrerHost === 'm.yelp.com', true, rec.referrerHost);
-      assert.equal(rec.landingPath, '/x/:x/:x/');
+test('client: shared vectors never reach localStorage via path, referrer or UTMs', () => {
+  for (const v of PERSONAL) {
+    const E = encodeURIComponent(v);
+    for (const url of [
+      `https://www.themountingman.com/x/${E}/?utm_source=${E}&utm_medium=${E}&utm_campaign=${E}`,
+      `https://www.themountingman.com/${E}/?utm_campaign=ok`,
+    ]) {
+      const { store } = runClient(url, { referrer: `https://${E}@m.yelp.com/biz/${E}?p=${E}` });
+      noSecrets(store.tmm_paid_attribution_v1, v);
     }
   }
-  const ok = runLanding('https://www.themountingman.com/samsung-frame/?utm_source=gbp', 'https://www.google.com/');
-  assert.equal(ok.landingPath, '/samsung-frame/');
-  assert.equal(ok.referrerHost, 'www.google.com');
-  assert.equal(ok.sourceClass, 'gbp');
+  const { store } = runClient('https://www.themountingman.com/samsung-frame/?utm_source=gbp', { referrer: 'https://www.google.com/' });
+  const rec = JSON.parse(store.tmm_paid_attribution_v1);
+  assert.equal(rec.landingPath, '/samsung-frame/'); assert.equal(rec.referrerHost, 'www.google.com'); assert.equal(rec.sourceClass, 'gbp');
+});
+
+test('client: stale or legacy stored records are re-sanitized before POST', async () => {
+  const dirty = JSON.stringify({ paidMarker: null, landingPath: '/x/jane.doe%40example.com/', referrerHost: 'jane@example.com', campaignClass: '612:555:0100', firstSeenAt: new Date().toISOString() });
+  const { calls } = runClient('https://www.themountingman.com/thank-you?customer_id=c&booking_session=s', { storage: { tmm_paid_attribution_v1: dirty } });
+  await new Promise((r) => setTimeout(r, 20));
+  const post = calls.find((c) => c.url.endsWith('/booking'));
+  noSecrets(post.body, 'stored');
+});
+
+test('client: expired record is replaced even by a same-site navigation; legacy paid kept', () => {
+  const old = JSON.stringify({ paidMarker: null, landingPath: '/old/', firstSeenAt: '2026-01-01T00:00:00Z' });
+  const a = runClient('https://www.themountingman.com/pricing/', { referrer: 'https://www.themountingman.com/', storage: { tmm_paid_attribution_v1: old } });
+  assert.equal(JSON.parse(a.store.tmm_paid_attribution_v1).landingPath, '/pricing/');
+  const legacy = JSON.stringify({ paidMarker: 'gclid', gclid: 'abc', sourceClass: 'google' });
+  const b = runClient('https://www.themountingman.com/pricing/', { referrer: 'https://www.bing.com/', storage: { tmm_paid_attribution_v1: legacy } });
+  const kept = JSON.parse(b.store.tmm_paid_attribution_v1);
+  assert.equal(kept.paidMarker, 'gclid'); assert.equal(kept.gclid, 'abc'); assert.ok(kept.firstSeenAt);
+});
+
+test('client: every posted booking session is remembered (bounded), not just the last', async () => {
+  let storage = {};
+  const post = async (s) => {
+    const r = runClient(`https://www.themountingman.com/thank-you?customer_id=c&booking_session=${s}`, { storage });
+    await new Promise((res) => setTimeout(res, 20));
+    storage = r.store;
+    return r.calls.filter((c) => c.url.endsWith('/booking')).length;
+  };
+  assert.equal(await post('A'), 1);
+  assert.equal(await post('B'), 1);
+  assert.equal(await post('A'), 0);
+  for (let i = 0; i < 40; i += 1) await post(`S${i}`);
+  assert.ok(JSON.parse(storage.tmm_attribution_sent_v1).length <= 25);
 });
