@@ -336,3 +336,24 @@ test('repeat customers retain separate booking attribution; missing and unknown 
     assert.equal(record.gclid, `click-${suffix}`);
   }
 });
+
+test('unpaid session captures expire after 90 days and keep channel context', async () => {
+  const { createAttributionStore } = await import('../lib/offline-conversion-store.js');
+  const sets = [];
+  const expires = [];
+  const kv = {
+    set: async (key, value, opts) => { sets.push({ key, value, opts }); return 'OK'; },
+    get: async () => null, del: async () => 1, sadd: async () => 1, smembers: async () => [],
+    expire: async (key, ttl) => { expires.push(ttl); return 1; },
+  };
+  const store = createAttributionStore(kv);
+  await store.saveBookingAttribution({
+    zenCustomerId: 'c-1', bookingSession: 's-1',
+    acquisition: { paidEvidence: false, channel: 'organic', referrerHost: 'www.google.com', landingPath: '/' },
+  });
+  assert.ok(sets.length >= 3);
+  for (const s of sets) assert.equal(s.opts.ex, 90 * 24 * 60 * 60);
+  assert.deepEqual(expires, [90 * 24 * 60 * 60]);
+  assert.equal(sets[0].value.acquisition.channel, 'organic');
+  assert.equal(sets[0].value.acquisition.paidEvidence, false);
+});
