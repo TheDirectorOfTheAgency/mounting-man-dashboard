@@ -3,7 +3,8 @@ import { createAttributionStore } from '../../../lib/offline-conversion-store.js
 import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
 import { originClass } from '../../../lib/booking-identity.js';
-import { classifyChannel, cleanHost, cleanPath } from '../../../lib/acquisition-channel.js';
+import { classifyChannel } from '../../../lib/acquisition-channel.js';
+import { normalizeClass, normalizeLandingPath, normalizeReferrerHost } from '../../../lib/attribution-sanitize.js';
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -37,9 +38,7 @@ function validIdentifier(value) {
 }
 
 function cleanClass(value) {
-  if (typeof value !== 'string') return null;
-  const cleaned = value.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 64);
-  return cleaned || null;
+  return normalizeClass(value);
 }
 
 export function normalizeCapturedAcquisition(value = {}) {
@@ -47,13 +46,13 @@ export function normalizeCapturedAcquisition(value = {}) {
   const sourceClass = cleanClass(value.sourceClass);
   const mediumClass = cleanClass(value.mediumClass);
   const campaignClass = cleanClass(value.campaignClass);
-  const referrerHost = cleanHost(value.referrerHost);
+  const referrerHost = normalizeReferrerHost(value.referrerHost);
   const firstSeen = Date.parse(value.firstSeenAt || '');
   return {
     channel: classifyChannel({ paidMarker, sourceClass, mediumClass, campaignClass, referrerHost }),
     campaignClass,
     referrerHost,
-    landingPath: cleanPath(value.landingPath),
+    landingPath: normalizeLandingPath(value.landingPath),
     firstSeenAt: Number.isNaN(firstSeen) ? null : new Date(firstSeen).toISOString(),
     paidEvidence: Boolean(paidMarker),
     paidMarker,
