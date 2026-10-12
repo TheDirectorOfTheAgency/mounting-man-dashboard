@@ -156,6 +156,7 @@ test('lookup treats upstream failures and unparsable bodies as not found', async
       },
     },
     now: NOW,
+    backoffMs: [],
   });
   assert.equal(calls.length, 2);
   assert.deepEqual(failing, { found: false, reason: 'upstream_error', upstreamKind: 'timeout', jobsSeen: 0 });
@@ -634,4 +635,61 @@ test('capture store exposes customerId only for a verified persisted customer re
     await kv.set(key, { ...saved, customerRef, customerId: 'cust-1' });
     assert.equal((await store.listCaptures('cust-1'))[0].customerId, null);
   }
+});
+
+test('lookup backs off and re-queries when ZenBooker has not created the job yet', async () => {
+  let calls = 0;
+  const slept = [];
+  const result = await lookupBookingIdentity({
+    customerId: 'cust-1',
+    bookingSession: 'session-exact',
+    env: { ZENBOOKER_API_KEY: 'key' },
+    sleep: async (ms) => { slept.push(ms); },
+    clock: () => 0,
+    httpClient: {
+      get: async () => {
+        calls += 1;
+        const results = calls < 2 ? [] : [{
+          id: 'job-1', booking_session: 'session-exact', created: new Date(NOW).toISOString(),
+          customer: { id: 'cust-1', email: 'a@example.com', phone: '6125550100' },
+        }];
+        return { data: JSON.stringify({ results }) };
+      },
+    },
+    now: NOW,
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(slept, [300]);
+  assert.equal(result.found, true);
+});
+
+test('not-yet-created retries stop at the deadline and never retry when a job is visible', async () => {
+  let t = 0;
+  let calls = 0;
+  const empty = await lookupBookingIdentity({
+    customerId: 'cust-1', bookingSession: 's', env: { ZENBOOKER_API_KEY: 'key' },
+    sleep: async (ms) => { t += ms; }, clock: () => t,
+    httpClient: { get: async () => { calls += 1; t += 700; return { data: '{"results":[]}' }; } },
+    now: NOW,
+  });
+  assert.equal(empty.reason, 'not_found');
+  assert.ok(t <= 1900 + 700, `elapsed ${t}`);
+  assert.equal(calls, 2);
+  calls = 0;
+  const other = await lookupBookingIdentity({
+    customerId: 'cust-1', bookingSession: 's', env: { ZENBOOKER_API_KEY: 'key' },
+    sleep: async () => {}, clock: () => 0,
+    httpClient: { get: async () => { calls += 1; return { data: JSON.stringify({ results: [{ id: 'x', customer: { id: 'cust-1' } }] }) }; } },
+    now: NOW,
+  });
+  assert.equal(other.jobsSeen, 1);
+  assert.equal(calls, 1);
+});
+
+test('originClass reports only scheme+host and never paths or queries', async () => {
+  const { originClass } = await import('../lib/booking-identity.js');
+  assert.equal(originClass(''), 'absent');
+  assert.equal(originClass('null'), 'null');
+  assert.equal(originClass('https://themountingman.com'), 'https://themountingman.com');
+  assert.equal(originClass('nope'), 'malformed');
 });

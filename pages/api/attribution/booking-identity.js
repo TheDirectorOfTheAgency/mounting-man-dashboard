@@ -1,4 +1,4 @@
-import { bookingRef, lookupBookingIdentity } from '../../../lib/booking-identity.js';
+import { bookingRef, lookupBookingIdentity, originClass } from '../../../lib/booking-identity.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
@@ -89,7 +89,7 @@ export function createBookingIdentityHandler({
     res.setHeader('Cache-Control', 'no-store');
     const origin = req.headers?.origin || '';
     if (!applyCors(res, origin, allowedOrigin)) {
-      logger.warn('booking_identity_origin_rejected', {});
+      logger.warn('booking_identity_origin_rejected', { method: req.method, origin: originClass(origin) });
       return res.status(403).json({ found: false, errorCode: 'ORIGIN_NOT_ALLOWED' });
     }
     if (req.method === 'OPTIONS') return res.status(204).end();

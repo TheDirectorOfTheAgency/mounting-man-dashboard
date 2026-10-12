@@ -2,6 +2,7 @@ import { considerCapture } from '../../../lib/attribution-bridge.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 
+import { originClass } from '../../../lib/booking-identity.js';
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -76,7 +77,7 @@ export function createBookingAttributionHandler({
   return async function handler(req, res) {
     const origin = req.headers?.origin || '';
     if (!applyCors(res, origin, allowedOrigin)) {
-      logger.warn('booking_attribution_origin_rejected', {});
+      logger.warn('booking_attribution_origin_rejected', { method: req.method, origin: originClass(origin) });
       return res.status(403).json({ captured: false, errorCode: 'ORIGIN_NOT_ALLOWED' });
     }
     if (req.method === 'OPTIONS') return res.status(204).end();
