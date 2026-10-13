@@ -217,3 +217,25 @@ test('ZenBooker job webhook triggers the deferred enhancement for a linked, park
   assert.equal(ctx.uploads.length, 1);
   assert.equal(ctx.uploads[0].orderId, 'sess-1');
 });
+
+test('tmm-probe- requests skip ZenBooker and KV and log as a probe', async () => {
+  const kv = memoryKv();
+  const logs = [];
+  const logger = { info: (...a) => logs.push(a), warn: (...a) => logs.push(a), error: (...a) => logs.push(a) };
+  let lookups = 0;
+  const handler = createBookingIdentityHandler({
+    logger,
+    kvClient: kv,
+    lookup: async () => { lookups += 1; return { found: false, reason: 'upstream_error', upstreamKind: 'http_400', jobsSeen: 0 }; },
+  });
+  const res = createResponse();
+  await handler({ ...identityRequest(), body: { customer_id: 'tmm-probe-abc', booking_session: 'tmm-probe-abc' } }, res);
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.body.errorCode, 'BOOKING_NOT_FOUND');
+  assert.equal(lookups, 0);
+  assert.equal(kv.map.size, 0);
+  assert.deepEqual(logs.map(([event]) => event), ['booking_identity_probe']);
+  // A real-looking id still goes through the lookup.
+  await handler(identityRequest(), createResponse());
+  assert.equal(lookups, 1);
+});

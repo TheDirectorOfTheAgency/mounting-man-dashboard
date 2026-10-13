@@ -265,3 +265,7 @@ Not changed: `INSTALL_POST_DISPATCH_*` stays empty and `publish-install-post.yml
 2. On the M1, from a checkout of this repo: `node scripts/install-m1-install-post-worker.mjs --env-file /secure/path/.env` (the file only needs `INSTALL_POST_RUNNER_SECRET`; add `--wrapper PATH` if the wrapper moved). Use the same command after worker code merges to copy the updated worker and reload launchd.
 3. Check `~/.local/state/themountingman/install-post-worker/worker.log`. You should see `worker_status=idle` or `worker_status=reported ... state=PUBLISHED`. The first successful pass asks the dashboard to rescan, so jobs parked before a deploy are picked up.
 4. Remove with `node scripts/install-m1-install-post-worker.mjs --uninstall`.
+
+## Post-deploy smoke test (booking identity)
+
+`node scripts/smoke-booking-identity.mjs` — uses a synthetic `tmm-probe-` customer id, which skips ZenBooker/KV and logs `booking_identity_probe` (never `upstream_error`). Do not probe with other made-up ids.

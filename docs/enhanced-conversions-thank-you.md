@@ -103,6 +103,17 @@ an accepted enhancement is marked `ec:enhanced:<sessionRef>`, and Google rejects
 second enhancement (`CONVERSION_ALREADY_ENHANCED`). Logs: `booking_identity_deferred`
 with 12-char bookingRef/jobRef, outcome, hashed field names and Google error codes only.
 
-**GTM requirement:** the Booked Appointment tag must set *Transaction ID* to the
-`transaction_id` Data Layer Variable. Without it, deferred enhancements are rejected
-with `CONVERSION_NOT_FOUND` (logged as `outcome: rejected`).
+**Order id match:** the live GTM container (GTM-M7RR6GT3) already sets the Booked
+Appointment tag's Order ID to the `booking_session` URL query parameter, which is the
+same value the fallback uses as `order_id`. `transaction_id` is also pushed on
+`booking_confirmed` for future tags. If the tag's Order ID ever changes, deferred
+enhancements are rejected with `CONVERSION_NOT_FOUND` (logged as `outcome: rejected`).
+
+## Smoke tests / probes
+
+Post-deploy probes must use a `customer_id` starting with `tmm-probe-` (for example
+`node scripts/smoke-booking-identity.mjs`). Such requests are validated and CORS-checked
+like real ones and get the normal `404 BOOKING_NOT_FOUND`, but skip ZenBooker, KV and the
+deferred fallback, and log `booking_identity_probe { bookingRef }` instead of
+`booking_identity_not_found / upstream_error`. Any other made-up customer id hits
+ZenBooker and shows up as `upstreamKind: http_400`.
