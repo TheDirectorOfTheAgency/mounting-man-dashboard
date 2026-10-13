@@ -99,3 +99,76 @@ test('orders without modifiers keep their seed shape (no service-lines)', () => 
   assert.equal(seed['service-lines'], undefined);
   assert.equal(seed.price, '$400');
 });
+
+// Declined Square choices ($0 modifiers / $0 lines) must never become service claims.
+function negativeChoiceLineItems() {
+  const items = hopkinsLineItems();
+  items[0].modifiers.push(
+    { name: 'No Soundbar', base_price_money: { amount: 0, currency: 'USD' }, total_price_money: { amount: 0, currency: 'USD' } },
+    { name: 'No Cord Concealing', base_price_money: { amount: 0, currency: 'USD' }, total_price_money: { amount: 0, currency: 'USD' } },
+  );
+  items.push({ name: 'No Soundbar', quantity: '1', base_price_money: { amount: 0, currency: 'USD' } });
+  return items;
+}
+
+test('negative $0 modifiers (No Soundbar, No Cord Concealing) are dropped; paid $50 option kept; total $450', () => {
+  const normalized = normalizeLineItems(negativeChoiceLineItems());
+  assert.deepEqual(
+    normalized.map((item) => [item.label, item.amountCents]),
+    [
+      ['65" Samsung Frame — TV Installation', 30000],
+      ['Existing Conduit Concealment (+$50.00)', 5000],
+      ['Soundbar Mounting', 10000],
+    ],
+  );
+  const [seed] = buildInstallPostSeeds({
+    lineItems: negativeChoiceLineItems(),
+    customer,
+    order: {},
+    payment: { id: 'payment-neg', order_id: 'order-neg' },
+    orderId: 'order-neg',
+  });
+  assert.equal(seed.price, '$450');
+  const serialized = JSON.stringify(seed);
+  assert.doesNotMatch(serialized, /No Soundbar|No Cord Concealing/i);
+  assert.deepEqual(seed['service-lines'][0].modifiers, [
+    { name: 'Existing Conduit Concealment', total_price_money: { amount: 5000, currency: 'USD' } },
+  ]);
+});
+
+test('only declined modifiers present: no add-on lines, no soundbar/cord claims', () => {
+  const items = [
+    {
+      name: 'TV Installation',
+      variation_name: '65" Samsung Frame',
+      quantity: '1',
+      base_price_money: { amount: 30000, currency: 'USD' },
+      gross_sales_money: { amount: 30000, currency: 'USD' },
+      modifiers: [
+        { name: 'No Soundbar', total_price_money: { amount: 0, currency: 'USD' } },
+        { name: 'No Cord Concealing', total_price_money: { amount: 0, currency: 'USD' } },
+      ],
+    },
+  ];
+  const normalized = normalizeLineItems(items);
+  assert.deepEqual(normalized.map((item) => item.label), ['65" Samsung Frame — TV Installation']);
+  const [seed] = buildInstallPostSeeds({ lineItems: items, customer, order: {}, payment: {} });
+  assert.equal(seed.price, '$300');
+  assert.equal(seed['service-lines'], undefined);
+  assert.notEqual(seed['soundbar-mounting'], true);
+  assert.doesNotMatch(JSON.stringify(seed), /Soundbar|Cord Conceal/i);
+});
+
+test('a priced but negatively named modifier is never emitted, and its price stays in the total', () => {
+  const items = hopkinsLineItems();
+  items[0].modifiers.push({ name: 'Without Cord Cover', total_price_money: { amount: 2500, currency: 'USD' } });
+  items[0].gross_sales_money = { amount: 37500, currency: 'USD' };
+  const normalized = normalizeLineItems(items);
+  assert.ok(!normalized.some((item) => /Without/i.test(item.label)));
+  assert.equal(normalized.reduce((sum, item) => sum + item.amountCents, 0), 47500);
+});
+
+test('a $0 customer-supplied bracket answer line is kept (not a declined service claim)', () => {
+  const items = [...hopkinsLineItems(), { name: 'No bracket needed', quantity: '1', base_price_money: { amount: 0, currency: 'USD' } }];
+  assert.ok(normalizeLineItems(items).some((item) => item.label === 'No bracket needed'));
+});
