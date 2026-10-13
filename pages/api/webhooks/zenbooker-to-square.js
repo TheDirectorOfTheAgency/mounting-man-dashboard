@@ -1450,7 +1450,8 @@ export function createZenbookerToSquareHandler({
       await recordJobSource({ store: bridgeStore, payload });
     }
     try {
-      const jobLike = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+      // Full payload: normalizeJobLike handles data.job, data, job and flat shapes.
+      const jobLike = payload;
       const deferredJobId = resolveField(payload, FIELD_MAP.jobId);
       if (deferredJobId && bridgeStore) {
         await resolveDeferredForJob({

@@ -93,8 +93,15 @@ The job's customer ID must equal the one the thank-you page sent (compared by op
 ref). Email/phone are normalized and SHA-256 hashed exactly as above and sent with
 `uploadConversionAdjustments` as an **ENHANCEMENT** of the Booked Appointment WEBPAGE
 action (6491204814, override `GOOGLE_ADS_BOOKED_APPOINTMENT_ACTION_ID`), keyed by
-`order_id = booking_session`. Records older than 23 h are dropped (Google accepts
-enhancements up to 24 h after the conversion).
+`order_id = booking_session`. Timing: the first upload waits 1 h after the
+thank-you request so Google has ingested the tag's conversion. `CONVERSION_NOT_FOUND`,
+transport and auth failures are retried (backoff 1 h, 2 h, 4 h, 6 h) and never mark the
+session done; only an accepted upload (or `CONVERSION_ALREADY_ENHANCED`) does. Only
+config errors (`MISSING_ORDER_ID_FOR_WEBPAGE`, `INVALID_CONVERSION_ACTION_TYPE`,
+`INVALID_USER_IDENTIFIER`) or a proven customer-ID mismatch drop a record. Records older
+than 23 h expire (Google accepts enhancements up to 24 h after the conversion). Job data is
+read from any supported shape (bare job, `data`, `data.job`, `job`, `result`, JSON strings);
+missing customer data keeps the record parked rather than dropping it.
 
 No double counting: an enhancement never creates a conversion; it attaches identifiers
 to the one the tag already recorded under that order id. In addition, a booking the
