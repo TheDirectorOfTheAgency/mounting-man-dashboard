@@ -66,7 +66,7 @@ test('CODEX mirrors to GitHub PR comment with @codex', async () => {
 test('unconfigured Q route releases claims', async () => {
   const kv = memKV();
   const r = await run(mk('HANDOFF -> Q'), { kv, e: { LINEAR_WEBHOOK_SECRET: SECRET } });
-  assert.equal(r.status, 202); assert.equal(kv.m.size, 0);
+  assert.equal(r.status, 200); assert.equal(kv.m.size, 0);
 });
 
 // ---- loop guard + configurable Q header (follow-up to #89) ----
