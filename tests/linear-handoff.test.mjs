@@ -12,10 +12,11 @@ function mk(body, { id = 'c1', ts = Date.now(), url = 'https://linear.app/x/issu
   return Buffer.from(JSON.stringify({ action: 'create', type: 'Comment', url, webhookTimestamp: ts, webhookId: 'w', actor: { id: 'u', name: 'Q' }, data: { id, body, issueId: 'iss' } }));
 }
 const sign = (raw) => crypto.createHmac('sha256', SECRET).update(raw).digest('hex');
-const env = { LINEAR_WEBHOOK_SECRET: SECRET, LINEAR_HANDOFF_Q_WEBHOOK_URL: 'https://q.example/hook', LINEAR_HANDOFF_Q_WEBHOOK_KEY: 'k', CODEX_HANDOFF_GITHUB_REPO: 'o/r', CODEX_HANDOFF_GITHUB_PR: '5', CODEX_HANDOFF_GITHUB_TOKEN: 't' };
-function run(raw, { kv = memKV(), headers = {}, e = env, calls = [] } = {}) {
+const env = { LINEAR_WEBHOOK_SECRET: SECRET, LINEAR_HANDOFF_Q_WEBHOOK_URL: 'https://q.example/hook', LINEAR_HANDOFF_Q_WEBHOOK_KEY: 'k', HANDOFF_SMTP_USER: 'u@mac.com', HANDOFF_SMTP_PASS: 'p', HANDOFF_EMAIL_FROM: 'u@mac.com' };
+function run(raw, { kv = memKV(), headers = {}, e = env, calls = [], mails = calls } = {}) {
+  const sendMail = async (m) => { mails.push(m); return { messageId: 'm1' }; };
   const fetchImpl = async (u, o) => { calls.push({ u, o }); return { ok: true, status: 200, json: async () => ({ html_url: 'h' }) }; };
-  return processLinearWebhook({ rawBody: raw, headers: { 'linear-signature': sign(raw), 'linear-delivery': 'd1', ...headers }, kv, env: e, fetchImpl, log: {} });
+  return processLinearWebhook({ rawBody: raw, headers: { 'linear-signature': sign(raw), 'linear-delivery': 'd1', ...headers }, kv, env: e, fetchImpl, sendMail, log: {} });
 }
 
 test('header gate', () => {
@@ -56,12 +57,26 @@ test('Q forward with bearer, then dedupe delivery and comment', async () => {
   assert.equal((await run(raw, { kv, calls, headers: { 'linear-delivery': 'd2' } })).body.duplicate, 'comment');
   assert.equal(calls.length, 1);
 });
-test('CODEX mirrors to GitHub PR comment with @codex', async () => {
-  const calls = [];
-  const r = await run(mk('HANDOFF -> CODEX\nreview PR', { id: 'c9' }), { calls });
+test('CODEX email: minimal notification, no body text, handoff-id dedupe', async () => {
+  const mails = []; const kv = memKV();
+  const r = await run(mk('HANDOFF -> CODEX\nid: H-1\nsecret instructions', { id: 'c9' }), { mails, kv });
   assert.equal(r.body.forwarded, true);
-  assert.match(calls[0].u, /repos\/o\/r\/issues\/5\/comments/);
-  assert.match(JSON.parse(calls[0].o.body).body, /^@codex /);
+  assert.equal(mails[0].to, 'marshallwayneemail@gmail.com');
+  assert.equal(mails[0].from, 'u@mac.com');
+  assert.equal(mails[0].subject, '[LINEAR-HANDOFF] CODEX THE-330 H-1');
+  assert.match(mails[0].text, /comment_id: c9/);
+  assert.match(mails[0].text, /issue_uuid: iss/);
+  assert.doesNotMatch(mails[0].text, /secret instructions/);
+  const r2 = await run(mk('HANDOFF -> CODEX\nid: H-1\nagain', { id: 'c10' }), { mails, kv, headers: { 'linear-delivery': 'd9' } });
+  assert.equal(r2.body.duplicate, 'handoff_id'); assert.equal(mails.length, 1);
+});
+test('author allowlist', async () => {
+  const r = await run(mk('HANDOFF -> Q'), { e: { ...env, LINEAR_HANDOFF_ALLOWED_AUTHORS: 'someone-else' } });
+  assert.equal(r.body.ignored, 'author_not_allowed');
+});
+test('lowercase from: line also counts for the loop guard', async () => {
+  const r = await run(mk('HANDOFF -> CODEX\nfrom: CODEX'));
+  assert.equal(r.body.ignored, 'self_sender');
 });
 test('unconfigured Q route releases claims', async () => {
   const kv = memKV();
