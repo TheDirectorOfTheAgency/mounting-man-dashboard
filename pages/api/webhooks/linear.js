@@ -17,6 +17,18 @@ async function getKV() {
 }
 
 export default async function handler(req, res) {
+  // Admin-only SMTP auth check (no mail sent): GET ?verify_smtp=1 with Authorization: Bearer CRON_SECRET
+  if (req.method === 'GET' && req.query?.verify_smtp === '1') {
+    if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ ok: false });
+    try {
+      const nodemailer = (await import('nodemailer')).default;
+      const e = process.env;
+      await nodemailer.createTransport({ host: e.HANDOFF_SMTP_HOST || 'smtp.mail.me.com', port: Number(e.HANDOFF_SMTP_PORT || 587), requireTLS: true, auth: { user: e.HANDOFF_SMTP_USER, pass: e.HANDOFF_SMTP_PASS } }).verify();
+      return res.status(200).json({ ok: true, smtp: 'auth_ok', from: e.HANDOFF_EMAIL_FROM || e.HANDOFF_SMTP_USER });
+    } catch (err) {
+      return res.status(502).json({ ok: false, smtp: err?.code || 'error' });
+    }
+  }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ ok: false });
