@@ -158,7 +158,8 @@ test('lookup treats upstream failures and unparsable bodies as not found', async
     now: NOW,
     backoffMs: [],
   });
-  assert.equal(calls.length, 2);
+  // Timeouts are retried by the deadline-aware backoff loop, not inline.
+  assert.equal(calls.length, 1);
   assert.deepEqual(failing, { found: false, reason: 'upstream_error', upstreamKind: 'timeout', jobsSeen: 0 });
   const garbage = await lookupBookingIdentity({
     customerId: 'cust-1',
@@ -542,17 +543,24 @@ test('zenbooker fetch retries timeout once then succeeds; 404 is not retried', a
       return { data: { results: [job()] } };
     },
   };
+  let clockMs = 0;
+  const slept = [];
   const ok = await lookupBookingIdentity({
     customerId: 'cust-1',
     bookingSession: 'session-exact',
     env: { ZENBOOKER_API_KEY: 'key' },
     httpClient: retryClient,
     now: NOW,
+    sleep: async (ms) => { slept.push(ms); clockMs += ms; },
+    clock: () => clockMs,
   });
   assert.equal(ok.found, true);
   assert.equal(calls.length, 2);
   assert.equal(calls[0], LOOKUP_TIMEOUT_MS);
-  assert.equal(calls[1], LOOKUP_RETRY_TIMEOUT_MS);
+  // Second attempt is the backoff retry, clamped to the remaining budget.
+  assert.deepEqual(slept, [400]);
+  assert.equal(calls[1], LOOKUP_TIMEOUT_MS);
+  assert.ok(LOOKUP_RETRY_TIMEOUT_MS > 0);
 
   const notFoundCalls = [];
   const notFoundClient = {
@@ -612,6 +620,7 @@ test('handler not_found logs path durationMs and upstreamKind without PII', asyn
   assert.equal(res.statusCode, 404);
   const notFoundLog = logger.logs.find(([event]) => event === 'booking_identity_not_found');
   assert.deepEqual(notFoundLog[1], {
+    deferred: undefined,
     bookingRef: notFoundLog[1].bookingRef,
     reason: 'upstream_error',
     upstreamKind: 'timeout',
@@ -659,7 +668,7 @@ test('lookup backs off and re-queries when ZenBooker has not created the job yet
     now: NOW,
   });
   assert.equal(calls, 2);
-  assert.deepEqual(slept, [300]);
+  assert.deepEqual(slept, [400]);
   assert.equal(result.found, true);
 });
 
@@ -673,8 +682,8 @@ test('not-yet-created retries stop at the deadline and never retry when a job is
     now: NOW,
   });
   assert.equal(empty.reason, 'not_found');
-  assert.ok(t <= 1900 + 700, `elapsed ${t}`);
-  assert.equal(calls, 2);
+  assert.ok(t <= 3400 + 700, `elapsed ${t}`);
+  assert.equal(calls, 3);
   calls = 0;
   const other = await lookupBookingIdentity({
     customerId: 'cust-1', bookingSession: 's', env: { ZENBOOKER_API_KEY: 'key' },
