@@ -174,6 +174,43 @@ async function readBookingAudit(jobId) {
   }
 }
 
+// Production logs carry IDs, counts, and codes only: never names, emails,
+// phones, addresses, notes, or Square/ZenBooker free-text descriptions.
+export function squareErrorCodes(err) {
+  const errors = err?.response?.data?.errors;
+  if (Array.isArray(errors) && errors.length) {
+    return errors.map((e) => [e?.category, e?.code, e?.field].filter(Boolean).join(':')).join(',');
+  }
+  return err?.response?.status ? `http_${err.response.status}` : (err?.code || err?.name || 'Error');
+}
+
+export function orderRequestLogSummary(orderRequest) {
+  const order = orderRequest?.order || {};
+  return {
+    idempotencyKey: orderRequest?.idempotency_key,
+    locationId: order.location_id,
+    hasCustomer: Boolean(order.customer_id),
+    zenbookerJobId: order.metadata?.zenbooker_job_id,
+    zenbookerJobNumber: order.metadata?.zenbooker_job_number,
+    lineCount: Array.isArray(order.line_items) ? order.line_items.length : 0,
+    lineCents: Array.isArray(order.line_items)
+      ? order.line_items.map((item) => Number(item?.base_price_money?.amount) || 0)
+      : [],
+  };
+}
+
+export function invoiceRequestLogSummary(invoiceRequest) {
+  const invoice = invoiceRequest?.invoice || {};
+  return {
+    idempotencyKey: invoiceRequest?.idempotency_key,
+    locationId: invoice.location_id,
+    orderId: invoice.order_id,
+    hasRecipient: Boolean(invoice.primary_recipient?.customer_id),
+    paymentRequests: Array.isArray(invoice.payment_requests) ? invoice.payment_requests.length : 0,
+    deliveryMethod: invoice.delivery_method,
+  };
+}
+
 async function logOperations(message) {
   console.warn('[zenbooker-square]', message);
 }
@@ -1241,7 +1278,7 @@ async function searchSquareCustomers(filter) {
     );
     return resp.data?.customers?.[0] || null;
   } catch (err) {
-    console.error('Square customer search failed:', err.response?.data || err.message);
+    console.error('Square customer search failed:', squareErrorCodes(err));
     return null;
   }
 }
@@ -1292,7 +1329,7 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note, a
     const resp = await axios.post(`${SQUARE_BASE}/customers`, body, { headers: squareHeaders() });
     return resp.data?.customer || null;
   } catch (err) {
-    console.error('Square customer create failed:', err.response?.data || err.message);
+    console.error('Square customer create failed:', squareErrorCodes(err));
     return null;
   }
 }
@@ -1300,20 +1337,14 @@ async function createSquareCustomer({ firstName, lastName, email, phone, note, a
 function summarizeSquareError(err) {
   const errors = err.response?.data?.errors || [];
   const summary = errors.map((error) => (
-    `${error.code}: ${error.detail || error.category || 'Square error'}${error.field ? ` (field: ${error.field})` : ''}`
+    `${error.code}: ${error.category || 'Square error'}${error.field ? ` (field: ${error.field})` : ''}`
   )).join('; ');
-  return summary || err.response?.data || err.message;
+  return summary || squareErrorCodes(err);
 }
 
 async function createSquareOrder(orderRequest) {
   try {
-    console.log('Square order request:', JSON.stringify({
-      idempotency_key: orderRequest.idempotency_key,
-      order: {
-        ...orderRequest.order,
-        customer_id: orderRequest.order?.customer_id ? '[customer]' : undefined,
-      },
-    }, null, 2));
+    console.log('Square order request:', JSON.stringify(orderRequestLogSummary(orderRequest)));
 
     const resp = await axios.post(
       `${SQUARE_BASE}/orders`,
@@ -1323,20 +1354,14 @@ async function createSquareOrder(orderRequest) {
     return { order: resp.data?.order || null, error: null };
   } catch (err) {
     const errSummary = summarizeSquareError(err);
-    console.error('Square order create failed:', JSON.stringify(err.response?.data || err.message));
+    console.error('Square order create failed:', squareErrorCodes(err));
     return { order: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
   }
 }
 
 async function createSquareInvoice(invoiceRequest) {
   try {
-    console.log('Square invoice request:', JSON.stringify({
-      idempotency_key: invoiceRequest.idempotency_key,
-      invoice: {
-        ...invoiceRequest.invoice,
-        primary_recipient: invoiceRequest.invoice?.primary_recipient?.customer_id ? { customer_id: '[customer]' } : undefined,
-      },
-    }, null, 2));
+    console.log('Square invoice request:', JSON.stringify(invoiceRequestLogSummary(invoiceRequest)));
 
     const resp = await axios.post(
       `${SQUARE_BASE}/invoices`,
@@ -1346,7 +1371,7 @@ async function createSquareInvoice(invoiceRequest) {
     return { invoice: resp.data?.invoice || null, error: null };
   } catch (err) {
     const errSummary = summarizeSquareError(err);
-    console.error('Square invoice create failed:', JSON.stringify(err.response?.data || err.message));
+    console.error('Square invoice create failed:', squareErrorCodes(err));
     return { invoice: null, error: typeof errSummary === 'string' ? errSummary : JSON.stringify(errSummary) };
   }
 }
@@ -1434,14 +1459,14 @@ export function createZenbookerToSquareHandler({
   console.log('Payload (condensed):', JSON.stringify({
     type: payload?.type,
     id: payload?.id || payload?.data?.id,
-    customer_email: payload?.data?.customer?.email || payload?.customer?.email,
+    customer_id: payload?.data?.customer?.id || payload?.customer?.id || null,
     service_name: payload?.data?.service_name || payload?.service_name,
     service_names: Array.isArray(loggedServices)
       ? loggedServices.map((service) => service?.service_name || service?.name).filter(Boolean)
       : [],
     service_count: Array.isArray(loggedServices) ? loggedServices.length : 0,
-    service_address: payload?.data?.service_address || payload?.service_address,
-    assigned_providers: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map(p => p.name),
+    has_service_address: Boolean(payload?.data?.service_address || payload?.service_address),
+    assigned_provider_ids: (payload?.data?.assigned_providers || payload?.assigned_providers || []).map((p) => p?.id).filter(Boolean),
     estimated_duration_seconds: payload?.data?.estimated_duration_seconds || payload?.estimated_duration_seconds,
     start_date: payload?.data?.start_date || payload?.start_date,
     service_fields_count: (
@@ -1546,12 +1571,13 @@ export function createZenbookerToSquareHandler({
 
     console.log('Extracted:', {
       jobId, jobNumber, eventType, serviceName,
-      email:        email     ? `${email.slice(0,3)}***`   : null,
-      phone:        phone     ? `***${phone.slice(-4)}`    : null,
-      firstName:    firstName ? `${firstName[0]}***`       : null,
+      hasEmail: Boolean(email),
+      hasPhone: Boolean(phone),
+      hasName: Boolean(firstName || lastName),
+      hasAddress: Boolean(jobStreet || jobCity || jobZip),
       scheduledAt, totalAmount,
-      providerName, resolvedProviderName, techSquareId, assignmentMode,
-      jobStreet, jobCity, jobState, jobZip, jobDuration,
+      hasProvider: Boolean(providerName), techSquareId, assignmentMode,
+      jobDuration,
       serviceGroups: serviceGroups.map((group) => ({
         serviceName: group.serviceName,
         fieldCount: group.fieldSelections.length,
@@ -1813,7 +1839,7 @@ export function createZenbookerToSquareHandler({
     });
 
   } catch (err) {
-    console.error('ZenBooker→Square error:', err.message, err.stack);
+    console.error('ZenBooker→Square error:', err?.name || 'Error', squareErrorCodes(err));
     try {
       await alert({
         kind: 'webhook_unhandled_error',
@@ -1823,7 +1849,7 @@ export function createZenbookerToSquareHandler({
     } catch (alertError) {
       console.error('[q-alert] webhook error alert failed', alertError.message);
     }
-    return res.status(200).json({ processed: false, error: err.message });
+    return res.status(200).json({ processed: false, error: err?.name || 'Error' });
     }
   };
 }
