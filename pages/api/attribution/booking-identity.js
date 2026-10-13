@@ -9,6 +9,14 @@ const CLIENT_USABLE_MS = 3700;
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 1024;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
+// Post-deploy smoke tests send customer_id starting with this prefix. They get
+// the normal 404 shape but never reach ZenBooker, KV, or the deferred fallback,
+// and log as booking_identity_probe instead of an upstream error.
+export const PROBE_ID_PREFIX = 'tmm-probe-';
+
+export function isProbeRequest(customerId) {
+  return typeof customerId === 'string' && customerId.startsWith(PROBE_ID_PREFIX);
+}
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_MAX_KEYS = 5000;
@@ -117,6 +125,10 @@ export function createBookingIdentityHandler({
     }
 
     const ref = bookingRef(customerId, bookingSession);
+    if (isProbeRequest(customerId)) {
+      logger.info('booking_identity_probe', { bookingRef: ref });
+      return res.status(404).json({ found: false, errorCode: 'BOOKING_NOT_FOUND' });
+    }
     const startedAt = Date.now();
     try {
       let store = attributionStore;
