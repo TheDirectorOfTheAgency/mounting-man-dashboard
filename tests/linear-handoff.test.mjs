@@ -68,3 +68,44 @@ test('unconfigured Q route releases claims', async () => {
   const r = await run(mk('HANDOFF -> Q'), { kv, e: { LINEAR_WEBHOOK_SECRET: SECRET } });
   assert.equal(r.status, 202); assert.equal(kv.m.size, 0);
 });
+
+// ---- loop guard + configurable Q header (follow-up to #89) ----
+function mkActor(body, actorId, opts = {}) {
+  const o = JSON.parse(mk(body, opts).toString());
+  o.actor = { id: actorId, name: 'x' };
+  return Buffer.from(JSON.stringify(o));
+}
+
+test('HANDOFF -> Q written by Q (From: Q) is never forwarded to Q', async () => {
+  const calls = [];
+  const out = await run(mk('HANDOFF -> Q\nID: THE-330-20261013-01\nFrom: Q\nAction: x'), { calls });
+  assert.equal(out.body.ignored, 'self_sender');
+  assert.equal(calls.length, 0);
+});
+
+test('HANDOFF -> CODEX with From: CODEX is not mirrored back to Codex', async () => {
+  const calls = [];
+  const out = await run(mk('HANDOFF -> CODEX\nFrom: CODEX\nAction: x'), { calls });
+  assert.equal(out.body.ignored, 'self_sender');
+  assert.equal(calls.length, 0);
+});
+
+test('comments by a listed self actor are ignored for that route only', async () => {
+  const e = { ...env, LINEAR_HANDOFF_Q_SELF_ACTOR_IDS: 'q-bot, other' };
+  const calls = [];
+  const q = await run(mkActor('HANDOFF -> Q\nFrom: CODEX', 'q-bot'), { e, calls });
+  assert.equal(q.body.ignored, 'self_actor');
+  const c = await run(mkActor('HANDOFF -> CODEX\nFrom: Q', 'q-bot', { id: 'c9' }), { e, calls });
+  assert.equal(c.body.forwarded, true);
+  assert.equal(calls.length, 1);
+});
+
+test('Q forward uses Bearer by default and a configurable header name', async () => {
+  const calls = [];
+  await run(mk('HANDOFF -> Q\nFrom: CODEX'), { calls });
+  assert.equal(calls[0].o.headers.Authorization, 'Bearer k');
+  const calls2 = [];
+  await run(mk('HANDOFF -> Q\nFrom: CODEX', { id: 'c2' }), { calls: calls2, e: { ...env, LINEAR_HANDOFF_Q_WEBHOOK_HEADER: 'X-Api-Key' } });
+  assert.equal(calls2[0].o.headers['X-Api-Key'], 'k');
+  assert.equal(calls2[0].o.headers.Authorization, undefined);
+});
