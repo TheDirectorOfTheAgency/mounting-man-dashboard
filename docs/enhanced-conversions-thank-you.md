@@ -7,7 +7,8 @@
 dataLayer.push({
   event: 'booking_confirmed',
   booking_session: '<id from the URL>',          // omitted if the URL has none
-  user_data: {                                    // omitted if the lookup fails or takes >3s
+  transaction_id: '<same booking session id>',    // order id for the Booked Appointment tag
+  user_data: {                                    // omitted if the lookup fails or takes >4.5s
     sha256_email_address: '<64 hex chars>',       // omitted if the booking has no usable email
     sha256_phone_number: '<64 hex chars>',        // omitted if the booking has no usable phone
   },
@@ -18,16 +19,17 @@ For paid bookings the script still sends the click-ID capture POST first, waits 
 to 800 ms for that request to finish, then calls
 `POST /api/attribution/booking-identity` with `{ customer_id, booking_session }`.
 Organic/unpaid thank-you pages skip the capture wait and call identity
-immediately. The event is pushed when identity returns or 3 seconds after page
-load, whichever is first (exactly once).
+immediately. The event is pushed when identity returns or 4.5 seconds after page
+load, whichever is first (exactly once). Identity gets up to 3.7 s.
 
 ## Endpoint: `POST /api/attribution/booking-identity`
 
 - Origin-locked to `https://www.themountingman.com` (CORS preflight returns 204; other
   origins get 403).
 - Fetches Zenbooker jobs for `customer_id` created in the last 48 hours
-  (`GET /v1/jobs?customer=...&created_after=...`, 1200 ms timeout, one retry at
-  900 ms on timeout/network/5xx/429 only).
+  (`GET /v1/jobs?customer=...&created_after=...`). One 1500 ms attempt, then the
+  job-not-created backoff (400 ms, 600 ms) re-queries while nothing is visible or the
+  call timed out / hit network, 429 or 5xx, all inside a 3400 ms server deadline.
 - Identity resolution order (first match wins; `path` is logged server-side only):
   1. **exact_session** — job `booking_session` (or alias fields) equals the request session.
   2. **stored** — KV job-bridge mapping for this session.
@@ -76,3 +78,31 @@ The Booked Appointment conversion tag must fire on the Custom Event
 Variables for `user_data.sha256_email_address` and `user_data.sha256_phone_number`
 (or use the "user-provided data" variable's manual configuration with the pre-hashed
 fields), and turn enhanced conversions on for the conversion tag.
+
+## Server-side fallback (deferred enhancement)
+
+When the thank-you lookup cannot resolve in time, the endpoint parks the booking
+(`ec:pending:<sessionRef>`: booking session id as the Google order id, an opaque
+customer ref, timestamp; 26 h TTL). It is resolved later, once the ZenBooker job
+exists **and** is linked to that exact session by the KV session→job bridge:
+
+- immediately from `/api/webhooks/zenbooker-to-square` when the job event arrives, and
+- every 15 minutes by `/api/cron/deferred-booking-identity` (CRON_SECRET; `?validateOnly=1`).
+
+The job's customer ID must equal the one the thank-you page sent (compared by opaque
+ref). Email/phone are normalized and SHA-256 hashed exactly as above and sent with
+`uploadConversionAdjustments` as an **ENHANCEMENT** of the Booked Appointment WEBPAGE
+action (6491204814, override `GOOGLE_ADS_BOOKED_APPOINTMENT_ACTION_ID`), keyed by
+`order_id = booking_session`. Records older than 23 h are dropped (Google accepts
+enhancements up to 24 h after the conversion).
+
+No double counting: an enhancement never creates a conversion; it attaches identifiers
+to the one the tag already recorded under that order id. In addition, a booking the
+thank-you path resolved in time is marked `ec:thankyou:<sessionRef>` and never parked,
+an accepted enhancement is marked `ec:enhanced:<sessionRef>`, and Google rejects any
+second enhancement (`CONVERSION_ALREADY_ENHANCED`). Logs: `booking_identity_deferred`
+with 12-char bookingRef/jobRef, outcome, hashed field names and Google error codes only.
+
+**GTM requirement:** the Booked Appointment tag must set *Transaction ID* to the
+`transaction_id` Data Layer Variable. Without it, deferred enhancements are rejected
+with `CONVERSION_NOT_FOUND` (logged as `outcome: rejected`).

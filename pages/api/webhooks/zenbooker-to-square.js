@@ -13,6 +13,11 @@
 
 import axios from 'axios';
 import { considerIncomingJob } from '../../../lib/attribution-bridge.js';
+import {
+  createDeferredIdentityStore,
+  createEnhancementUploader,
+  resolveDeferredForJob,
+} from '../../../lib/deferred-booking-identity.js';
 import { recordJobSource } from '../../../lib/job-source.js';
 import { logPayloadConversionSummary } from '../../../lib/conversion-summary-keys.js';
 import { buildSquareAppointmentModel } from '../../../lib/zenbooker-square-mapper.mjs';
@@ -1397,6 +1402,11 @@ export function createZenbookerToSquareHandler({
   attributionStore,
   loadAttributionStore = getDefaultAttributionStore,
   saveAttributionMapping = persistAttributionMapping,
+  loadDeferredStore = async () => {
+    const kv = await getKV();
+    return kv ? createDeferredIdentityStore(kv) : null;
+  },
+  uploadEnhancement = createEnhancementUploader(),
 } = {}) {
   async function persistRouteMapping(jobId, squareCustomerId) {
     try {
@@ -1438,6 +1448,21 @@ export function createZenbookerToSquareHandler({
     await considerIncomingJob({ payload, store: bridgeStore });
     if (bridgeStore?.saveJobSource) {
       await recordJobSource({ store: bridgeStore, payload });
+    }
+    try {
+      const jobLike = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
+      const deferredJobId = resolveField(payload, FIELD_MAP.jobId);
+      if (deferredJobId && bridgeStore) {
+        await resolveDeferredForJob({
+          jobId: deferredJobId,
+          job: jobLike,
+          attributionStore: bridgeStore,
+          idStore: await loadDeferredStore(),
+          upload: uploadEnhancement,
+        });
+      }
+    } catch {
+      console.warn('booking_identity_deferred', { path: 'webhook', outcome: 'error' });
     }
   } catch {
     console.log('ZB_BRIDGE_DECISION', JSON.stringify({

@@ -1,5 +1,10 @@
 import { bookingRef, lookupBookingIdentity, originClass } from '../../../lib/booking-identity.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+import { createDeferredIdentityStore } from '../../../lib/deferred-booking-identity.js';
+
+// The browser stops waiting at PAGE_CONFIRM_MS (tmm-attribution-v1.js). A
+// result that lands later cannot reach the tag, so it still gets deferred.
+const CLIENT_USABLE_MS = 3700;
 
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 1024;
@@ -84,6 +89,7 @@ export function createBookingIdentityHandler({
   rateLimiter = createRateLimiter(),
   attributionStore,
   kvClient,
+  deferredStore,
 } = {}) {
   return async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store');
@@ -114,16 +120,32 @@ export function createBookingIdentityHandler({
     const startedAt = Date.now();
     try {
       let store = attributionStore;
-      if (store === undefined) {
+      let idStore = deferredStore;
+      if (store === undefined || idStore === undefined) {
         const activeKV = kvClient === undefined ? await getDefaultKV() : kvClient;
-        store = activeKV ? createAttributionStore(activeKV) : null;
+        if (store === undefined) store = activeKV ? createAttributionStore(activeKV) : null;
+        if (idStore === undefined) idStore = activeKV ? createDeferredIdentityStore(activeKV) : null;
       }
       // Resolve only through a session-to-job link; customer ID and recency are insufficient.
       const result = await lookup({ customerId, bookingSession, store });
       const durationMs = Date.now() - startedAt;
       const jobsSeen = typeof result.jobsSeen === 'number' ? result.jobsSeen : undefined;
+      // Server-side fallback bookkeeping (never blocks or fails the response).
+      let deferred;
+      if (idStore) {
+        try {
+          if (result.found && durationMs <= CLIENT_USABLE_MS) {
+            await idStore.markThankYouResolved(bookingSession);
+          } else if (result.reason !== 'not_configured') {
+            deferred = Boolean(await idStore.savePending({ customerId, bookingSession }));
+          }
+        } catch {
+          deferred = false;
+        }
+      }
       if (!result.found) {
         logger.info('booking_identity_not_found', {
+          deferred,
           bookingRef: ref,
           reason: result.reason,
           upstreamKind: result.upstreamKind,
@@ -137,6 +159,7 @@ export function createBookingIdentityHandler({
         bookingRef: ref,
         fields: Object.keys(result.userData),
         path: result.path,
+        deferred,
         durationMs,
       });
       return res.status(200).json({ found: true, user_data: result.userData });

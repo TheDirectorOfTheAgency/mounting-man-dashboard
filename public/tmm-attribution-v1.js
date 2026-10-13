@@ -4,8 +4,8 @@
   var STORAGE_KEY = 'tmm_paid_attribution_v1';
   var CAPTURE_URL = 'https://mounting-man-dashboard.vercel.app/api/attribution/booking';
   var IDENTITY_URL = 'https://mounting-man-dashboard.vercel.app/api/attribution/booking-identity';
-  var IDENTITY_TIMEOUT_MS = 3000;
-  var PAGE_CONFIRM_MS = 3000;
+  var IDENTITY_TIMEOUT_MS = 3700;
+  var PAGE_CONFIRM_MS = 4500;
   var CAPTURE_WAIT_MS = 800;
   var SENT_KEY = 'tmm_attribution_sent_v1';
   var RECORD_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -320,7 +320,12 @@
 
   function pushBookingConfirmed(bookingSession, userData) {
     var event = { event: 'booking_confirmed' };
-    if (bookingSession) event.booking_session = bookingSession;
+    if (bookingSession) {
+      event.booking_session = bookingSession;
+      // Order id for the Booked Appointment tag; the server-side enhancement
+      // fallback adjusts the conversion by this id (never creates a second one).
+      event.transaction_id = bookingSession;
+    }
     if (userData) event.user_data = userData;
     window.dataLayer = window.dataLayer || [];
     window.dataLayer.push(event);

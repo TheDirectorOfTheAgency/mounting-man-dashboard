@@ -71,6 +71,7 @@ test('thank-you pushes booking_confirmed once with hashed user_data', async () =
   assert.deepEqual(dataLayer, [{
     event: 'booking_confirmed',
     booking_session: 'sess-1',
+    transaction_id: 'sess-1',
     user_data: { sha256_email_address: HASH_A, sha256_phone_number: HASH_B },
   }]);
   const fetchCalls = allCalls.filter((call) => call.url.endsWith('/booking-identity'));
@@ -94,7 +95,7 @@ test('thank-you pushes booking_confirmed without user_data when the lookup fails
       url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
       fetchImpl,
     });
-    assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1' }]);
+    assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1', transaction_id: 'sess-1' }]);
   }
 });
 
@@ -118,10 +119,10 @@ test('thank-you pushes booking_confirmed without user_data when the lookup excee
     setTimeout,
     JSON,
   });
-  await new Promise((resolve) => setTimeout(resolve, 3300));
+  await new Promise((resolve) => setTimeout(resolve, 4800));
   assert.equal(aborted, true);
-  assert.ok(Date.now() - started >= 3000);
-  assert.deepEqual(JSON.parse(JSON.stringify(window.dataLayer)), [{ event: 'booking_confirmed', booking_session: 's' }]);
+  assert.ok(Date.now() - started >= 4500);
+  assert.deepEqual(JSON.parse(JSON.stringify(window.dataLayer)), [{ event: 'booking_confirmed', booking_session: 's', transaction_id: 's' }]);
 });
 
 test('thank-you without booking references still pushes booking_confirmed and never calls the identity endpoint', async () => {
@@ -163,7 +164,7 @@ test('paid capture POST finishes before identity lookup starts', async () => {
   assert.equal(fetchCalls.length, 2);
   assert.match(fetchCalls[1].url, /\/api\/attribution\/booking-identity$/);
   assert.equal('tmm_paid_attribution_v1' in store, false);
-  assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1' }]);
+  assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1', transaction_id: 'sess-1' }]);
 });
 
 test('unpaid thank-you captures the session once, then calls identity', async () => {
@@ -206,7 +207,7 @@ test('organic landing is remembered without a network call; internal navigation 
   assert.equal(JSON.parse(paid.store.tmm_paid_attribution_v1).paidMarker, 'gclid');
 });
 
-test('booking_confirmed fires once by 3000 ms when capture and identity hang', async () => {
+test('booking_confirmed fires once by 4500 ms when capture and identity hang', async () => {
   const parsed = new URL('https://www.themountingman.com/thank-you?customer_id=c&booking_session=s');
   const stored = JSON.stringify({ paidMarker: 'gclid', gclid: 'click-1' });
   const window = { location: { pathname: parsed.pathname, search: parsed.search }, dataLayer: [] };
@@ -225,11 +226,12 @@ test('booking_confirmed fires once by 3000 ms when capture and identity hang', a
     setTimeout,
     JSON,
   });
-  await new Promise((resolve) => setTimeout(resolve, 3100));
-  assert.ok(Date.now() - started >= 3000);
+  await new Promise((resolve) => setTimeout(resolve, 4600));
+  assert.ok(Date.now() - started >= 4500);
   assert.deepEqual(JSON.parse(JSON.stringify(window.dataLayer)), [{
     event: 'booking_confirmed',
     booking_session: 's',
+    transaction_id: 's',
   }]);
 });
 
@@ -240,5 +242,5 @@ test('capture POST failure does not stop booking_confirmed', async () => {
     storage: { tmm_paid_attribution_v1: stored },
     fetchImpl: () => Promise.reject(new Error('offline')),
   });
-  assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1' }]);
+  assert.deepEqual(dataLayer, [{ event: 'booking_confirmed', booking_session: 'sess-1', transaction_id: 'sess-1' }]);
 });
