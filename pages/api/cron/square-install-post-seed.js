@@ -16,18 +16,29 @@ const squareHeaders = () => ({
   'Content-Type': 'application/json',
 });
 
-async function fetchRecentCompletedPayments() {
+async function fetchLocationIds() {
+  const response = await axios.get(`${SQUARE_BASE}/locations`, { headers: squareHeaders() });
+  const ids = (response.data?.locations || []).map((loc) => loc.id).filter(Boolean);
+  return ids.length ? ids : [SQUARE_LOCATION_ID].filter(Boolean);
+}
+
+/** Every location (active or not), every page, every tender type. */
+export async function fetchRecentCompletedPayments({ get = axios.get, locationIds } = {}) {
   const begin = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const params = new URLSearchParams({
-    location_id: SQUARE_LOCATION_ID,
-    begin_time: begin,
-    sort_order: 'DESC',
-    limit: '10',
-  });
-  const response = await axios.get(`${SQUARE_BASE}/payments?${params.toString()}`, {
-    headers: squareHeaders(),
-  });
-  return (response.data?.payments || []).filter((payment) => payment?.status === 'COMPLETED');
+  const ids = locationIds || (await fetchLocationIds());
+  const out = [];
+  for (const locationId of ids) {
+    let cursor = '';
+    for (let page = 0; page < 10; page += 1) {
+      const params = new URLSearchParams({ location_id: locationId, begin_time: begin, sort_order: 'DESC', limit: '100' });
+      if (cursor) params.set('cursor', cursor);
+      const response = await get(`${SQUARE_BASE}/payments?${params.toString()}`, { headers: squareHeaders() });
+      out.push(...(response.data?.payments || []));
+      cursor = response.data?.cursor || '';
+      if (!cursor) break;
+    }
+  }
+  return out.filter((payment) => payment?.status === 'COMPLETED');
 }
 
 async function fetchCustomer(customerId) {
@@ -56,7 +67,7 @@ export default async function handler(req, res) {
     });
   }
 
-  if (!SQUARE_TOKEN || !SQUARE_LOCATION_ID) {
+  if (!SQUARE_TOKEN) {
     return res.status(400).json({ error: 'Missing Square credentials' });
   }
 
