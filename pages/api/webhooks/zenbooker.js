@@ -20,7 +20,8 @@ import {
   logBridgeDecision,
   resolveCompletedBridge,
 } from '../../../lib/attribution-bridge.js';
-import { recordJobSource } from '../../../lib/job-source.js';
+import { recordJobSource, revenueOf } from '../../../lib/job-source.js';
+import { createRestatementUploader, restateBookedValue } from '../../../lib/booked-value-restatement.js';
 
 let cachedKV;
 async function getDefaultKV() {
@@ -69,6 +70,7 @@ export function createZenbookerWebhookHandler({
   disclosureVersion,
   consentFieldLabel,
   logger = defaultLogger(),
+  restateValue = null,
 } = {}) {
   return async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -180,6 +182,18 @@ export function createZenbookerWebhookHandler({
           errorType: error?.name || 'Error',
         });
       }
+      // Tracking fix #3: restate Booked Appointment to the job's real total.
+      if (restateValue && candidate.bookingSession) {
+        try {
+          const restated = await restateValue({
+            bookingSession: candidate.bookingSession,
+            value: revenueOf(req.body),
+          });
+          logger.info('booked_value_restatement', { jobRef, outcome: restated?.outcome, codes: restated?.codes });
+        } catch (error) {
+          logger.error('booked_value_restatement_failed', { jobRef, errorType: error?.name || 'Error' });
+        }
+      }
       if (!candidate.acquisition?.paidEvidence) {
         logger.info('offline_conversion_candidate_skipped', {
           jobRef,
@@ -239,7 +253,7 @@ export function createZenbookerWebhookHandler({
         await deliverQAlert({
           kind: 'webhook_unhandled_error',
           subject: 'ZenBooker offline conversion webhook error',
-          body: error.message || 'Unhandled webhook error',
+          body: `Unhandled webhook error (${error?.name || 'Error'}). See Vercel logs.`,
         });
       } catch (alertError) {
         logger.error('q_alert_failed', { errorType: alertError.name || 'Error' });
@@ -253,4 +267,11 @@ export function createZenbookerWebhookHandler({
   };
 }
 
-export default createZenbookerWebhookHandler();
+async function defaultRestateValue({ bookingSession, value }) {
+  if (String(process.env.BOOKED_VALUE_RESTATEMENT || '').toLowerCase() !== 'on') return { outcome: 'disabled' };
+  const kv = await getDefaultKV();
+  if (!kv) return { outcome: 'no_store' };
+  return restateBookedValue({ kv, bookingSession, value, upload: createRestatementUploader() });
+}
+
+export default createZenbookerWebhookHandler({ restateValue: defaultRestateValue });

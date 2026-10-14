@@ -2,14 +2,8 @@ import { createAttributionStore } from '../../../lib/offline-conversion-store.js
 import { sanitizeTouch } from '../../../lib/source-classifier.js';
 import { bridgeWindowMs } from '../../../lib/attribution-bridge.js';
 import { rematchVisit } from '../../../lib/job-source.js';
+import { visitOrigins } from '../../../lib/attribution-origins.js';
 
-const DEFAULT_ORIGINS = [
-  'https://www.themountingman.com',
-  'https://themountingman.com',
-  'https://themountingman.webflow.io',
-  'https://www.themountingmanusa.com',
-  'https://themountingmanusa.com',
-];
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
@@ -25,13 +19,7 @@ async function getDefaultKV() {
   return cachedKV;
 }
 
-function allowedOrigins(env = process.env) {
-  const extra = String(env?.ATTRIBUTION_ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return new Set([...DEFAULT_ORIGINS, ...extra]);
-}
+const allowedOrigins = visitOrigins;
 
 function validIdentifier(value) {
   return typeof value === 'string'

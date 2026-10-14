@@ -37,6 +37,7 @@ import {
   planUnassignedAlert,
   resolveInstaller,
 } from '../../../lib/zenbooker-assignment.js';
+import { safeEqual } from '../../../lib/safe-compare.js';
 
 // ============================================================================
 // SQUARE CONFIG
@@ -1434,7 +1435,7 @@ export function createZenbookerToSquareHandler({
     console.error('ZENBOOKER_WEBHOOK_SECRET not set');
     return res.status(500).json({ error: 'Webhook secret not configured' });
   }
-  if (secret !== process.env.ZENBOOKER_WEBHOOK_SECRET) {
+  if (!safeEqual(typeof secret === 'string' ? secret : '', process.env.ZENBOOKER_WEBHOOK_SECRET)) {
     console.warn('Webhook auth failed');
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -1870,7 +1871,8 @@ export function createZenbookerToSquareHandler({
       await alert({
         kind: 'webhook_unhandled_error',
         subject: 'ZenBooker webhook error',
-        body: err.message || 'Unhandled ZenBooker webhook error',
+        // Error text can carry customer data; alert with the type only (audit #8).
+        body: `Unhandled ZenBooker webhook error (${err?.name || 'Error'}). See Vercel logs.`,
       });
     } catch (alertError) {
       console.error('[q-alert] webhook error alert failed', alertError.message);

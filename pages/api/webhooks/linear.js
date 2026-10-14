@@ -1,4 +1,5 @@
 import { processLinearWebhook } from '../../../lib/linear-handoff.js';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 export const config = { api: { bodyParser: false } };
 
@@ -19,7 +20,7 @@ async function getKV() {
 export default async function handler(req, res) {
   // Admin-only SMTP auth check (no mail sent): GET ?verify_smtp=1 with Authorization: Bearer CRON_SECRET
   if (req.method === 'GET' && req.query?.verify_smtp === '1') {
-    if (!process.env.CRON_SECRET || req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ ok: false });
+    if (!hasBearer(req)) return res.status(401).json({ ok: false });
     try {
       const nodemailer = (await import('nodemailer')).default;
       const e = process.env;

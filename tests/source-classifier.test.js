@@ -173,7 +173,24 @@ test('sanitized touches drop contact fields and self referrals', () => {
   assert.equal(rendered.includes('6125550100'), false);
   assert.equal(rendered.includes('Marshall'), false);
   assert.equal(touch.referrerHost, '');
-  assert.equal(touch.landingPath, '');
+  // Query is stripped by the shared sanitizer; the path itself is kept.
+  assert.equal(touch.landingPath, '/book');
   assert.equal(touch.gclid, 'ok-click');
   assert.equal(classifyTouch(touch).bucket, 'google_ads');
+});
+
+test('server sanitizer rejects encoded contact data in paths and utm tokens (audit #2)', () => {
+  const touch = sanitizeTouch({
+    landingPath: '/thanks/john%40example.com',
+    referrerPath: '/call-612-555-0100',
+    utmSource: 'john%40example.com',
+    utmCampaign: '6125550100',
+    utmMedium: 'cpc',
+  });
+  const rendered = JSON.stringify(touch);
+  assert.equal(rendered.includes('example'), false);
+  assert.equal(rendered.includes('5550100'), false);
+  assert.equal(touch.utmSource, '');
+  assert.equal(touch.utmCampaign, '');
+  assert.equal(touch.utmMedium, 'cpc');
 });

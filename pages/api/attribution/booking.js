@@ -5,7 +5,7 @@ import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-convers
 import { originClass } from '../../../lib/booking-identity.js';
 import { classifyChannel } from '../../../lib/acquisition-channel.js';
 import { normalizeClass, normalizeLandingPath, normalizeReferrerHost } from '../../../lib/attribution-sanitize.js';
-const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
+import { bookingOrigins, originAllowed } from '../../../lib/attribution-origins.js';
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
 const PAID_MARKERS = new Set(['gclid', 'gbraid', 'wbraid', 'paid_medium']);
@@ -68,8 +68,8 @@ export function normalizeCapturedAcquisition(value = {}) {
 
 function applyCors(res, origin, allowedOrigin) {
   res.setHeader('Vary', 'Origin');
-  if (origin === allowedOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  if (originAllowed(origin, allowedOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Max-Age', '600');
@@ -81,7 +81,7 @@ function applyCors(res, origin, allowedOrigin) {
 export function createBookingAttributionHandler({
   attributionStore,
   kvClient,
-  allowedOrigin = DEFAULT_ALLOWED_ORIGIN,
+  allowedOrigin = bookingOrigins(),
   logger = defaultLogger(),
 } = {}) {
   return async function handler(req, res) {

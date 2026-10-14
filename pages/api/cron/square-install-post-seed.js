@@ -2,6 +2,7 @@ import axios from 'axios';
 
 import { runConversionSummaryKeyProbeOnce } from '../../../lib/conversion-summary-keys.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 const SQUARE_BASE = 'https://connect.squareup.com/v2';
 const SQUARE_VER = '2024-01-18';
@@ -108,7 +109,7 @@ export default async function handler(req, res) {
   const authHeader = req.headers.authorization || '';
   const vercelCronHeader = req.headers['x-vercel-cron'];
   const cronSecret = process.env.CRON_SECRET || '';
-  const authorizedByBearer = cronSecret && authHeader === `Bearer ${cronSecret}`;
+  const authorizedByBearer = hasBearer(req, cronSecret);
   const authorizedByVercelCron = Boolean(vercelCronHeader);
 
   if (!authorizedByBearer && !authorizedByVercelCron) {

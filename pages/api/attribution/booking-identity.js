@@ -1,12 +1,12 @@
 import { bookingRef, lookupBookingIdentity, originClass } from '../../../lib/booking-identity.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { createDeferredIdentityStore } from '../../../lib/deferred-booking-identity.js';
+import { bookingOrigins, originAllowed } from '../../../lib/attribution-origins.js';
 
 // The browser stops waiting at PAGE_CONFIRM_MS (tmm-attribution-v1.js). A
 // result that lands later cannot reach the tag, so it still gets deferred.
 const CLIENT_USABLE_MS = 3700;
 
-const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 1024;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
 // Post-deploy smoke tests send customer_id starting with this prefix. They get
@@ -38,8 +38,8 @@ function validIdentifier(value) {
 
 function applyCors(res, origin, allowedOrigin) {
   res.setHeader('Vary', 'Origin');
-  if (origin === allowedOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  if (originAllowed(origin, allowedOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Access-Control-Max-Age', '600');
@@ -91,7 +91,7 @@ async function getDefaultKV() {
 }
 
 export function createBookingIdentityHandler({
-  allowedOrigin = DEFAULT_ALLOWED_ORIGIN,
+  allowedOrigin = bookingOrigins(),
   logger = defaultLogger(),
   lookup = lookupBookingIdentity,
   rateLimiter = createRateLimiter(),
