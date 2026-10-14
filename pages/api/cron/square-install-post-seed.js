@@ -16,29 +16,85 @@ const squareHeaders = () => ({
   'Content-Type': 'application/json',
 });
 
-async function fetchLocationIds() {
-  const response = await axios.get(`${SQUARE_BASE}/locations`, { headers: squareHeaders() });
-  const ids = (response.data?.locations || []).map((loc) => loc.id).filter(Boolean);
-  return ids.length ? ids : [SQUARE_LOCATION_ID].filter(Boolean);
+export const PAGE_LIMIT = 100;
+export const MAX_PAGES = 10;
+
+const errStatus = (error) => error?.response?.status || null;
+const errName = (error) => error?.code || error?.name || 'Error';
+
+/**
+ * Discover every Square location. On any failure (scope, 429, 5xx, network) or an
+ * empty result, fall back to the one configured location. Logs IDs/status only.
+ */
+export async function fetchLocationIds({ get = axios.get, configuredId = SQUARE_LOCATION_ID } = {}) {
+  const fallback = [configuredId].filter(Boolean);
+  try {
+    const response = await get(`${SQUARE_BASE}/locations`, { headers: squareHeaders() });
+    const ids = (response?.data?.locations || []).map((loc) => loc?.id).filter(Boolean);
+    return ids.length ? ids : fallback;
+  } catch (error) {
+    console.error('SQUARE_LOCATIONS_DISCOVERY_FAILED', {
+      status: errStatus(error),
+      errorType: errName(error),
+      fallbackLocationId: configuredId || null,
+    });
+    return fallback;
+  }
+}
+
+export class NoSquareLocationsError extends Error {
+  constructor() {
+    super('No Square locations available');
+    this.name = 'NoSquareLocationsError';
+  }
 }
 
 /** Every location (active or not), every page, every tender type. */
-export async function fetchRecentCompletedPayments({ get = axios.get, locationIds } = {}) {
+export async function fetchRecentCompletedPayments({
+  get = axios.get,
+  locationIds,
+  configuredId = SQUARE_LOCATION_ID,
+} = {}) {
   const begin = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const ids = locationIds || (await fetchLocationIds());
+  const ids = locationIds || (await fetchLocationIds({ get, configuredId }));
+  if (!ids.length) throw new NoSquareLocationsError();
   const out = [];
   for (const locationId of ids) {
-    let cursor = '';
-    for (let page = 0; page < 10; page += 1) {
-      const params = new URLSearchParams({ location_id: locationId, begin_time: begin, sort_order: 'DESC', limit: '100' });
-      if (cursor) params.set('cursor', cursor);
-      const response = await get(`${SQUARE_BASE}/payments?${params.toString()}`, { headers: squareHeaders() });
-      out.push(...(response.data?.payments || []));
-      cursor = response.data?.cursor || '';
-      if (!cursor) break;
+    try {
+      let cursor = '';
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const params = new URLSearchParams({ location_id: locationId, begin_time: begin, sort_order: 'DESC', limit: String(PAGE_LIMIT) });
+        if (cursor) params.set('cursor', cursor);
+        const response = await get(`${SQUARE_BASE}/payments?${params.toString()}`, { headers: squareHeaders() });
+        out.push(...(response?.data?.payments || []));
+        cursor = response?.data?.cursor || '';
+        if (!cursor) break;
+      }
+      if (cursor) {
+        console.warn('SQUARE_PAYMENTS_PAGE_CAP_HIT', { locationId, maxPages: MAX_PAGES, pageLimit: PAGE_LIMIT });
+      }
+    } catch (error) {
+      console.error('SQUARE_LOCATION_PAYMENTS_FAILED', {
+        locationId,
+        status: errStatus(error),
+        errorType: errName(error),
+      });
     }
   }
   return out.filter((payment) => payment?.status === 'COMPLETED');
+}
+
+/** Handler-level helper: never throws for "no locations"; returns an explicit error instead. */
+export async function collectCronPayments(opts = {}) {
+  try {
+    return { ok: true, payments: await fetchRecentCompletedPayments(opts) };
+  } catch (error) {
+    if (error instanceof NoSquareLocationsError) {
+      console.error('SQUARE_NO_LOCATIONS_AVAILABLE', {});
+      return { ok: false, status: 503, error: error.message };
+    }
+    throw error;
+  }
 }
 
 async function fetchCustomer(customerId) {
@@ -72,7 +128,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    const payments = await fetchRecentCompletedPayments();
+    const collected = await collectCronPayments();
+    if (!collected.ok) {
+      return res.status(collected.status).json({ ok: false, error: collected.error });
+    }
+    const payments = collected.payments;
     const results = [];
 
     for (const payment of payments) {
