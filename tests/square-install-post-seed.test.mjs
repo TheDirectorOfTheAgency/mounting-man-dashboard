@@ -77,3 +77,20 @@ test('page cap hit logs a warning', async (t) => {
   const w = console.warn.mock.calls.find((c) => c.arguments[0] === 'SQUARE_PAYMENTS_PAGE_CAP_HIT');
   assert.deepEqual(w.arguments[1], { locationId: 'A', maxPages: 10, pageLimit: 100 });
 });
+
+test('all location payments fail -> explicit 503, not ok scanned 0', async (t) => {
+  quiet(t);
+  const get = async () => {
+    throw fail(503);
+  };
+  const r = await collectCronPayments({ get, locationIds: ['A', 'B'] });
+  assert.deepEqual(r, { ok: false, status: 503, error: 'Square payments unavailable' });
+  assert.ok(console.error.mock.calls.some((c) => c.arguments[0] === 'SQUARE_PAYMENTS_TOTAL_FAILURE'));
+  assert.ok(console.error.mock.calls.filter((c) => c.arguments[0] === 'SQUARE_LOCATION_PAYMENTS_FAILED').length >= 2);
+});
+
+test('all locations succeed with zero payments -> ok empty', async () => {
+  const get = async () => ({ data: { payments: [] } });
+  const r = await collectCronPayments({ get, locationIds: ['A'] });
+  assert.deepEqual(r, { ok: true, payments: [] });
+});
