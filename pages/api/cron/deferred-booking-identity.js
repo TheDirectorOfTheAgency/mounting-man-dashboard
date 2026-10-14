@@ -17,10 +17,11 @@ import {
 } from '../../../lib/deferred-booking-identity.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { fetchZenbookerJob } from '../../../lib/zenbooker-assignment.js';
+import { timingSafeEqualString } from '../../../lib/mcp-http.mjs';
 
 function authorized(req) {
   const secret = process.env.CRON_SECRET || '';
-  return Boolean(secret) && req.headers?.authorization === `Bearer ${secret}`;
+  return Boolean(secret) && timingSafeEqualString(String(req.headers?.authorization || ''), `Bearer ${secret}`);
 }
 
 async function defaultKV() {

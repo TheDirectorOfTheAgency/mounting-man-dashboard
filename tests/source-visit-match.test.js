@@ -12,6 +12,7 @@ const T0 = '2026-10-06T18:00:00.000Z';
 const CREATED = '2026-10-06T18:02:00.000Z';
 const CUSTOMER = 'test-customer-123';
 const GCLID = 'paid-click-kept';
+const DASH_GET = { method: 'GET', headers: { host: 'mounting-man-dashboard.vercel.app', 'sec-fetch-site': 'same-origin', referer: 'https://mounting-man-dashboard.vercel.app/' } };
 
 function createFakeKv() {
   const values = new Map();
@@ -108,7 +109,7 @@ test('an unpaid session matches a job and does not attach a click id', async (t)
   assert.equal(bridge.acquisition.paidEvidence, false);
   const report = createSourceReportHandler({ attributionStore: store });
   const reportRes = createResponse();
-  await report({ method: 'GET' }, reportRes);
+  await report(DASH_GET, reportRes);
   const month = reportRes.body.months[0];
   assert.equal(month.jobs, 1);
   assert.equal(month.revenue, 499.5);
@@ -313,7 +314,7 @@ test('a completion without a creation time keeps the original month and counts o
   await kv.sadd('attrib:src-months', '2026-10');
 
   const res = createResponse();
-  await createSourceReportHandler({ attributionStore: store })({ method: 'GET' }, res);
+  await createSourceReportHandler({ attributionStore: store })(DASH_GET, res);
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.months.length, 1);

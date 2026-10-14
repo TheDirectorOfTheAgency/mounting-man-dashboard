@@ -28,7 +28,8 @@ import {
 } from '../../../lib/zenbooker-square-invoice.mjs';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
-import { deliverQAlert } from '../../../lib/q-alert.js';
+import { alertBodyForError, deliverQAlert } from '../../../lib/q-alert.js';
+import { timingSafeEqualString } from '../../../lib/mcp-http.mjs';
 import {
   applyAssignment,
   assignmentChanged,
@@ -1434,7 +1435,9 @@ export function createZenbookerToSquareHandler({
     console.error('ZENBOOKER_WEBHOOK_SECRET not set');
     return res.status(500).json({ error: 'Webhook secret not configured' });
   }
-  if (secret !== process.env.ZENBOOKER_WEBHOOK_SECRET) {
+  // ZenBooker sends the secret as ?secret= (cannot send headers); keep that
+  // transport, but compare in constant time.
+  if (!timingSafeEqualString(String(secret || ''), String(process.env.ZENBOOKER_WEBHOOK_SECRET))) {
     console.warn('Webhook auth failed');
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -1870,7 +1873,7 @@ export function createZenbookerToSquareHandler({
       await alert({
         kind: 'webhook_unhandled_error',
         subject: 'ZenBooker webhook error',
-        body: err.message || 'Unhandled ZenBooker webhook error',
+        body: alertBodyForError(err, 'Unhandled ZenBooker webhook error'),
       });
     } catch (alertError) {
       console.error('[q-alert] webhook error alert failed', alertError.message);
