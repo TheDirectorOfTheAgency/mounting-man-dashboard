@@ -1,5 +1,5 @@
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
-import { sanitizeTouch } from '../../../lib/source-classifier.js';
+import { isEmptyTouch, sanitizeTouch } from '../../../lib/source-classifier.js';
 import { bridgeWindowMs } from '../../../lib/attribution-bridge.js';
 import { rematchVisit } from '../../../lib/job-source.js';
 
@@ -77,8 +77,11 @@ export function createVisitHandler({
       return res.status(400).json({ captured: false });
     }
 
-    const first = sanitizeTouch(body.first);
-    const last = sanitizeTouch(body.last || body.first);
+    // An empty touch (e.g. thank-you with no stored state) must not overwrite.
+    const firstTouch = sanitizeTouch(body.first);
+    const lastTouch = sanitizeTouch(body.last || body.first);
+    const first = isEmptyTouch(firstTouch) ? null : firstTouch;
+    const last = isEmptyTouch(lastTouch) ? null : lastTouch;
 
     try {
       let store = attributionStore;

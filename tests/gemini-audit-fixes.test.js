@@ -205,3 +205,30 @@ test('#10 concurrent session touches keep the first touch', async () => {
   assert.ok(touch.last);
   assert.equal(kv.values.has([...kv.values.keys()].find((k) => k.startsWith('attrib:lock:'))), false);
 });
+
+// Follow-ups
+test('empty touches never overwrite the stored last touch', async () => {
+  const { createVisitHandler } = await import('../pages/api/attribution/visit.js');
+  const store = createAttributionStore(fakeKv());
+  const real = { referrerHost: 'chatgpt.com', landingPath: '/samsung-frame/', at: '2026-10-06T18:00:00.000Z' };
+  await store.saveSessionTouch({ bookingSession: 'sess-empty', first: real, last: real });
+  const handler = createVisitHandler({ attributionStore: store, origins: new Set(['https://www.themountingman.com']), logger: { error() {} } });
+  for (const body of [{ booking_session: 'sess-empty', first: null, last: null }, { booking_session: 'sess-empty', first: {}, last: { at: '2026-10-07T00:00:00Z' } }]) {
+    const res = createResponse();
+    await handler({ method: 'POST', headers: { origin: 'https://www.themountingman.com' }, body }, res);
+    assert.equal(res.statusCode, 200);
+  }
+  await store.saveSessionTouch({ bookingSession: 'sess-empty', first: { landingPath: '' }, last: { utmSource: '' } });
+  const touch = await store.getSessionTouch({ bookingSession: 'sess-empty' });
+  assert.equal(touch.last.referrerHost, 'chatgpt.com');
+  assert.equal(touch.first.referrerHost, 'chatgpt.com');
+});
+
+test('short all-digit gclids are rejected; real click ids kept', async () => {
+  const { sanitizeTouch } = await import('../lib/source-classifier.js');
+  assert.equal(sanitizeTouch({ gclid: '6125550100' }).gclid, '');
+  assert.equal(sanitizeTouch({ gbraid: '16125550100' }).gbraid, '');
+  const realId = 'Cj0KCQjw' + '1234567890'.repeat(3) + 'AbC_d-E';
+  assert.equal(sanitizeTouch({ gclid: realId }).gclid, realId);
+  assert.equal(sanitizeTouch({ gclid: 'ok-click' }).gclid, 'ok-click');
+});
