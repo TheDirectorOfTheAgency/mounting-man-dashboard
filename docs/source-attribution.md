@@ -79,6 +79,10 @@ and last touch for each month. Unknown is its own bucket. Repeat bookings,
 matched to an earlier job by customer id or a hash of email or phone, are
 counted on the month and on each bucket. The dashboard panel "JOBS BY SOURCE"
 reads this endpoint. The response has no job id and no contact data.
+It answers only same-origin browser fetches from the dashboard (Sec-Fetch-Site:
+same-origin) or `Authorization: Bearer <MCP_SQUARE_PAYROLL_SECRET|CRON_SECRET>`;
+anything else gets 401. The dashboard page itself has no login, so this blocks
+cross-site reads and casual scraping, not a determined client.
 
 Job rows stay for 400 days. The visitor cookie and the session record expire
 after 90 days.

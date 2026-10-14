@@ -173,7 +173,34 @@ test('sanitized touches drop contact fields and self referrals', () => {
   assert.equal(rendered.includes('6125550100'), false);
   assert.equal(rendered.includes('Marshall'), false);
   assert.equal(touch.referrerHost, '');
-  assert.equal(touch.landingPath, '');
+  assert.equal(touch.landingPath, '/book');
   assert.equal(touch.gclid, 'ok-click');
   assert.equal(classifyTouch(touch).bucket, 'google_ads');
+});
+
+test('sanitizeTouch uses the shared PII filter: decodes, strips query, rejects phone/email tokens', () => {
+  const touch = sanitizeTouch({
+    landingPath: '/thank-you/person%40example.com?x=1',
+    referrerPath: '/maps/6125550100',
+    utmSource: 'person@example.com',
+    utmMedium: 'cpc',
+    utmCampaign: '612-555-0100',
+    referrerHost: 'person%40example.com',
+    gclid: 'abc%40def',
+  });
+  const rendered = JSON.stringify(touch);
+  assert.equal(rendered.includes('example'), false);
+  assert.equal(rendered.includes('5550100'), false);
+  assert.equal(touch.landingPath, '/thank-you/:x');
+  assert.equal(touch.utmSource, '');
+  assert.equal(touch.utmCampaign, '');
+  assert.equal(touch.referrerHost, '');
+  assert.equal(touch.gclid, '');
+  assert.equal(sanitizeTouch({ landingPath: '/book?phone=6125550100' }).landingPath, '/book');
+});
+
+test('shared filter keeps ordinary source tokens and maps referrers classifiable', () => {
+  assert.equal(classifyTouch({ utmSource: 'google', utmMedium: 'organic', utmCampaign: 'gbp' }).bucket, 'google_business_profile');
+  assert.equal(classifyTouch({ referrerHost: 'www.google.com', referrerPath: '/maps/place' }).bucket, 'google_business_profile');
+  assert.equal(classifyTouch({ referrerHost: 'chatgpt.com' }).bucket, 'ai_assistant');
 });

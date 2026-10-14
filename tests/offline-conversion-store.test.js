@@ -257,7 +257,7 @@ test('unverified duplicates cannot overwrite trusted payment evidence in either 
   }
 });
 
-test('payment-to-job binding is atomic, permanent, idempotent, and contains no raw IDs', async () => {
+test('payment-to-job binding is atomic, 400-day retained, idempotent, and contains no raw IDs', async () => {
   const kv = createFakeKv();
   const store = createAttributionStore(kv);
 
@@ -274,7 +274,7 @@ test('payment-to-job binding is atomic, permanent, idempotent, and contains no r
   assert.equal(serialized.includes('job-sensitive-1'), false);
   assert.equal(serialized.includes('job-sensitive-2'), false);
   const bindingWrite = kv.writes.find((write) => write.key.startsWith('attrib:payment-binding:'));
-  assert.deepEqual(bindingWrite.options, { nx: true });
+  assert.deepEqual(bindingWrite.options, { nx: true, ex: 400 * 24 * 60 * 60 });
 });
 
 test('the one-shot claim is atomic and may be released only by its owner', async () => {
@@ -311,7 +311,7 @@ test('success records deduplicate by opaque job reference', async () => {
   const serialized = JSON.stringify(kv.writes);
   assert.equal(serialized.includes('job-sensitive'), false);
   const successWrite = kv.writes.find((write) => write.key.startsWith('conv:success:'));
-  assert.deepEqual(successWrite.options, {});
+  assert.deepEqual(successWrite.options, { ex: 400 * 24 * 60 * 60 });
 });
 
 
