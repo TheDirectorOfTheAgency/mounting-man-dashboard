@@ -506,3 +506,20 @@ test('debug_enabled stays off unless a single order id is named', async () => {
   assert.equal(calls[0].debugEnabled, false);
   assert.equal(calls[1].debugEnabled, true);
 });
+
+test('a paid job with only a click ID (no email or phone) is uploaded', () => {
+  const { prepared, rejected } = prepareDailyOrders({
+    payments: [
+      payment({ gclid: 'click-only' }),
+      payment({ id: 'p-none', order_id: 'order-none', customer_id: 'customer-none' }),
+    ],
+    customersById: {
+      'customer-1': { address: { country: 'US' } },
+      'customer-none': { address: { country: 'US' } },
+    },
+  });
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].upload.gclid, 'click-only');
+  assert.deepEqual(prepared[0].summary.identifierTypes, ['gclid']);
+  assert.equal(rejected.find((row) => row.orderId === 'order-none').reason, 'missing_identifier');
+});

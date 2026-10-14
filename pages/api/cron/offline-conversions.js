@@ -29,6 +29,7 @@ import {
   squareCredentials,
 } from '../../../lib/daily-offline-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 async function notifyFailure(alert, failure) {
   if (!failure) return;
@@ -41,7 +42,7 @@ async function notifyFailure(alert, failure) {
 
 function authorized(req) {
   const cronSecret = process.env.CRON_SECRET || '';
-  return Boolean(cronSecret) && req.headers.authorization === `Bearer ${cronSecret}`;
+  return hasBearer(req, cronSecret);
 }
 
 function validateOnlyRequested(req) {

@@ -140,3 +140,20 @@ test('Google partial failure is retryable when the returned status is transient'
   assert.equal(result.retryable, true);
   assert.equal(result.errorCode, 'GOOGLE_PARTIAL_FAILURE');
 });
+
+test('click-ID-only conversion omits userIdentifiers; no identifiers at all still throws', async (t) => {
+  installEnv(t);
+  let request;
+  const deps = {
+    getAccessToken: async () => 'access-token',
+    getDeveloperToken: () => 'developer-token',
+    httpClient: { async post(url, payload) { request = { url, payload }; return { data: {}, headers: {} }; } },
+  };
+  await uploadOfflineConversion({ ...conversionInput(), email: null, phone: null, gclid: 'click-only' }, deps);
+  assert.equal(request.payload.conversions[0].gclid, 'click-only');
+  assert.equal(request.payload.conversions[0].userIdentifiers, undefined);
+  await assert.rejects(
+    uploadOfflineConversion({ ...conversionInput(), email: null, phone: null }, deps),
+    /No user identifiers/,
+  );
+});
