@@ -68,6 +68,14 @@ import {
   textNextCustomerEta,
   textNextCustomerEtaTool,
 } from '../../../lib/car-tools-eta-text.mjs';
+import {
+  APPROVE_REVIEW_REQUEST,
+  LIST_STAGED_REVIEW_REQUESTS,
+  SKIP_REVIEW_REQUEST,
+  approveReviewRequestTool,
+  listStagedReviewRequests,
+  skipReviewRequestTool,
+} from '../../../lib/review-loop-tools.mjs';
 
 const SERVER_INFO = {
   name: 'mounting-man-zenbooker',
@@ -295,6 +303,47 @@ const TOOLS = [
     },
   },
   textNextCustomerEtaTool,
+  {
+    name: LIST_STAGED_REVIEW_REQUESTS,
+    description:
+      'List staged review-request emails after Square payments. Read-only unless approving. Each item is a neutral Google review ask (email only, never SMS) waiting for Marshall\'s approval. Use approve_review_request or skip_review_request to act on one payment id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        status: {
+          type: 'string',
+          description: 'Filter by status: staged, approved, sent, or skipped. Defaults to staged.',
+        },
+        include_email: {
+          type: 'boolean',
+          description: 'When true, include customer email in the response. Defaults to false.',
+        },
+      },
+    },
+  },
+  {
+    name: APPROVE_REVIEW_REQUEST,
+    description:
+      'Approve one staged review-request email by Square payment id. Sends email only when REVIEW_REQUEST_SEND_ENABLED is true in Vercel; otherwise marks approved for manual send. Never sends SMS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payment_id: { type: 'string', description: 'Square payment id from list_staged_review_requests.' },
+      },
+      required: ['payment_id'],
+    },
+  },
+  {
+    name: SKIP_REVIEW_REQUEST,
+    description: 'Skip a staged review-request email by Square payment id without sending.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payment_id: { type: 'string', description: 'Square payment id.' },
+      },
+      required: ['payment_id'],
+    },
+  },
 ];
 
 const TOOL_RUNNERS = {
@@ -314,6 +363,9 @@ const TOOL_RUNNERS = {
   [GET_JOB_PAYMENT_STATUS]: getJobPaymentStatus,
   [GET_SUPPLIES_FOR_DAY]: getSuppliesForDay,
   [TEXT_NEXT_CUSTOMER_ETA]: textNextCustomerEta,
+  [LIST_STAGED_REVIEW_REQUESTS]: listStagedReviewRequests,
+  [APPROVE_REVIEW_REQUEST]: approveReviewRequestTool,
+  [SKIP_REVIEW_REQUEST]: skipReviewRequestTool,
 };
 
 const VALIDATION_CODES = new Set([

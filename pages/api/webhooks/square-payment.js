@@ -1,5 +1,5 @@
 // pages/api/webhooks/square-payment.js
-// Receives Square payment webhooks → sends review SMS via Twilio
+// Receives Square payment webhooks → stages review-request emails (never auto-send, no SMS)
 //
 // Flow:
 //   1. Square POSTs payment webhook here (public Vercel URL)
@@ -8,7 +8,7 @@
 //   4. After 24h install-post dedup, stage the phone-first Upstash queue and
 //      send the operator photo ask (upload link). Woodward is woken only for
 //      confidence holds or an undeliverable photo ask
-//   5. If customer has phone → send review SMS via Twilio
+//   5. Stage a review-request email record (KV) when email + GOOGLE_REVIEW_URL are set
 //   6. Log routine outcomes. Urgent failures alert Q.
 //
 // Webhook URL:
@@ -32,6 +32,8 @@ import { customerWithMergedInstallAddress } from '../../../lib/install-post-seed
 import { deliverQAlert } from '../../../lib/q-alert.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
+import { loadReviewLoopStore } from '../../../lib/review-loop-store.mjs';
+import { stageReviewRequestForPayment } from '../../../lib/review-request.mjs';
 
 export { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 
@@ -42,15 +44,7 @@ const SQUARE_BASE    = 'https://connect.squareup.com/v2';
 const SQUARE_VER     = '2024-01-18';
 const SQUARE_TOKEN   = process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
 
-// Twilio — stored in Vercel env vars (set during deploy)
-const TWILIO_SID     = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_TOKEN   = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_FROM    = process.env.TWILIO_FROM_NUMBER || '+19526496388';
-
-// Google Review link
-const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
-
-// Upstash Redis — for follow-up claim only
+// Upstash Redis — for follow-up claim and review-request staging
 const KV_URL   = process.env.KV_REST_API_URL;
 const KV_TOKEN = process.env.KV_REST_API_TOKEN;
 
@@ -223,7 +217,7 @@ export function createSquarePaymentHandler({
   operationsNotifier = logOperations,
   alert = deliverQAlert,
   installPostNotifier = notifyQInstallPost,
-  reviewSmsSender = sendReviewSms,
+  reviewRequestStager = defaultReviewRequestStager,
   attributionCoordinator,
   attributionMode,
   attributionStoreLoader = getDefaultAttributionStore,
@@ -466,70 +460,46 @@ export function createSquarePaymentHandler({
       });
     }
 
-    // ---- No phone? Log and bail on SMS only ----
-    if (!hasPhone) {
-      await operationsNotifier(`⚠️ **No phone number** for customer ${firstName} ${lastName} (ID: ${customerId}) — skipped review SMS. Email: ${email || 'N/A'} | Job total: $${amount}`);
-      logger.info('square_payment_processed', {
-        attributionStatus,
-        reviewSmsStatus: 'skipped_no_phone',
-      });
-      return res.status(attributionRetryable ? 503 : 200).json({
-        status: 'no_phone',
-        paymentId,
-        invoiceId,
-        customerId,
+    let reviewRequestStatus = 'not_attempted';
+    try {
+      const stageResult = await reviewRequestStager({
+        paymentId: isInvoiceEvent ? '' : paymentId,
+        squareCustomerId: customerId,
         firstName,
         lastName,
-        attributionStatus,
-        retryable: attributionRetryable,
-        errorCode: attributionErrorCode,
-      });
-    }
-
-    if (isInvoiceEvent) {
-      const elapsed = Date.now() - startTime;
-      console.log(`[square-webhook] Invoice path done in ${elapsed}ms`);
-      return res.status(200).json({
-        status: 'invoice_processed',
-        invoiceId,
-        customerId,
-        firstName,
-        lastName,
+        email,
+        phone,
         amount,
-        attributionStatus,
-        elapsed,
+        customer,
+        isInvoiceEvent,
+      });
+      reviewRequestStatus = stageResult?.status || 'unknown';
+    } catch (stageError) {
+      reviewRequestStatus = 'error';
+      logger.warn('square_review_request_stage_failed', {
+        errorType: stageError?.name || 'Error',
       });
     }
-
-    // ---- Send review SMS directly ----
-    // Natural webhook processing latency (~2-5s) provides enough delay.
-    // Original n8n workflow had a 60s wait, but that was just to avoid
-    // texting while the tech is still at the door. The API call chain
-    // (Square webhook → Vercel → Square customer fetch → Twilio) adds
-    // enough time that the customer has already left.
-    const smsSent = await reviewSmsSender({ paymentId, firstName, phone, amount });
-
-    if (smsSent) {
-      await operationsNotifier(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
-    }
-
-    logger.info('square_payment_processed', {
-      attributionStatus,
-      reviewSmsStatus: smsSent ? 'sent' : 'failed',
-    });
 
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
 
+    logger.info('square_payment_processed', {
+      attributionStatus,
+      reviewRequestStatus,
+    });
+
+    const responseStatus = isInvoiceEvent ? 'invoice_processed' : 'payment_processed';
     return res.status(attributionRetryable ? 503 : 200).json({
-      status: smsSent ? 'sms_sent' : 'sms_failed',
-      paymentId,
+      status: responseStatus,
+      paymentId: isInvoiceEvent ? undefined : paymentId,
+      invoiceId: isInvoiceEvent ? invoiceId : undefined,
       customerId,
       firstName,
       lastName,
-      phone,
       amount,
       attributionStatus,
+      reviewRequestStatus,
       retryable: attributionRetryable,
       errorCode: attributionErrorCode,
       elapsed,
@@ -551,49 +521,15 @@ export function createSquarePaymentHandler({
   };
 }
 
-export default createSquarePaymentHandler();
-
-// ============================================================================
-// SMS SENDER
-// ============================================================================
-
-async function sendReviewSms(job) {
-  const { firstName, phone, amount, paymentId } = job;
-
-  if (!TWILIO_SID || !TWILIO_TOKEN) {
-    console.error('[twilio-skip] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN');
-    console.error(`[twilio-skip] Review SMS not sent for payment ${paymentId}`);
-    return false;
+async function defaultReviewRequestStager(input) {
+  if (input.isInvoiceEvent || !input.paymentId) {
+    return { status: 'not_applicable' };
   }
-
-  const message = `Hey ${firstName}! Marshall here from The Mounting Man. Hope you're loving the new setup! 🎬 If you have 30 seconds, a quick Google review would mean the world → ${REVIEW_LINK}`;
-
-  try {
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`;
-    const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
-
-    await axios.post(
-      twilioUrl,
-      new URLSearchParams({
-        From: TWILIO_FROM,
-        To: phone,
-        Body: message,
-      }).toString(),
-      {
-        headers: {
-          Authorization: `Basic ${auth}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
-    );
-
-    console.log(`[twilio] SMS sent to ${phone} for payment ${paymentId}`);
-    return true;
-  } catch (err) {
-    console.error('[twilio-error]', err.response?.data || err.message);
-    return false;
-  }
+  const store = await loadReviewLoopStore();
+  return stageReviewRequestForPayment(input, { store, logger: console });
 }
+
+export default createSquarePaymentHandler();
 
 // Disable Next.js body parser — required to read raw bytes for Square HMAC signature verification
 export const config = {
