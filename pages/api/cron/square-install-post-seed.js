@@ -49,6 +49,13 @@ export class NoSquareLocationsError extends Error {
   }
 }
 
+export class SquarePaymentsUnavailableError extends Error {
+  constructor() {
+    super('Square payments unavailable');
+    this.name = 'SquarePaymentsUnavailableError';
+  }
+}
+
 /** Every location (active or not), every page, every tender type. */
 export async function fetchRecentCompletedPayments({
   get = axios.get,
@@ -59,7 +66,10 @@ export async function fetchRecentCompletedPayments({
   const ids = locationIds || (await fetchLocationIds({ get, configuredId }));
   if (!ids.length) throw new NoSquareLocationsError();
   const out = [];
+  let locationsAttempted = 0;
+  let locationsSucceeded = 0;
   for (const locationId of ids) {
+    locationsAttempted += 1;
     try {
       let cursor = '';
       for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -73,6 +83,7 @@ export async function fetchRecentCompletedPayments({
       if (cursor) {
         console.warn('SQUARE_PAYMENTS_PAGE_CAP_HIT', { locationId, maxPages: MAX_PAGES, pageLimit: PAGE_LIMIT });
       }
+      locationsSucceeded += 1;
     } catch (error) {
       console.error('SQUARE_LOCATION_PAYMENTS_FAILED', {
         locationId,
@@ -81,16 +92,23 @@ export async function fetchRecentCompletedPayments({
       });
     }
   }
+  if (locationsAttempted > 0 && locationsSucceeded === 0) {
+    throw new SquarePaymentsUnavailableError();
+  }
   return out.filter((payment) => payment?.status === 'COMPLETED');
 }
 
-/** Handler-level helper: never throws for "no locations"; returns an explicit error instead. */
+/** Handler-level helper: never throws for "no locations" / total payments failure; returns an explicit error instead. */
 export async function collectCronPayments(opts = {}) {
   try {
     return { ok: true, payments: await fetchRecentCompletedPayments(opts) };
   } catch (error) {
     if (error instanceof NoSquareLocationsError) {
       console.error('SQUARE_NO_LOCATIONS_AVAILABLE', {});
+      return { ok: false, status: 503, error: error.message };
+    }
+    if (error instanceof SquarePaymentsUnavailableError) {
+      console.error('SQUARE_PAYMENTS_TOTAL_FAILURE', {});
       return { ok: false, status: 503, error: error.message };
     }
     throw error;
