@@ -2,6 +2,7 @@
 // Proactively warms the Square revenue Redis cache every hour.
 import axios from 'axios';
 import { bucketRecentSquarePayments } from '../../../lib/square-revenue-buckets.mjs';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 // Status and a short code only. Axios errors carry the request config,
 // including the Square bearer token, and must not be logged or returned.
@@ -58,7 +59,7 @@ async function fetchPayments(token, locationId, beginTime) {
 }
 
 export default async function handler(req, res) {
-  if (req.headers['authorization'] !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearer(req)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 

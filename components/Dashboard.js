@@ -116,6 +116,7 @@ export default function Dashboard({ initialData = {} }) {
   const [telemetryData, setTelemetryData] = useState(initialData?.telemetry || null);
   const [threadLines, setThreadLines] = useState([]);
   const [sourceReport, setSourceReport] = useState(null);
+  const [campaignJobs, setCampaignJobs] = useState(null);
   const [loading, setLoading] = useState(!initialData?.square);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(new Date());
@@ -139,12 +140,13 @@ export default function Dashboard({ initialData = {} }) {
   const fetchAllData = async () => {
     try {
       setLoading(true);
-      const [squareRes, webflowRes, adsRes, telRes, sourceRes] = await Promise.all([
+      const [squareRes, webflowRes, adsRes, telRes, sourceRes, campaignRes] = await Promise.all([
         fetch('/api/square-revenue'),
         fetch('/api/webflow-posts'),
         fetch('/api/google-ads'),
         fetch('/api/telemetry'),
         fetch('/api/attribution/sources'),
+        fetch('/api/ads/campaign-jobs'),
       ]);
 
       const squareJson = squareRes.ok ? await squareRes.json() : null;
@@ -152,6 +154,7 @@ export default function Dashboard({ initialData = {} }) {
       const adsJson = adsRes.ok ? await adsRes.json() : null;
       const telJson = telRes.ok ? await telRes.json() : null;
       const sourceJson = sourceRes.ok ? await sourceRes.json() : null;
+      const campaignJson = campaignRes.ok ? await campaignRes.json() : null;
 
       if (squareJson && !squareJson.error) {
         setSquareData(squareJson);
@@ -164,6 +167,7 @@ export default function Dashboard({ initialData = {} }) {
       if (adsJson && !adsJson.error) setAdsData(adsJson);
       if (telJson && !telJson.error) setTelemetryData(telJson);
       if (sourceJson && !sourceJson.error) setSourceReport(sourceJson);
+      if (campaignJson && !campaignJson.error) setCampaignJobs(campaignJson);
       setLastUpdated(new Date());
       setError(null);
     } catch (err) {
@@ -668,6 +672,57 @@ export default function Dashboard({ initialData = {} }) {
           ) : (
             <div className="text-[10px] text-hud-text-dim tracking-wider text-center py-4">
               NO MATCHED JOBS YET
+            </div>
+          )}
+        </div>
+
+        {/* ═══ JOBS BY CAMPAIGN ═══ */}
+        <div className="hud-panel p-4 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 mb-3">
+            <div className="hud-panel-header">JOBS BY CAMPAIGN</div>
+            {campaignJobs?.window && (
+              <div className="text-[9px] text-hud-text tracking-widest">
+                {campaignJobs.window.from} → {campaignJobs.window.to}
+                {' // SPEND $'}{Number(campaignJobs.totals?.spend || 0).toLocaleString()}
+                {' // BOOKED '}{campaignJobs.totals?.bookedJobs || 0}
+                {' // PAID '}{campaignJobs.totals?.paidJobs || 0}
+                {' // $'}{Number(campaignJobs.totals?.paidRevenue || 0).toLocaleString()}
+              </div>
+            )}
+          </div>
+          {campaignJobs?.rows?.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[10px]">
+                <thead>
+                  <tr className="text-hud-text-dim tracking-widest text-left">
+                    <th className="py-1 pr-3 font-normal">CAMPAIGN</th>
+                    <th className="py-1 pr-3 font-normal text-right">SPEND</th>
+                    <th className="py-1 pr-3 font-normal text-right">BOOKED</th>
+                    <th className="py-1 pr-3 font-normal text-right">PAID</th>
+                    <th className="py-1 pr-3 font-normal text-right">PAID $ (SQUARE NET)</th>
+                    <th className="py-1 font-normal text-right">$/PAID JOB</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {campaignJobs.rows.map((row) => (
+                    <tr key={row.campaignId} className="border-b border-hud-border/30">
+                      <td className="py-1.5 pr-3 text-hud-text tracking-wider uppercase truncate max-w-[220px]">{row.name}</td>
+                      <td className="py-1.5 pr-3 font-mono text-hud-white text-right">${Number(row.spend).toLocaleString()}</td>
+                      <td className="py-1.5 pr-3 font-mono text-hud-white text-right">{row.bookedJobs}</td>
+                      <td className="py-1.5 pr-3 font-mono text-hud-white text-right">{row.paidJobs}</td>
+                      <td className="py-1.5 pr-3 font-mono text-hud-white text-right">${Number(row.paidRevenue).toLocaleString()}</td>
+                      <td className="py-1.5 font-mono text-hud-white text-right">{row.costPerPaidJob == null ? '—' : `$${Number(row.costPerPaidJob).toLocaleString()}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="text-[9px] text-hud-text-dim tracking-wider mt-2">
+                Booked = Booked Appointment. Paid = Offline Job Completed (Square net, secondary). Paid jobs are dated by ad click; tracking before {campaignJobs.reliableSince} is weak.
+              </div>
+            </div>
+          ) : (
+            <div className="text-[10px] text-hud-text-dim tracking-wider text-center py-4">
+              NO CAMPAIGN DATA YET
             </div>
           )}
         </div>

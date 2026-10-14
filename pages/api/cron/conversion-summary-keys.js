@@ -6,11 +6,12 @@ import {
   loadAndLogRecent,
   publicProbeResponse,
 } from '../../../lib/conversion-summary-keys.js';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 function authorized(req) {
   const cronSecret = process.env.CRON_SECRET || '';
   const authHeader = req.headers?.authorization || '';
-  const authorizedByBearer = Boolean(cronSecret) && authHeader === `Bearer ${cronSecret}`;
+  const authorizedByBearer = hasBearer(req, cronSecret);
   const authorizedByVercelCron = Boolean(req.headers?.['x-vercel-cron']);
   return authorizedByBearer || authorizedByVercelCron;
 }

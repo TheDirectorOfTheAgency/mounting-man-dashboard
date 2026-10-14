@@ -16,12 +16,13 @@ import {
   refreshUnassignedInstallers,
 } from '../../../lib/installer-refresh.js';
 import { resolveTechAssignment } from '../webhooks/zenbooker-to-square.js';
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 export const config = { maxDuration: 60 };
 
 function authorized(req, env = process.env) {
   const cronSecret = env.CRON_SECRET || '';
-  return Boolean(cronSecret) && req.headers?.authorization === `Bearer ${cronSecret}`;
+  return hasBearer(req, cronSecret);
 }
 
 function publicRow(row) {

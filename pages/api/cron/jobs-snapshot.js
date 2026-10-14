@@ -4,6 +4,7 @@
 //
 // Schedule: Sunday 2 AM CT (0 8 * * 0 UTC)
 // Trigger manually: POST /api/cron/jobs-snapshot (with Authorization: Bearer <CRON_SECRET>)
+import { hasBearer } from '../../../lib/safe-compare.js';
 
 const DEFAULT_BASE_URL = 'https://api.zenbooker.com/v1/';
 const DEFAULT_TERRITORY_ID = '1680240992681x629678957578561900';
@@ -103,7 +104,7 @@ export default async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
-  if (req.headers['authorization'] !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!hasBearer(req)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 

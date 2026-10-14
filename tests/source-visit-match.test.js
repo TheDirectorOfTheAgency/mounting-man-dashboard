@@ -352,3 +352,26 @@ test('replaying the earliest job after a later one does not mark it as a repeat'
   assert.equal(earlier.repeat, false);
   assert.equal(replayedLater.repeat, true);
 });
+test('a manual booking with a Lead source answer is classified by it (fix #4)', async () => {
+  const store = createAttributionStore(createFakeKv());
+  const saved = await recordJobSource({
+    store,
+    jobId: 'job-manual',
+    createdAt: CREATED,
+    zenCustomerId: 'manual-customer',
+    payload: { data: { id: 'job-manual', custom_fields: [{ label: 'Lead source', value: 'Yelp' }] } },
+  });
+  assert.equal(saved.lastBucket, 'yelp');
+  assert.equal(saved.sourceEntry, 'manual');
+  const report = buildSourceReport([saved]);
+  assert.equal(report.months[0].manualSourceJobs, 1);
+  assert.equal(report.months[0].unknownJobs, 0);
+});
+
+test('manual answers map to buckets and keep only a short detail', async () => {
+  const { manualSourceBucket } = await import('../lib/job-source.js');
+  assert.equal(manualSourceBucket('Google Ads').bucket, 'google_ads');
+  assert.equal(manualSourceBucket('Found on Google Maps').bucket, 'google_business_profile');
+  assert.equal(manualSourceBucket('Neighbor referral').bucket, 'other_referral');
+  assert.equal(manualSourceBucket(''), null);
+});
