@@ -213,6 +213,7 @@ test('ZenBooker job webhook triggers the deferred enhancement for a linked, park
     saveAttributionMapping: async () => ({ saved: true }),
     loadDeferredStore: async () => ctx.idStore,
     uploadEnhancement: ctx.upload,
+    now: () => NOW,
   });
   await handler({ method: 'POST', query: { secret: 's' }, headers: {}, body: { type: 'job.created', data: zbJob({ job_number: '1' }) } }, createResponse());
   assert.equal(ctx.uploads.length, 1);
@@ -337,6 +338,7 @@ test('webhook with a data.job envelope enhances instead of dropping as customer 
     loadZenbookerJob: async () => null, alert: async () => {},
     attributionStore: ctx.attributionStore, saveAttributionMapping: async () => ({ saved: true }),
     loadDeferredStore: async () => ctx.idStore, uploadEnhancement: ctx.upload,
+    now: () => NOW,
   });
   await handler({ method: 'POST', query: { secret: 's' }, headers: {}, body: { type: 'job.created', data: { job: zbJob({ job_number: '1' }) } } }, createResponse());
   assert.equal(ctx.uploads.length, 1);
