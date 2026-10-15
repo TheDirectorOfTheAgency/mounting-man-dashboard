@@ -57,11 +57,24 @@ test('Google Maps short links classify as GBP', () => {
   assert.equal(classifyChannel({ referrerHost: 'g.page' }), 'gbp');
 });
 
+// The client stamps firstSeenAt from the clock. With the real clock the ISO string can contain a
+// phone fragment (e.g. ".612Z") and trip the leak check, so the client runs against a fixed instant.
+const FIXED_NOW = Date.parse('2026-10-13T15:00:00.000Z');
+const FIXED_ISO = new Date(FIXED_NOW).toISOString();
+class FixedDate extends Date {
+  constructor(...args) { if (args.length === 0) super(FIXED_NOW); else super(...args); }
+  static now() { return FIXED_NOW; }
+}
+
+test('fixed clock timestamp contains no leak-check secret fragment', () => {
+  for (const s of V.secrets) assert.equal(FIXED_ISO.toLowerCase().includes(s), false, s);
+});
+
 function runClient(url, { referrer = '', storage = {}, fetchImpl } = {}) {
   const u = new URL(url); const store = { ...storage }; const calls = [];
   vm.runInNewContext(clientSource, {
     window: { location: { pathname: u.pathname, search: u.search, hostname: u.hostname }, dataLayer: [] },
-    document: { referrer }, URLSearchParams, URL, Promise, setTimeout, clearTimeout, JSON, AbortController,
+    document: { referrer }, Date: FixedDate, URLSearchParams, URL, Promise, setTimeout, clearTimeout, JSON, AbortController,
     localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
     fetch: (r, o) => { calls.push({ url: r, body: o.body }); return (fetchImpl || (() => Promise.resolve({ ok: true, status: 200, json: async () => ({}) })))(r, o); },
   });
@@ -85,7 +98,7 @@ test('client: shared vectors never reach localStorage via path, referrer or UTMs
 });
 
 test('client: stale or legacy stored records are re-sanitized before POST', async () => {
-  const dirty = JSON.stringify({ paidMarker: null, landingPath: '/x/jane.doe%40example.com/', referrerHost: 'jane@example.com', campaignClass: '612:555:0100', firstSeenAt: new Date().toISOString() });
+  const dirty = JSON.stringify({ paidMarker: null, landingPath: '/x/jane.doe%40example.com/', referrerHost: 'jane@example.com', campaignClass: '612:555:0100', firstSeenAt: FIXED_ISO });
   const { calls } = runClient('https://www.themountingman.com/thank-you?customer_id=c&booking_session=s', { storage: { tmm_paid_attribution_v1: dirty } });
   await new Promise((r) => setTimeout(r, 20));
   const post = calls.find((c) => c.url.endsWith('/booking'));

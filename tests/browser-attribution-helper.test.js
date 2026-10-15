@@ -60,7 +60,7 @@ function jsonResponse(status, body) {
   return Promise.resolve({ ok: status >= 200 && status < 300, status, json: async () => body });
 }
 
-test('thank-you pushes booking_confirmed once with hashed user_data', async () => {
+test('thank-you pushes booking_confirmed once with the hashed email only (phone hash is ignored)', async () => {
   const { dataLayer, fetchCalls: allCalls } = await runHelper({
     url: 'https://www.themountingman.com/thank-you?customer_id=cust-1&booking_session=sess-1',
     fetchImpl: () => jsonResponse(200, {
@@ -72,7 +72,7 @@ test('thank-you pushes booking_confirmed once with hashed user_data', async () =
     event: 'booking_confirmed',
     booking_session: 'sess-1',
     transaction_id: 'sess-1',
-    user_data: { sha256_email_address: HASH_A, sha256_phone_number: HASH_B },
+    user_data: { sha256_email_address: HASH_A },
   }]);
   const fetchCalls = allCalls.filter((call) => call.url.endsWith('/booking-identity'));
   assert.equal(fetchCalls.length, 1);
