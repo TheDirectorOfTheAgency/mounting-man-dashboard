@@ -619,3 +619,30 @@ test('forwardWoodwardSquareWake sends Authorization Bearer when the key is set',
   assert.equal(posts[0].headers.Authorization, 'Bearer woodward-sender-key');
   assert.equal(posts[0].headers['x-webhook-secret'], 'woodward-sender-key');
 });
+
+test('paused review SMS is recorded as paused (not failed), notifies nobody, and is not retried', async () => {
+  const deps = dependencies({ reviewSmsSender: async (value) => { deps.calls.sms.push(value); return 'paused'; } });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.status, 'sms_paused');
+  assert.equal(deps.calls.sms.length, 1);
+  assert.equal(deps.calls.operations.length, 0);
+  assert.deepEqual(
+    deps.calls.logs.find(([event]) => event === 'square_payment_processed'),
+    ['square_payment_processed', { attributionStatus: 'observed', reviewSmsStatus: 'paused' }],
+  );
+});
+
+test('a genuine review SMS send failure is still recorded as failed', async () => {
+  const deps = dependencies({ reviewSmsSender: async (value) => { deps.calls.sms.push(value); return false; } });
+  const res = createResponse();
+  await createSquarePaymentHandler(deps.values)(paymentRequest(), res);
+
+  assert.equal(res.body.status, 'sms_failed');
+  assert.deepEqual(
+    deps.calls.logs.find(([event]) => event === 'square_payment_processed'),
+    ['square_payment_processed', { attributionStatus: 'observed', reviewSmsStatus: 'failed' }],
+  );
+});
