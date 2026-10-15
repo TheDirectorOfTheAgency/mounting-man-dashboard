@@ -510,7 +510,8 @@ export function createSquarePaymentHandler({
     const smsSent = await reviewSmsSender({ paymentId, firstName, phone, amount });
 
     if (smsSent) {
-      await operationsNotifier(`📱 **Review SMS sent** to ${firstName} ${lastName} (${phone}) — $${amount} payment`);
+      // Twilio accepting the request is not carrier delivery (async failures, e.g. 30034, arrive later).
+      await operationsNotifier(`📱 **Review SMS submitted to Twilio** for ${firstName} ${lastName} (${phone}) — $${amount} payment. Carrier delivery not confirmed.`);
     }
 
     logger.info('square_payment_processed', {
@@ -557,8 +558,15 @@ export default createSquarePaymentHandler();
 // SMS SENDER
 // ============================================================================
 
-async function sendReviewSms(job) {
+// Review-request SMS is paused until the A2P 10DLC campaign is approved and a consent gate exists.
+// Opt in explicitly with REVIEW_SMS_ENABLED=true. Default: off.
+export async function sendReviewSms(job) {
   const { firstName, phone, amount, paymentId } = job;
+
+  if (process.env.REVIEW_SMS_ENABLED !== 'true') {
+    console.log(`[twilio-paused] Review SMS disabled (REVIEW_SMS_ENABLED not true) for payment ${paymentId}`);
+    return false;
+  }
 
   if (!TWILIO_SID || !TWILIO_TOKEN) {
     console.error('[twilio-skip] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN');
