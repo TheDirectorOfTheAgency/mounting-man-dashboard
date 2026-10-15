@@ -1408,6 +1408,7 @@ export function createZenbookerToSquareHandler({
     return kv ? createDeferredIdentityStore(kv) : null;
   },
   uploadEnhancement = createEnhancementUploader(),
+  now = () => Date.now(),
 } = {}) {
   async function persistRouteMapping(jobId, squareCustomerId) {
     try {
@@ -1463,6 +1464,7 @@ export function createZenbookerToSquareHandler({
           attributionStore: bridgeStore,
           idStore: await loadDeferredStore(),
           upload: uploadEnhancement,
+          now: now(),
         });
       }
     } catch {

@@ -48,6 +48,7 @@ const TWILIO_TOKEN   = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_FROM    = process.env.TWILIO_FROM_NUMBER || '+19526496388';
 
 // Google Review link
+export const REVIEW_SMS_PAUSED = 'paused';
 const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
 
 // Upstash Redis — for follow-up claim only
@@ -507,7 +508,9 @@ export function createSquarePaymentHandler({
     // texting while the tech is still at the door. The API call chain
     // (Square webhook → Vercel → Square customer fetch → Twilio) adds
     // enough time that the customer has already left.
-    const smsSent = await reviewSmsSender({ paymentId, firstName, phone, amount });
+    const smsOutcome = await reviewSmsSender({ paymentId, firstName, phone, amount });
+    const smsPaused = smsOutcome === REVIEW_SMS_PAUSED;
+    const smsSent = !smsPaused && Boolean(smsOutcome);
 
     if (smsSent) {
       // Twilio accepting the request is not carrier delivery (async failures, e.g. 30034, arrive later).
@@ -516,14 +519,14 @@ export function createSquarePaymentHandler({
 
     logger.info('square_payment_processed', {
       attributionStatus,
-      reviewSmsStatus: smsSent ? 'sent' : 'failed',
+      reviewSmsStatus: smsPaused ? 'paused' : smsSent ? 'sent' : 'failed',
     });
 
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
 
     return res.status(attributionRetryable ? 503 : 200).json({
-      status: smsSent ? 'sms_sent' : 'sms_failed',
+      status: smsPaused ? 'sms_paused' : smsSent ? 'sms_sent' : 'sms_failed',
       paymentId,
       customerId,
       firstName,
@@ -560,12 +563,14 @@ export default createSquarePaymentHandler();
 
 // Review-request SMS is paused until the A2P 10DLC campaign is approved and a consent gate exists.
 // Opt in explicitly with REVIEW_SMS_ENABLED=true. Default: off.
+// Returns true when Twilio accepted the request, REVIEW_SMS_PAUSED when the feature flag is off
+// (an intentional no-op, not a failure), and false for real send failures.
 export async function sendReviewSms(job) {
   const { firstName, phone, amount, paymentId } = job;
 
   if (process.env.REVIEW_SMS_ENABLED !== 'true') {
     console.log(`[twilio-paused] Review SMS disabled (REVIEW_SMS_ENABLED not true) for payment ${paymentId}`);
-    return false;
+    return REVIEW_SMS_PAUSED;
   }
 
   if (!TWILIO_SID || !TWILIO_TOKEN) {
