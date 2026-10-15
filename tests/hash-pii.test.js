@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { buildUserIdentifiers, hashEmail, hashPhone } from '../lib/hash-pii.js';
 
-test('conversion user identifiers contain only first-party hashed email and phone', () => {
+test('conversion user identifiers contain only first-party hashed email (never phone)', () => {
   const identifiers = buildUserIdentifiers({
     email: 'Validation.Only+test@gmail.com',
     phone: '+12025550123',
@@ -11,12 +11,11 @@ test('conversion user identifiers contain only first-party hashed email and phon
     lastName: 'For Conversion Uploads',
   });
 
-  assert.equal(identifiers.length, 2);
+  assert.equal(identifiers.length, 1);
   assert.deepEqual(
     identifiers.map((value) => Object.keys(value).sort()),
     [
       ['hashedEmail', 'userIdentifierSource'],
-      ['hashedPhoneNumber', 'userIdentifierSource'],
     ]
   );
   assert.equal(

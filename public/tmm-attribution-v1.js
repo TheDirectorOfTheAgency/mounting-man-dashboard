@@ -360,8 +360,9 @@
       var email = cleanHash(raw.sha256_email_address);
       var phone = cleanHash(raw.sha256_phone_number);
       if (email) userData.sha256_email_address = email;
-      if (phone) userData.sha256_phone_number = phone;
-      return email || phone ? userData : null;
+      // Policy (Oct 15, 2026): phone hashes are never used.
+      void phone;
+      return email ? userData : null;
     }).catch(function () { return null; });
 
     var timeout = new Promise(function (resolve) {

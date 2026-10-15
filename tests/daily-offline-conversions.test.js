@@ -134,7 +134,7 @@ test('daily preparation uploads the net Square amount with hashed identifier typ
   assert.equal(prepared[0].upload.consentStatus, 'GRANTED');
   assert.equal(prepared[0].upload.orderId, 'order-1');
   assert.equal(prepared[0].summary.conversionTime, '2026-10-04 18:29:57+00:00');
-  assert.deepEqual(prepared[0].summary.identifierTypes, ['hashed_email', 'hashed_phone']);
+  assert.deepEqual(prepared[0].summary.identifierTypes, ['hashed_email']);
   assert.equal(prepared[0].upload.gclid, null);
 });
 
@@ -145,7 +145,7 @@ test('gclid is included when the payment carries one', () => {
   });
   assert.equal(prepared[0].upload.gclid, 'click-1');
   assert.equal(prepared[0].upload.gbraid, null);
-  assert.deepEqual(prepared[0].summary.identifierTypes, ['hashed_email', 'hashed_phone', 'gclid']);
+  assert.deepEqual(prepared[0].summary.identifierTypes, ['hashed_email', 'gclid']);
 });
 
 test('daily upload is idempotent and records Google partial failures without a second upload', async () => {
@@ -334,7 +334,7 @@ test('attribution join attaches one customer click id and keeps hashed email and
   assert.equal(result.gclidCount, 1);
   assert.equal(result.gbraidCount, 0);
   assert.equal(result.piiOnlyCount, 0);
-  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone', 'gclid']);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'gclid']);
 });
 
 test('attribution join misses when the store has no click id', async () => {
@@ -357,7 +357,7 @@ test('attribution join misses when the store has no click id', async () => {
   assert.equal(result.gclidCount, 0);
   assert.equal(result.wbraidCount, 0);
   assert.equal(result.piiOnlyCount, 1);
-  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone']);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email']);
 });
 
 test('attribution join attaches a stored wbraid when gclid and gbraid are absent', async () => {
@@ -381,7 +381,7 @@ test('attribution join attaches a stored wbraid when gclid and gbraid are absent
   assert.equal(result.gbraidCount, 0);
   assert.equal(result.wbraidCount, 1);
   assert.equal(result.piiOnlyCount, 0);
-  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'hashed_phone', 'wbraid']);
+  assert.deepEqual(result.orders[0].identifierTypes, ['hashed_email', 'wbraid']);
 });
 
 test('attribution join leaves the order PII-only when several jobs disagree on the click id', async () => {

@@ -68,7 +68,6 @@ test('webhook path enhances the parked booking once, by booking-session order id
   assert.equal(ctx.uploads[0].orderId, 'sess-1');
   assert.deepEqual(ctx.uploads[0].userData, {
     sha256_email_address: sha('janedoe@gmail.com'),
-    sha256_phone_number: sha('+16125551234'),
   });
   // Second job event and a cron sweep must not upload again.
   assert.equal(await resolveDeferredForJob({ jobId: 'zb-job-1', job: zbJob(), ...ctx, now: NOW }), null);
@@ -146,7 +145,7 @@ test('uploader sends an ENHANCEMENT adjustment for Booked Appointment keyed by o
     conversionAction: `customers/1287907452/conversionActions/${BOOKED_APPOINTMENT_ACTION_ID}`,
     adjustmentType: 'ENHANCEMENT',
     orderId: 'sess-1',
-    userIdentifiers: [{ hashedEmail: 'a'.repeat(64) }, { hashedPhoneNumber: 'b'.repeat(64) }],
+    userIdentifiers: [{ hashedEmail: 'a'.repeat(64) }],
   }]);
   assert.equal(posts[0].body.partialFailure, true);
   const already = await createEnhancementUploader({
