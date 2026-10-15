@@ -90,7 +90,6 @@ test('phone normalization yields E.164 with US default', () => {
 test('hashedUserData hashes the normalized values and omits missing fields', () => {
   assert.deepEqual(hashedUserData({ email: SECRET_EMAIL, phone: SECRET_PHONE }), {
     sha256_email_address: sha('janedoe+tag@gmail.com'),
-    sha256_phone_number: sha('+16125551234'),
   });
   assert.deepEqual(hashedUserData({ email: 'x@example.com', phone: 'bad' }), {
     sha256_email_address: sha('x@example.com'),
@@ -113,7 +112,7 @@ test('lookup matches the exact session for the customer inside the 48h window', 
   assert.equal(result.found, true);
   assert.equal(result.path, 'exact_session');
   assert.equal(result.userData.sha256_email_address, sha('janedoe+tag@gmail.com'));
-  assert.equal(result.userData.sha256_phone_number, sha('+16125551234'));
+  assert.equal(result.userData.sha256_phone_number, undefined);
   const url = new URL(calls[0].url);
   assert.equal(url.pathname, '/v1/jobs');
   assert.equal(url.searchParams.get('customer'), 'cust-1');
@@ -205,7 +204,6 @@ test('endpoint returns only hashes and logs no plain identifiers', async () => {
     found: true,
     user_data: {
       sha256_email_address: sha('janedoe+tag@gmail.com'),
-      sha256_phone_number: sha('+16125551234'),
     },
   });
   const rendered = JSON.stringify({ body: res.body, logs: logger.logs });
