@@ -4,7 +4,7 @@ import { extractClickIdentifiers, opaqueRef } from '../../../lib/offline-convers
 
 import { originClass } from '../../../lib/booking-identity.js';
 import { classifyChannel } from '../../../lib/acquisition-channel.js';
-import { normalizeClass, normalizeLandingPath, normalizeReferrerHost } from '../../../lib/attribution-sanitize.js';
+import { normalizeClass, normalizeLandingPath, normalizeOppref, normalizeReferrerHost } from '../../../lib/attribution-sanitize.js';
 const DEFAULT_ALLOWED_ORIGIN = 'https://www.themountingman.com';
 const MAX_BODY_BYTES = 4096;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._~-]+$/;
@@ -46,11 +46,17 @@ export function normalizeCapturedAcquisition(value = {}) {
   const sourceClass = cleanClass(value.sourceClass);
   const mediumClass = cleanClass(value.mediumClass);
   const campaignClass = cleanClass(value.campaignClass);
+  const contentClass = cleanClass(value.contentClass);
+  const adPlatform = cleanClass(value.adPlatform);
+  const oppref = normalizeOppref(value.oppref) || null;
   const referrerHost = normalizeReferrerHost(value.referrerHost);
   const firstSeen = Date.parse(value.firstSeenAt || '');
   return {
-    channel: classifyChannel({ paidMarker, sourceClass, mediumClass, campaignClass, referrerHost }),
+    channel: classifyChannel({ paidMarker, sourceClass, mediumClass, campaignClass, referrerHost, adPlatform }),
     campaignClass,
+    contentClass,
+    adPlatform,
+    oppref,
     referrerHost,
     landingPath: normalizeLandingPath(value.landingPath),
     firstSeenAt: Number.isNaN(firstSeen) ? null : new Date(firstSeen).toISOString(),
