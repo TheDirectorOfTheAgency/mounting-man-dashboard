@@ -241,3 +241,68 @@ test('feed tool keeps COMPLETED payments for a Chicago day and drops pending + o
   assert.equal(serialized.includes('25%'), false);
   assert.equal(serialized.includes('27%'), false);
 });
+
+test('cashier attribution falls back to order and payment created_by_team_member_id', () => {
+  const fromOrder = sanitizePaymentDetail({
+    payment: dirtyPayment({ team_member_id: undefined, employee_id: undefined }),
+    order: { ...dirtyOrder(), created_by_team_member_id: MIKE_ID },
+  });
+  assert.equal(fromOrder.team_member_id, MIKE_ID);
+  assert.equal(fromOrder.cashier_name, 'Michael Wenzel');
+
+  const fromPaymentCreatedBy = sanitizePaymentDetail({
+    payment: dirtyPayment({
+      team_member_id: undefined,
+      employee_id: undefined,
+      created_by_team_member_id: MIKE_ID,
+    }),
+    order: dirtyOrder(),
+  });
+  assert.equal(fromPaymentCreatedBy.team_member_id, MIKE_ID);
+  assert.equal(fromPaymentCreatedBy.cashier_name, 'Michael Wenzel');
+});
+
+test('payment_id lookup labels the feed with the payment Chicago date, not a mismatched caller date', async () => {
+  const client = {
+    locationId: 'LVNM3Z4RVRWDK',
+    async getPayment(id) {
+      assert.equal(id, 'pay_mike_1');
+      return dirtyPayment();
+    },
+    async batchOrders() {
+      return { ord_mike_1: { id: 'ord_mike_1', created_by_team_member_id: MIKE_ID, line_items: dirtyOrder().line_items } };
+    },
+    async getTeamMember() { return null; },
+  };
+
+  const feed = await getMountingManSquareDetail(
+    { payment_id: 'pay_mike_1', date: '2026-01-01' },
+    { client },
+  );
+  assert.equal(feed.date, '2026-08-22');
+  assert.equal(feed.payments[0].payment_id, 'pay_mike_1');
+  assert.equal(feed.payments[0].cashier_name, 'Michael Wenzel');
+});
+
+test('feed loads cashier from order.created_by_team_member_id when payment has no staff id', async () => {
+  const client = {
+    locationId: 'LVNM3Z4RVRWDK',
+    async getPayment() {
+      return dirtyPayment({ team_member_id: undefined, employee_id: undefined });
+    },
+    async batchOrders() {
+      return {
+        ord_mike_1: {
+          id: 'ord_mike_1',
+          created_by_team_member_id: MIKE_ID,
+          line_items: dirtyOrder().line_items,
+        },
+      };
+    },
+    async getTeamMember() { return null; },
+  };
+
+  const feed = await getMountingManSquareDetail({ payment_id: 'pay_mike_1' }, { client });
+  assert.equal(feed.payments[0].team_member_id, MIKE_ID);
+  assert.equal(feed.payments[0].cashier_name, 'Michael Wenzel');
+});
