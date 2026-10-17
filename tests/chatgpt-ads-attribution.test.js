@@ -28,6 +28,26 @@ test('oppref: keeps case and charset, max 512, rejects everything else', () => {
   assert.equal(sanitizeTouch({ oppref: 'x@y.com' }).oppref, '');
 });
 
+const PHONE_EXTENSIONS = ['6125550100x123', '612-555-0100x123'];
+
+test('oppref: phone numbers with extensions are rejected by the shared PII guard', () => {
+  for (const bad of [...PHONE_EXTENSIONS, '612.555.0100', '612_555_0100', '612~555~0100', '1-612-555-0100', 'ref6125550100', '6125550100X9']) {
+    assert.equal(normalizeOppref(bad), '', bad);
+    assert.equal(sanitizeTouch({ oppref: bad }).oppref, '', bad);
+  }
+  // Legitimate mixed-case opaque ids survive byte for byte.
+  for (const good of [OPPREF, 'aBcD-123456.EfGh_12~Zz', 'XyZ012345abcDEF', 'q-AbC.dEf~123=']) {
+    assert.equal(normalizeOppref(good), good, good);
+    assert.equal(sanitizeTouch({ oppref: good }).oppref, good, good);
+  }
+});
+
+test('booking normalization rejects phone-extension oppref', () => {
+  for (const bad of PHONE_EXTENSIONS) {
+    assert.equal(normalizeCapturedAcquisition({ adPlatform: 'chatgpt_paid', oppref: bad }).oppref, null, bad);
+  }
+});
+
 test('isEmptyTouch sees the new fields', () => {
   assert.equal(isEmptyTouch(sanitizeTouch({})), true);
   assert.equal(isEmptyTouch(sanitizeTouch({ oppref: OPPREF })), false);
@@ -117,4 +137,28 @@ test('endpoint + store persist the new fields end to end without raw PII', async
   const dump = JSON.stringify([...kv.values.values()]);
   assert.equal(dump.includes('a@b.com'), false);
   assert.equal(dump.includes('6125550100'), false);
+});
+
+test('endpoint + store never persist a phone-extension oppref', async () => {
+  for (const bad of PHONE_EXTENSIONS) {
+    const kv = fakeKv();
+    const handler = createBookingAttributionHandler({
+      attributionStore: createAttributionStore(kv),
+      logger: { info() {}, warn() {}, error() {} },
+    });
+    const res = createResponse();
+    await handler({
+      method: 'POST',
+      headers: { origin: 'https://www.themountingman.com' },
+      body: {
+        customer_id: 'c-1', booking_session: 's-1',
+        acquisition: { paidMarker: 'paid_medium', sourceClass: 'chatgpt', mediumClass: 'cpc', adPlatform: 'chatgpt_paid', oppref: bad },
+      },
+    }, res);
+    assert.equal(res.statusCode, 200, bad);
+    const dump = JSON.stringify([...kv.values.values()]);
+    assert.equal(dump.includes(bad), false, bad);
+    assert.equal(dump.includes('6125550100'), false, bad);
+    assert.equal(dump.includes('612-555-0100'), false, bad);
+  }
 });
