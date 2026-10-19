@@ -147,7 +147,10 @@ test('payments are pulled per location, tagged with the location, and deduped by
     }),
   });
   assert.deepEqual(perLocation.map((row) => [row.locationId, row.paymentCount]), [['LOC_A', 2], ['LOC_B', 1]]);
-  assert.deepEqual(failures, [{ locationId: 'LOC_C', error: 'square 500' }]);
+  assert.deepEqual(failures, [{
+    locationId: 'LOC_C',
+    error: 'Square payments fetch failed for location LOC_C: square 500',
+  }]);
   assert.deepEqual(payments.map((p) => p.id), ['payment-1', 'payment-dup', 'payment-2']);
   assert.equal(payments.find((p) => p.id === 'payment-2').location_id, 'LOC_B');
   assert.equal(calls.filter((url) => url.includes('/v2/payments')).length, 3);
@@ -194,8 +197,8 @@ async function callCron(query, { square, env = {} } = {}) {
   axios.get = square.get;
   const postOriginal = axios.post;
   const posts = [];
-  axios.post = async (url, body) => {
-    posts.push({ url, body });
+  axios.post = async (url, body, config) => {
+    posts.push({ url, body, timeout: config?.timeout ?? null });
     if (url === 'https://oauth2.googleapis.com/token') return { data: { access_token: 'access' } };
     return square.googleResponse ? square.googleResponse(body) : { data: {}, headers: { 'request-id': 'req-1' } };
   };
@@ -251,6 +254,12 @@ test('cron dry run reads every ACTIVE location and reports per-location counts',
   ]);
   assert.equal(res.body.uploadedCount, 2);
   assert.deepEqual(res.body.locationErrors, []);
+  const tokenPosts = posts.filter((post) => post.url === 'https://oauth2.googleapis.com/token');
+  const uploadPosts = posts.filter((post) => post.url.includes('uploadClickConversions'));
+  assert.equal(tokenPosts.length, 1);
+  assert.equal(uploadPosts.length, 2);
+  assert.ok(tokenPosts.every((post) => post.timeout === 25000));
+  assert.ok(uploadPosts.every((post) => post.timeout === 25000));
   assert.equal(posts.filter((post) => post.url.includes('uploadClickConversions')).every((post) => post.body.validateOnly), true);
 });
 

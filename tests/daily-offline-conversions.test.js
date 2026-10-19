@@ -208,6 +208,89 @@ test('daily upload is idempotent and records Google partial failures without a s
   assert.equal(calls.length, 2);
 });
 
+test('orders are marked uploaded only after Google accepts or reports a duplicate order id', async () => {
+  const payments = [payment()];
+  const customersById = { 'customer-1': usCustomer };
+
+  const failedLedger = createDailyUploadLedger(createFakeKv());
+  const failed = await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: failedLedger,
+    uploadConversion: async () => ({
+      success: false,
+      httpStatus: 503,
+      googleStatus: 'UNAVAILABLE',
+      errorCode: 'GOOGLE_TRANSIENT_FAILURE',
+    }),
+  });
+  assert.match(failed.errors[0].error, /Google Ads upload failed for order order-1/);
+  assert.equal(await failedLedger.has('order-1'), false);
+  assert.equal(await failedLedger.claim('order-1', 'probe-failed'), true);
+  assert.equal(await failedLedger.release('order-1', 'probe-failed'), true);
+
+  const thrownLedger = createDailyUploadLedger(createFakeKv());
+  const thrown = await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: thrownLedger,
+    uploadConversion: async () => {
+      throw new Error('socket hang up');
+    },
+  });
+  assert.match(thrown.errors[0].error, /Google Ads upload failed for order order-1: socket hang up/);
+  assert.equal(await thrownLedger.has('order-1'), false);
+  assert.equal(await thrownLedger.claim('order-1', 'probe-thrown'), true);
+
+  const dryLedger = createDailyUploadLedger(createFakeKv());
+  await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: dryLedger,
+    validateOnly: true,
+    uploadConversion: async () => ({ success: true, googleRequestId: 'dry' }),
+  });
+  assert.equal(await dryLedger.has('order-1'), false);
+
+  const uploadedLedger = createDailyUploadLedger(createFakeKv());
+  const uploaded = await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: uploadedLedger,
+    uploadConversion: async () => ({ success: true, googleRequestId: 'ok' }),
+  });
+  assert.equal(uploaded.uploadedCount, 1);
+  assert.equal(await uploadedLedger.has('order-1'), true);
+
+  const duplicateLedger = createDailyUploadLedger(createFakeKv());
+  let duplicateCalls = 0;
+  const duplicate = await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: duplicateLedger,
+    uploadConversion: async () => {
+      duplicateCalls += 1;
+      return {
+        success: false,
+        partialFailureError: { message: 'ORDER_ID_ALREADY_EXISTS' },
+      };
+    },
+  });
+  assert.equal(duplicate.uploadedCount, 0);
+  assert.equal(duplicate.skipped[0].reason, 'already_uploaded');
+  assert.equal(await duplicateLedger.has('order-1'), true);
+  await runDailyOfflineConversions({
+    payments,
+    customersById,
+    ledger: duplicateLedger,
+    uploadConversion: async () => {
+      duplicateCalls += 1;
+      return { success: true };
+    },
+  });
+  assert.equal(duplicateCalls, 1);
+});
+
 test('a Google 403 stops the batch and keeps the permission error', async () => {
   const ledger = createDailyUploadLedger(createFakeKv());
   let calls = 0;

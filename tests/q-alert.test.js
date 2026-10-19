@@ -117,6 +117,24 @@ test('offline conversion failures alert and successful runs do not', () => {
     offlineConversionFailureAlert(null, { thrown: new Error('Square payments fetch failed') }).kind,
     'offline_conversions_failed',
   );
+  assert.equal(
+    offlineConversionFailureAlert(null, {
+      thrown: new Error('Square payments fetch failed for location LVNM3Z4RVRWDK: 504'),
+    }).body,
+    'Square payments fetch failed for location LVNM3Z4RVRWDK: 504',
+  );
+  const mixed = offlineConversionFailureAlert({
+    errors: [{ orderId: 'order-1', error: 'Google Ads upload failed for order order-1: 403 PERMISSION_DENIED' }],
+    locationErrors: [{ locationId: 'LOC_B', error: 'Square payments fetch failed for location LOC_B: 504' }],
+  }).body;
+  assert.match(mixed, /Square payments fetch failed for location LOC_B: 504/);
+  assert.match(mixed, /Google Ads upload failed for order order-1: 403 PERMISSION_DENIED/);
+  assert.match(
+    offlineConversionFailureAlert({
+      errors: [{ orderId: 'order-1', error: 'Google Ads upload failed for order order-1: 403 PERMISSION_DENIED' }],
+    }).body,
+    /Google Ads upload failed for order order-1/,
+  );
 });
 
 test('failed Square payments alert Q and a normal payment does not', async () => {
