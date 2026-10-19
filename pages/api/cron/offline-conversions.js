@@ -11,7 +11,8 @@
 // ledger is skipped and reported as skipped_already_uploaded.
 // The Zenbooker job.completed hook is unchanged.
 // Square reads the last 30 days (override with DAILY_OFFLINE_CONVERSION_LOOKBACK_DAYS).
-// Payments, locations, and customers retry 429/5xx/timeouts before a location is failed.
+// Payments, locations, and customers retry 429/5xx/timeouts. A failed location is
+// reported and skipped. A failed customer lookup defers only that customer's orders.
 
 import axios from 'axios';
 
@@ -54,7 +55,15 @@ function validateOnlyRequested(req) {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
-async function loadLedgerAndStore() {
+async function loadLedgerAndStore(loadKv) {
+  if (loadKv) {
+    const kv = await loadKv();
+    if (!kv) return null;
+    return {
+      ledger: createDailyUploadLedger(kv),
+      store: createAttributionStore(kv),
+    };
+  }
   if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) return null;
   const { kv } = await import('@vercel/kv');
   return {
@@ -63,7 +72,12 @@ async function loadLedgerAndStore() {
   };
 }
 
-export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) {
+export function createOfflineConversionsHandler({
+  alert = deliverQAlert,
+  loadKv = null,
+  httpClient = axios,
+  squareRetry = {},
+} = {}) {
   return async function handler(req, res) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -85,7 +99,7 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
 
   let kvBindings = null;
   try {
-    kvBindings = await loadLedgerAndStore();
+    kvBindings = await loadLedgerAndStore(loadKv);
   } catch (error) {
     console.error('daily_offline_conversion_ledger_error', { message: error.message });
   }
@@ -101,7 +115,8 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
     const resolved = await resolveSquareLocations({
       token,
       fallbackLocationId: locationId,
-      httpClient: axios,
+      httpClient,
+      ...squareRetry,
     });
     if (resolved.locations.length === 0) {
       return res.status(500).json({ error: 'No Square locations available', changeRecord: CHANGE_RECORD });
@@ -110,7 +125,8 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
       token,
       locations: resolved.locations,
       beginTime,
-      httpClient: axios,
+      httpClient,
+      ...squareRetry,
     });
     for (const failure of fetched.failures) {
       console.error('daily_offline_conversion_location_failed', failure);
@@ -123,16 +139,23 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
       ? filterPaymentsToOrder(fetched.payments, debugOrderId)
       : fetched.payments;
     const customerIds = [...new Set(payments.map((payment) => payment.customer_id).filter(Boolean))];
-    const customersById = await fetchSquareCustomers(customerIds, { token, httpClient: axios });
+    const { customersById, failures: customerLookupFailures } = await fetchSquareCustomers(
+      customerIds,
+      { token, httpClient, ...squareRetry },
+    );
+    for (const failure of customerLookupFailures) {
+      console.error('daily_offline_conversion_customer_failed', { message: failure.error });
+    }
     const summary = await runDailyOfflineConversions({
       payments,
       customersById,
+      customerLookupFailures,
       store: kvBindings?.store || null,
       ledger: kvBindings?.ledger || null,
       validateOnly,
       debugOrderId,
       onlyOrder,
-      uploadConversion: createDailyGoogleUpload(process.env, axios),
+      uploadConversion: createDailyGoogleUpload(process.env, httpClient),
     });
     const counts = conversionIdentifierCounts(summary.orders);
     const locations = fetched.perLocation.map((location) => ({
