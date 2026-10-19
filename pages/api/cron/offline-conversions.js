@@ -10,13 +10,14 @@
 // returns Google's per-row result under `debug`. An order already in the
 // ledger is skipped and reported as skipped_already_uploaded.
 // The Zenbooker job.completed hook is unchanged.
+// Square reads the last 30 days (override with DAILY_OFFLINE_CONVERSION_LOOKBACK_DAYS).
+// Payments, locations, and customers retry 429/5xx/timeouts before a location is failed.
 
 import axios from 'axios';
 
 import { deliverQAlert, offlineConversionFailureAlert } from '../../../lib/q-alert.js';
 import {
   CHANGE_RECORD,
-  LOOKBACK_MS,
   conversionIdentifierCounts,
   createDailyGoogleUpload,
   createDailyUploadLedger,
@@ -24,12 +25,15 @@ import {
   fetchCompletedSquarePaymentsForLocations,
   fetchSquareCustomers,
   filterPaymentsToOrder,
+  resolveDailyLookbackMs,
   resolveSquareLocations,
   runDailyOfflineConversions,
   squareCredentials,
 } from '../../../lib/daily-offline-conversions.js';
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { hasBearer } from '../../../lib/safe-compare.js';
+
+export const config = { maxDuration: 300 };
 
 async function notifyFailure(alert, failure) {
   if (!failure) return;
@@ -93,7 +97,7 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
   }
 
   try {
-    const beginTime = new Date(Date.now() - LOOKBACK_MS).toISOString();
+    const beginTime = new Date(Date.now() - resolveDailyLookbackMs()).toISOString();
     const resolved = await resolveSquareLocations({
       token,
       fallbackLocationId: locationId,
@@ -112,7 +116,8 @@ export function createOfflineConversionsHandler({ alert = deliverQAlert } = {}) 
       console.error('daily_offline_conversion_location_failed', failure);
     }
     if (fetched.perLocation.length === 0) {
-      throw new Error(fetched.failures[0]?.error || 'Square payments fetch failed');
+      const detail = fetched.failures.map((failure) => failure.error).filter(Boolean).join('; ');
+      throw new Error(detail || 'Square payments fetch failed');
     }
     const payments = onlyOrder
       ? filterPaymentsToOrder(fetched.payments, debugOrderId)
