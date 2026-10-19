@@ -162,17 +162,31 @@ test('Square locations and customers retry 504 then succeed, and a dead list sti
     },
   });
   assert.equal(customerCalls, 2);
-  assert.equal(customers['customer-1'].email_address, 'a@example.com');
+  assert.equal(customers.customersById['customer-1'].email_address, 'a@example.com');
+  assert.deepEqual(customers.failures, []);
 
-  await assert.rejects(
-    () => fetchSquareCustomers(['customer-9'], {
-      token: 't',
-      sleep: noWait,
-      random: () => 0,
-      httpClient: { async get() { throw httpStatusError(504); } },
-    }),
-    /Square customer fetch failed for customer-9: 504/,
-  );
+  const callsByCustomer = {};
+  const failed = await fetchSquareCustomers(['customer-9', 'customer-ok'], {
+    token: 't',
+    sleep: noWait,
+    random: () => 0,
+    httpClient: {
+      async get(url) {
+        const customerId = url.split('/v2/customers/')[1];
+        callsByCustomer[customerId] = (callsByCustomer[customerId] || 0) + 1;
+        if (customerId === 'customer-9') throw httpStatusError(504);
+        return { data: { customer: { id: customerId, email_address: 'ok@example.com' } } };
+      },
+    },
+  });
+  assert.equal(callsByCustomer['customer-9'], SQUARE_MAX_ATTEMPTS);
+  assert.equal(callsByCustomer['customer-ok'], 1);
+  assert.equal(failed.customersById['customer-ok'].email_address, 'ok@example.com');
+  assert.equal(failed.customersById['customer-9'], undefined);
+  assert.deepEqual(failed.failures, [{
+    customerId: 'customer-9',
+    error: 'Square customer fetch failed: 504',
+  }]);
 
   const originalError = console.error;
   console.error = () => {};
