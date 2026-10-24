@@ -26,6 +26,10 @@
     {
       "path": "/api/cron/deferred-booking-identity",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/booked-appointment-monitor",
+      "schedule": "40 14 * * *"
     }
   ]
 }
