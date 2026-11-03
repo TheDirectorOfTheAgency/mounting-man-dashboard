@@ -133,7 +133,7 @@ test('transient upload failure keeps the booking parked; permanent failure drops
 test('uploader sends an ENHANCEMENT adjustment for Booked Appointment keyed by order id', async () => {
   const posts = [];
   const upload = createEnhancementUploader({
-    env: {},
+    env: { BOOKED_APPOINTMENT_ENHANCEMENT_ENABLED: '1' },
     getToken: async () => 'tok',
     getDevToken: () => 'dev',
     httpClient: { post: async (url, body) => { posts.push({ url, body }); return { data: {} }; } },
@@ -149,7 +149,7 @@ test('uploader sends an ENHANCEMENT adjustment for Booked Appointment keyed by o
   }]);
   assert.equal(posts[0].body.partialFailure, true);
   const already = await createEnhancementUploader({
-    env: {}, getToken: async () => 't', getDevToken: () => 'd',
+    env: { BOOKED_APPOINTMENT_ENHANCEMENT_ENABLED: '1' }, getToken: async () => 't', getDevToken: () => 'd',
     httpClient: { post: async () => ({ data: { partialFailureError: { details: [{ errors: [{ errorCode: { conversionAdjustmentUploadError: 'CONVERSION_ALREADY_ENHANCED' } }] }] } } }) },
   })({ orderId: 'sess-1', userData: { sha256_email_address: 'a'.repeat(64) } });
   assert.equal(already.ok, true);
@@ -246,7 +246,7 @@ test('tmm-probe- requests skip ZenBooker and KV and log as a probe', async () =>
 test('CONVERSION_NOT_FOUND is retried with backoff inside 23 h and never marks the session done', async () => {
   const ctx = await setup();
   const notFoundUploader = createEnhancementUploader({
-    env: {}, getToken: async () => 't', getDevToken: () => 'd',
+    env: { BOOKED_APPOINTMENT_ENHANCEMENT_ENABLED: '1' }, getToken: async () => 't', getDevToken: () => 'd',
     httpClient: { post: async () => ({ data: { partialFailureError: { details: [{ errors: [{ errorCode: { conversionAdjustmentUploadError: 'CONVERSION_NOT_FOUND' } }] }] } } }) },
   });
   const requested = NOW - 2 * 3600 * 1000;
@@ -288,7 +288,7 @@ test('first attempt waits for Google to ingest the tag conversion', async () => 
 
 test('transport failures and validateOnly never mark a session done', async () => {
   const ctx = await setup();
-  const failing = createEnhancementUploader({ env: {}, getToken: async () => 't', getDevToken: () => 'd',
+  const failing = createEnhancementUploader({ env: { BOOKED_APPOINTMENT_ENHANCEMENT_ENABLED: '1' }, getToken: async () => 't', getDevToken: () => 'd',
     httpClient: { post: async () => { const e = new Error('x'); e.response = { status: 401 }; throw e; } } });
   let r = await resolveDeferredForJob({ jobId: 'zb-job-1', job: zbJob(), ...ctx, upload: failing, now: NOW });
   assert.equal(r.outcome, 'upload_retry');
@@ -344,4 +344,16 @@ test('webhook with a data.job envelope enhances instead of dropping as customer 
   assert.equal(ctx.uploads.length, 1);
   assert.equal(ctx.uploads[0].orderId, 'sess-1');
   assert.equal(await ctx.idStore.isDone(opaqueRef('sess-1')), true);
+});
+
+test('uploader is off by default (Booked Appointment not eligible for enhancement)', async () => {
+  let posted = false;
+  const r = await createEnhancementUploader({
+    env: {}, getToken: async () => 't', getDevToken: () => 'd',
+    httpClient: { post: async () => { posted = true; return { data: {} }; } },
+  })({ orderId: 'abc', userData: { sha256_email_address: 'a'.repeat(64) } });
+  assert.equal(posted, false);
+  assert.equal(r.ok, false);
+  assert.equal(r.permanent, false);
+  assert.deepEqual(r.codes, ['ENHANCEMENT_DISABLED']);
 });
