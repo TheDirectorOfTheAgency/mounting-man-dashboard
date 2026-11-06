@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "publisher"))
 
 from content import (  # noqa: E402
@@ -14,13 +16,14 @@ from content import (  # noqa: E402
     SPECIALTY_STANDARD_TV,
     build_extractable_sentence,
     build_seo_title,
+    build_seo_slug,
     classify_install_specialty,
     generate_post_body,
     job_used_frame,
     job_used_mantel,
     select_related_installs,
 )
-from social import SOCIAL_DESTINATIONS, build_social_caption  # noqa: E402
+from social import SOCIAL_DESTINATIONS, SocialBlockedError, build_social_caption  # noqa: E402
 
 LIVE_URL = "https://www.themountingman.com/installations/test-install"
 FORBIDDEN_CLAIMS = ("best installer", "recommended by chatgpt", "best in", "#1")
@@ -232,6 +235,78 @@ def test_specialty_social_captions_carry_entity_city_fact_and_identity():
     assert frame_caps["instagram"] != frame_caps["linkedin"]
     assert "completed this" in frame_caps["linkedin"].lower()
     assert "installed in" in frame_caps["instagram"].lower()
+
+
+@pytest.mark.parametrize("seed", [FRAME_SEED, MANTEL_SEED, BOTH_SEED])
+@pytest.mark.parametrize("price", [None, "$650.00"])
+def test_limited_x_caption_preserves_generated_url_and_specialty(seed, price):
+    seed = {**seed, "price": price}
+    url = "https://www.themountingman.com/installations/" + build_seo_slug(seed, seed["city"])
+    caption = build_social_caption(seed, url, platform="x", limit=280)
+    assert len(caption) <= 280
+    assert caption.endswith("\n\n" + url)
+    assert caption.count(url) == 1
+    assert seed["city"] in caption
+    assert "The Mounting Man" in caption
+    if job_used_frame(seed):
+        assert "Samsung Frame" in caption
+    if job_used_mantel(seed):
+        assert seed["mount-type"] in caption
+        assert "Slim Fit" not in caption
+    assert "65-inch" in caption or "75-inch" in caption or "wood slat" in caption.lower()
+
+
+def test_x_compacts_long_specialty_fact_without_cutting_entities_or_url():
+    seed = {**BOTH_SEED, "fireplace-type": "Stone " * 80}
+    caption = build_social_caption(seed, LIVE_URL, platform="x", limit=280)
+    assert len(caption) <= 280
+    for text in ("Samsung Frame", "MantelMount MM700", "Wayzata", "The Mounting Man", "65-inch"):
+        assert text in caption
+    assert caption.endswith(LIVE_URL)
+
+
+def test_short_and_exact_limit_captions_are_unchanged():
+    full = build_social_caption(FRAME_SEED, LIVE_URL, platform="x")
+    assert build_social_caption(FRAME_SEED, LIVE_URL, platform="x", limit=len(full)) == full
+    assert build_social_caption(FRAME_SEED, LIVE_URL, platform="x", limit=len(full) + 1) == full
+
+
+def test_overflow_drops_subtotal_as_a_whole_before_prose():
+    seed = {**FRAME_SEED, "price": "$650.00"}
+    without_price = build_social_caption(FRAME_SEED, LIVE_URL, platform="x")
+    caption = build_social_caption(seed, LIVE_URL, platform="x", limit=len(without_price))
+    assert caption == without_price
+
+
+@pytest.mark.parametrize("platform,limit", [("x", 280), ("linkedin", 3000)])
+def test_long_standard_and_unmount_captions_keep_full_url(platform, limit):
+    for job_type in ("install", "unmount"):
+        seed = {**STANDARD_SEED, "job-type": job_type, "post-summary": "TV work completed. " * 250}
+        caption = build_social_caption(seed, LIVE_URL, platform=platform, limit=limit)
+        assert len(caption) <= limit
+        assert caption.endswith("\n\n" + LIVE_URL)
+        assert "Samsung Frame" not in caption
+
+
+def test_impossible_specialty_budget_blocks_instead_of_losing_identity_or_url():
+    with pytest.raises(SocialBlockedError, match="specialty identity and full live URL"):
+        build_social_caption(BOTH_SEED, LIVE_URL, platform="x", limit=len(LIVE_URL) + 20)
+
+
+@pytest.mark.parametrize("url_length", [278, 279, 280, 281])
+def test_url_near_limit_is_whole_or_blocked(url_length):
+    url = "https://example.com/" + "a" * (url_length - len("https://example.com/"))
+    if url_length > 280:
+        with pytest.raises(SocialBlockedError, match="full live URL"):
+            build_social_caption(STANDARD_SEED, url, platform="x", limit=280)
+    else:
+        caption = build_social_caption(STANDARD_SEED, url, platform="x", limit=280)
+        assert caption == url
+
+
+def test_no_url_still_respects_limit():
+    seed = {**STANDARD_SEED, "post-summary": "Completed TV installation. " * 100}
+    assert len(build_social_caption(seed, "", platform="x", limit=280)) <= 280
 
 
 def test_related_installs_prefer_same_specialty():

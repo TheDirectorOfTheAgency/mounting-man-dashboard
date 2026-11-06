@@ -81,6 +81,38 @@ IG_9007_TEXT = (
 )
 
 
+def test_x_transport_receives_complete_specialty_caption_and_generated_url():
+    from content import build_seo_slug
+
+    seed = {
+        "city": "Wayzata", "tv-size": '65"', "tv-brand": "Samsung Frame",
+        "wall-surface": "Stone", "fireplace-type": "Stone Fireplace",
+        "mount-type": "MantelMount MM700", "mantelmount": True,
+        "gallery-style": True, "street-name": "Lake Street", "price": "$650.00",
+    }
+    url = "https://www.themountingman.com/installations/" + build_seo_slug(seed, seed["city"])
+    http = RecordingHttp()
+    SocialPublisher(env=X_ENV, http=http)._x(
+        post_data=seed, live_url=url, image_url=IMAGE_URL, image_bytes=IMAGE_BYTES,
+    )
+    tweet = next(call for call in http.calls if call["url"] == social_module.X_CREATE_TWEET_URL)
+    caption = tweet["json"]["text"]
+    assert len(caption) <= 280
+    assert caption.endswith(url)
+    for text in ("Samsung Frame", "MantelMount MM700", "Wayzata", "The Mounting Man"):
+        assert text in caption
+
+
+def test_x_impossible_caption_blocks_before_network_or_media_upload():
+    http = RecordingHttp()
+    with pytest.raises(SocialBlockedError, match="full live URL"):
+        SocialPublisher(env=X_ENV, http=http)._x(
+            post_data=POST_DATA, live_url=LIVE_URL + "a" * 300,
+            image_url=IMAGE_URL, image_bytes=IMAGE_BYTES,
+        )
+    assert http.calls == []
+
+
 def _ig_9007():
     return FakeResponse(status_code=400, json_data=IG_9007_ERROR, text=IG_9007_TEXT)
 
