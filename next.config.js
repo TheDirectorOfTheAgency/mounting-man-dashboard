@@ -1,17 +1,14 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
   // recap-card.mjs reads lib/assets/recap-plate.png at runtime via
   // fileURLToPath(import.meta.url) + path.join. Next's file tracer cannot
   // follow that, so without this include the marshallwayne-x function
-  // silently falls back to the slat card. Next 14 still nests this under
-  // experimental (stable top-level in 15+). Prefer this over vercel.json
-  // includeFiles — Vercel defers Next NFT for this framework.
-  experimental: {
-    outputFileTracingIncludes: {
-      '/api/mcp/marshallwayne-x': ['./lib/assets/recap-plate.png'],
-    },
+  // silently falls back to the slat card. Top-level since Next 15.
+  // Prefer this over vercel.json includeFiles — Vercel defers Next NFT
+  // for this framework.
+  outputFileTracingIncludes: {
+    '/api/mcp/marshallwayne-x': ['./lib/assets/recap-plate.png'],
   },
   async rewrites() {
     // RFC 8414 / RFC 9728 well-known URLs must be at the origin root.
