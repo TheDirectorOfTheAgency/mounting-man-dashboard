@@ -16,13 +16,13 @@
     "replay:offline-conversions": "node scripts/replay-offline-conversions.mjs"
   },
   "dependencies": {
-    "@google/genai": "^1.44.0",
+    "@google/genai": "^1.52.0",
     "@vercel/kv": "^3.0.0",
-    "autoprefixer": "^10.4.17",
-    "axios": "^1.6.5",
+    "autoprefixer": "^10.6.2",
+    "axios": "^1.21.1",
     "next": "^14.2.3",
     "nodemailer": "^6.10.1",
-    "postcss": "^8.4.33",
+    "postcss": "^8.5.32",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.10.3",
@@ -32,7 +32,7 @@
   "devDependencies": {
     "eslint": "^8.57.0",
     "eslint-config-next": "^14.2.3",
-    "tsx": "^4.21.0",
+    "tsx": "^4.23.15",
     "vercel": "^50.22.0"
   }
 }
