@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import { ActiveAgentsPanel, LiveConsoleFeed, RecentCompletionsPanel } from './home-hud-panels.js';
 
 // ─── HUD GAUGE ─────────────────────────────────────────────
 const HudGauge = ({ value, max, label, size = 120, code = '', displayValue }) => {
@@ -394,73 +395,10 @@ export default function Dashboard({ initialData = {} }) {
             </div>
             <div className="bg-[#08090b] border border-hud-border/30 rounded-none overflow-hidden flex-1 min-h-0">
               <div className="overflow-y-auto font-terminal text-[10px] tracking-wider leading-relaxed uppercase p-3 h-full">
-                {(() => {
-                  const telLines = telemetryData?.console?.lines || [];
-                  const allLines = [...telLines, ...threadLines];
-                  if (allLines.length === 0) {
-                    return (
-                      <div className="text-hud-text-dim/50 text-center py-6 tracking-widest">
-                        AWAITING GATEWAY SIGNAL...
-                      </div>
-                    );
-                  }
-                  return [...allLines].reverse().slice(0, 40).map((line, i) => {
-                    const lvl = line.level || line.sev || 'info';
-                    const lbl = line.label || line.src || '';
-                    const isThread = line.category === 'thread';
-
-                    // Icon
-                    const sevIcon = isThread ? '»'
-                      : (lvl === 'error' ? '✗'
-                        : lvl === 'warn' ? '⚠'
-                        : lvl === 'ok' ? '✓'
-                        : lvl === 'start' ? '▸'
-                        : '·');
-
-                    // Icon color
-                    const iconColor = isThread
-                      ? (lbl === 'Q' ? 'text-cyan-400' : 'text-hud-text-dim/60')
-                      : lbl === 'cc-m4' ? 'text-yellow-400'
-                      : lbl === 'sys' ? 'text-hud-text-dim/40'
-                      : (lvl === 'error' ? 'text-hud-red'
-                        : lvl === 'warn' ? 'text-yellow-500'
-                        : lvl === 'ok' ? 'text-hud-green'
-                        : lvl === 'start' ? 'text-cyan-400'
-                        : 'text-hud-text-dim');
-
-                    // Label color
-                    const labelColor = isThread
-                      ? (lbl === 'Q' ? 'text-cyan-400/70' : 'text-hud-text-dim/60')
-                      : lbl === 'cc-m4' ? 'text-yellow-400/70'
-                      : lbl === 'sys' ? 'text-hud-text-dim/30'
-                      : lbl === 'exec' ? 'text-hud-green/60'
-                      : 'text-hud-text-dim/70';
-
-                    // Message color
-                    const msgColor = isThread
-                      ? (lbl === 'Q' ? 'text-cyan-300/90' : 'text-hud-green')
-                      : lbl === 'cc-m4' ? 'text-yellow-300/90'
-                      : lbl === 'sys' ? 'text-hud-text-dim/60'
-                      : (lvl === 'error' ? 'text-hud-red/90'
-                        : lvl === 'ok' ? 'text-hud-green/80'
-                        : lvl === 'start' ? 'text-cyan-400/90'
-                        : lvl === 'warn' ? 'text-yellow-400/90'
-                        : 'text-hud-white');
-
-                    const ts = line.ts
-                      ? (line.ts.includes('T') ? line.ts.replace('T', ' ').substring(5, 16) : line.ts)
-                      : '';
-
-                    return (
-                      <div key={i} className="flex gap-2 py-0.5 hover:bg-white/2">
-                        <span className="text-hud-text-dim/50 select-none w-[75px] shrink-0">{ts}</span>
-                        <span className={`${iconColor} w-3 shrink-0 text-center`}>{sevIcon}</span>
-                        <span className={`${labelColor} w-[70px] shrink-0 truncate`}>[{lbl}]</span>
-                        <span className={`${msgColor} break-all`}>{line.msg}</span>
-                      </div>
-                    );
-                  });
-                })()}
+                <LiveConsoleFeed
+                  threadLines={threadLines}
+                  telemetryLines={telemetryData?.console?.lines}
+                />
               </div>
             </div>
           </div>
@@ -485,102 +423,10 @@ export default function Dashboard({ initialData = {} }) {
               <DataRow code="ROI" label="Net Revenue (All-Time)" value={`$${(allTimeRevenue - (adsData?.allTimeSpend || 0)).toLocaleString('en-US', { maximumFractionDigits: 0 })}`} highlight />
             </div>
 
-            {/* Active Agents */}
-            <div className="hud-panel p-4">
-              <div className="flex items-center justify-between mb-4">
-                <div className="hud-panel-header">ACTIVE AGENTS</div>
-                <span className="text-[10px] text-hud-text-dim font-mono tracking-wider">
-                  {telemetryData?.agents?.activeCount || 0}/{telemetryData?.agents?.totalAgents || 0}
-                </span>
-              </div>
-              <div className="space-y-0">
-                {(telemetryData?.agents?.agents || []).map((agent, i) => (
-                  <div key={agent.id} className={`py-2.5 ${i > 0 ? 'border-t border-hud-border/30' : ''}`}>
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-1.5 h-1.5 rounded-full ${
-                          agent.status === 'active' ? 'bg-hud-green' :
-                          agent.status === 'standby' ? 'bg-yellow-500' :
-                          agent.status === 'offline' ? 'bg-hud-red' : 'bg-hud-text-dim'
-                        }`} style={agent.status === 'active' ? { boxShadow: '0 0 6px rgba(200,230,50,0.6)' } : {}} />
-                        <span className="text-[10px] text-hud-text tracking-wider uppercase">
-                          {agent.label}
-                        </span>
-                      </div>
-                      <span className={`text-[7px] font-terminal tracking-[2px] uppercase ${
-                        agent.status === 'active'
-                          ? 'text-hud-green'
-                          : agent.status === 'standby'
-                          ? 'text-yellow-500/70'
-                          : 'text-hud-text-dim/50'
-                      }`}>
-                        {agent.status?.toUpperCase() || 'UNKNOWN'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between pl-3.5">
-                      <span className="text-[10px] text-hud-text tracking-wider uppercase">
-                        {agent.task || 'Idle'}
-                      </span>
-                      <span className="text-[9px] text-hud-text-dim font-mono">
-                        {agent.model}
-                      </span>
-                    </div>
-                    {agent.fallbacks && agent.fallbacks.length > 0 && (
-                      <div className="pl-3.5 mt-1 flex items-center gap-1">
-                        <span className="text-[7px] text-hud-text-dim tracking-widest uppercase">FALLBACKS:</span>
-                        {agent.fallbacks.map((fb, j) => (
-                          <span key={j} className="text-[7px] text-hud-text-dim/50 font-terminal tracking-[1px] whitespace-nowrap truncate max-w-[90px]">
-                            {fb}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {(!telemetryData?.agents?.agents || telemetryData.agents.agents.length === 0) && (
-                  <div className="text-[10px] text-hud-text-dim tracking-wider text-center py-4">
-                    NO TELEMETRY DATA
-                  </div>
-                )}
-              </div>
-            </div>
+            <ActiveAgentsPanel />
 
-            {/* Recent Completions — from agency context log */}
-            <div className="hud-panel p-4">
-              <div className="flex items-center justify-between mb-4">
-                <div className="hud-panel-header">RECENT COMPLETIONS</div>
-                <span className="text-[10px] text-hud-green font-mono tracking-wider font-bold">
-                  {telemetryData?.completions?.okCount || 0} OK
-                </span>
-              </div>
-              <div className="space-y-0">
-                {(telemetryData?.completions?.items || []).map((item, i) => (
-                  <div key={i} className={`py-2.5 ${i > 0 ? 'border-t border-hud-border/20' : ''}`}>
-                    <div className="flex items-start gap-2">
-                      <span className={`text-[10px] font-mono mt-0.5 ${
-                        item.status === 'ok' ? 'text-hud-green' : 'text-hud-text-dim'
-                      }`}>
-                        {item.status === 'ok' ? '✓' : '◦'}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[10px] text-hud-text tracking-wider uppercase leading-snug">
-                          {item.text}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[8px] text-hud-text-dim tracking-wider uppercase">{item.time}</span>
-                          <span className="text-[8px] text-hud-text-dim tracking-wider uppercase">VIA {item.model}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {(!telemetryData?.completions?.items?.length) && (
-                  <div className="text-[10px] text-hud-text-dim tracking-wider text-center py-4">
-                    NO RECENT ACTIVITY
-                  </div>
-                )}
-              </div>
-            </div>
+            {/* Quiet until a current desk completion feed exists. */}
+            <RecentCompletionsPanel />
 
             {/* Priority Stack — from agency:priorities Redis key */}
             <div className="hud-panel p-4">
@@ -609,7 +455,6 @@ export default function Dashboard({ initialData = {} }) {
                       }`}>
                         {item.status?.toUpperCase()}
                       </span>
-                      <span className="text-[8px] text-hud-text-dim tracking-wider uppercase">{item.model}</span>
                     </div>
                   </div>
                 ))}
