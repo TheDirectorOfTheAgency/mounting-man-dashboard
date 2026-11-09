@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint pages components lib",
     "test": "node --test tests/*.test.js tests/*.test.mjs",
     "test:codex-install-post-relay": "node --test tests/codex-install-post-relay.test.mjs",
     "test:zenbooker-square": "node --test tests/zenbooker-square-mapper.test.mjs tests/zenbooker-square-invoice.test.mjs",
@@ -16,23 +16,23 @@
     "replay:offline-conversions": "node scripts/replay-offline-conversions.mjs"
   },
   "dependencies": {
-    "@google/genai": "^1.44.0",
+    "@google/genai": "^3.0.0",
+    "@tailwindcss/postcss": "^4.3.5",
     "@vercel/kv": "^3.0.0",
-    "autoprefixer": "^10.4.17",
-    "axios": "^1.6.5",
-    "next": "^14.2.3",
-    "nodemailer": "^6.10.1",
-    "postcss": "^8.4.33",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts": "^2.10.3",
-    "sharp": "^0.33.5",
-    "tailwindcss": "^3.4.1"
+    "axios": "^1.21.1",
+    "next": "^16.4.5",
+    "nodemailer": "^10.4.0",
+    "postcss": "^8.5.32",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "recharts": "^3.10.1",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^4.3.5"
   },
   "devDependencies": {
-    "eslint": "^8.57.0",
-    "eslint-config-next": "^14.2.3",
-    "tsx": "^4.21.0",
-    "vercel": "^50.22.0"
+    "eslint": "^10.14.0",
+    "eslint-config-next": "^16.4.5",
+    "tsx": "^4.23.15",
+    "vercel": "^65.12.1"
   }
 }
