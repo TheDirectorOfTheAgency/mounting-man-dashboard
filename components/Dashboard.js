@@ -452,7 +452,7 @@ export default function Dashboard({ initialData = {} }) {
                       : '';
 
                     return (
-                      <div key={i} className="flex gap-2 py-0.5 hover:bg-white/[0.02]">
+                      <div key={i} className="flex gap-2 py-0.5 hover:bg-white/2">
                         <span className="text-hud-text-dim/50 select-none w-[75px] shrink-0">{ts}</span>
                         <span className={`${iconColor} w-3 shrink-0 text-center`}>{sevIcon}</span>
                         <span className={`${labelColor} w-[70px] shrink-0 truncate`}>[{lbl}]</span>

@@ -1,50 +1,134 @@
 /* styles/globals.css */
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;600&family=Orbitron:wght@400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;600&family=Orbitron:wght@400;500;600;700;800;900&display=swap')
+layer(base);
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+@theme {
+  --color-hud-black: #0a0a0a;
+  --color-hud-dark: #0f1114;
+  --color-hud-panel: #131619;
+  --color-hud-green: #c8e632;
+  --color-hud-green-dim: #8fa623;
+  --color-hud-green-glow: #d4f23e;
+  --color-hud-border: #2a2d31;
+  --color-hud-border-light: #3a3d41;
+  --color-hud-text: #8a8d91;
+  --color-hud-text-dim: #4a4d51;
+  --color-hud-red: #e63232;
+  --color-hud-white: #e8eaed;
+
+  --font-mono: Space Mono, monospace;
+  --font-terminal: IBM Plex Mono, monospace;
+
+  --animate-pulse-green: pulse-green 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-data-flow: data-flow 3s linear infinite;
+  --animate-flicker: flicker 4s linear infinite;
+
+  @keyframes pulse-green {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.7;
+    }
+  }
+  @keyframes data-flow {
+    0% {
+      background-position: 0% 0%;
+    }
+    100% {
+      background-position: 100% 0%;
+    }
+  }
+  @keyframes flicker {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    92% {
+      opacity: 1;
+    }
+    93% {
+      opacity: 0.8;
+    }
+    94% {
+      opacity: 1;
+    }
+    96% {
+      opacity: 0.9;
+    }
+    97% {
+      opacity: 1;
+    }
+  }
 }
 
-html {
-  scroll-behavior: smooth;
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
 }
 
-body {
-  background-color: #0a0a0a;
-  color: #e8eaed;
-  font-family: 'IBM Plex Mono', monospace;
-  line-height: 1.4;
-  overflow-x: hidden;
-}
+/*
+  These resets used to lose to utilities on specificity. In v4, unlayered CSS
+  beats layered utilities, so they live in base and padding/margin/color
+  utilities win again.
+*/
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
+  html {
+    scroll-behavior: smooth;
+  }
 
-::-webkit-scrollbar-track {
-  background: #0f1114;
-}
+  body {
+    background-color: #0a0a0a;
+    color: #e8eaed;
+    font-family: 'IBM Plex Mono', monospace;
+    line-height: 1.4;
+    overflow-x: hidden;
+  }
 
-::-webkit-scrollbar-thumb {
-  background: #c8e632;
-  border-radius: 2px;
-}
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #d4f23e;
-}
+  ::-webkit-scrollbar-track {
+    background: #0f1114;
+  }
 
-::selection {
-  background-color: #c8e632;
-  color: #0a0a0a;
+  ::-webkit-scrollbar-thumb {
+    background: #c8e632;
+    border-radius: 2px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #d4f23e;
+  }
+
+  ::selection {
+    background-color: #c8e632;
+    color: #0a0a0a;
+  }
 }
 
 /* HUD Grid Background */
@@ -124,7 +208,7 @@ body {
   width: 50%;
   height: 100%;
   background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
-  animation: data-flow 3s linear infinite;
+  animation: data-bar-sweep 3s linear infinite;
 }
 
 /* Circular gauge styles */
@@ -176,16 +260,7 @@ body {
   100% { transform: translateY(100vh); }
 }
 
-@keyframes data-flow {
+@keyframes data-bar-sweep {
   0% { left: -50%; }
   100% { left: 100%; }
-}
-
-@keyframes flicker {
-  0%, 100% { opacity: 1; }
-  92% { opacity: 1; }
-  93% { opacity: 0.8; }
-  94% { opacity: 1; }
-  96% { opacity: 0.9; }
-  97% { opacity: 1; }
 }
