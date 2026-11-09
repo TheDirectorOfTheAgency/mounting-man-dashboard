@@ -1,0 +1,46 @@
+{
+  "agents": [
+    {
+      "id": "main",
+      "label": "Q // THE BRAIN",
+      "model": "gpt-5.4",
+      "status": "active",
+      "task": "ORCHESTRATION & TRIAGE",
+      "fallbacks": ["claude-sonnet-4.6", "claude-haiku-4.5"]
+    },
+    {
+      "id": "subagent-pool",
+      "label": "Sub-Agent Pool",
+      "model": "claude-sonnet-4.6",
+      "status": "standby",
+      "task": "3 slots available"
+    },
+    {
+      "id": "cc-m4",
+      "label": "CC-M4",
+      "model": "sonnet-4.6",
+      "status": "active",
+      "task": "ChatGPT lane"
+    }
+  ],
+  "contextLog": [
+    {
+      "timestamp": "2026-09-14T20:22:00Z",
+      "agent": "CC-M4",
+      "action": "WALK AWAY V2 TASTE PASS VIA CLAUDE CODE"
+    },
+    {
+      "timestamp": "2026-09-14T18:44:00Z",
+      "agent": "claude-code",
+      "action": "HERMES V0.19.0 FLEET UPGRADE COMPLETE"
+    }
+  ],
+  "consoleLines": [
+    {
+      "ts": "2026-09-14T20:22:00Z",
+      "label": "cc-m4",
+      "level": "ok",
+      "msg": "WALK AWAY V2 TASTE PASS ChatGPT Claude Hermes"
+    }
+  ]
+}
