@@ -1,5 +1,6 @@
 // Receives ZenBooker job.completed webhooks and coordinates paid-job
 // attribution without trusting ZenBooker invoice estimates.
+// job.created and job.updated store the booking-form text checkbox only.
 
 import crypto from 'node:crypto';
 import { uploadOfflineConversion } from '../../../lib/google-ads-conversions.js';
@@ -22,6 +23,10 @@ import {
 } from '../../../lib/attribution-bridge.js';
 import { recordJobSource, revenueOf } from '../../../lib/job-source.js';
 import { createRestatementUploader, restateBookedValue } from '../../../lib/booked-value-restatement.js';
+import {
+  REVIEW_SMS_BOOKING_EVENTS,
+  persistBookingSmsConsent,
+} from '../../../lib/review-sms.js';
 
 let cachedKV;
 async function getDefaultKV() {
@@ -89,6 +94,44 @@ export function createZenbookerWebhookHandler({
     logPayloadConversionSummary(req.body);
 
     const receivedEvent = eventType(req);
+    const normalizedEvent = String(receivedEvent || '').trim().toLowerCase();
+    if (REVIEW_SMS_BOOKING_EVENTS.has(normalizedEvent)) {
+      let consentStore = attributionStore;
+      if (!consentStore) {
+        const activeKV = kvClient === undefined ? await getDefaultKV() : kvClient;
+        if (!activeKV) {
+          logger.error('review_sms_consent_store_unavailable', {});
+          return res.status(200).json({
+            processed: false,
+            retryable: true,
+            errorCode: 'ATTRIBUTION_STORE_UNAVAILABLE',
+          });
+        }
+        consentStore = createAttributionStore(activeKV);
+      }
+      try {
+        const result = await persistBookingSmsConsent({ store: consentStore, payload: req.body });
+        const jobRef = result.jobId ? opaqueRef(result.jobId).slice(0, 12) : null;
+        logger.info('review_sms_consent_recorded', {
+          jobRef,
+          saved: result.saved,
+          reason: result.reason || null,
+        });
+        return res.status(200).json({
+          processed: result.saved,
+          status: result.saved ? 'sms_consent_stored' : 'sms_consent_not_stored',
+          reason: result.reason || null,
+          retryable: false,
+        });
+      } catch (error) {
+        logger.error('review_sms_consent_store_failed', { errorType: error?.name || 'Error' });
+        return res.status(200).json({
+          processed: false,
+          retryable: true,
+          errorCode: 'SMS_CONSENT_STORE_FAILED',
+        });
+      }
+    }
     if (receivedEvent && receivedEvent !== 'job.completed') {
       logger.info('offline_conversion_event_skipped', { eventType: receivedEvent });
       return res.status(200).json({ skipped: true, reason: 'UNSUPPORTED_EVENT' });

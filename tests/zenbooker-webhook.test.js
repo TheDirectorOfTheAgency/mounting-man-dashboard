@@ -268,7 +268,7 @@ test('authentication and event filtering remain enforced', async (t) => {
   assert.equal(unauthorized.statusCode, 401);
 
   const ignored = createResponse();
-  await handler(createRequest(completedPayload(), { headers: { event: 'job.created' } }), ignored);
+  await handler(createRequest(completedPayload(), { headers: { event: 'job.enroute' } }), ignored);
   assert.equal(ignored.body.reason, 'UNSUPPORTED_EVENT');
 });
 

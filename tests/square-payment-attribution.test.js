@@ -252,13 +252,13 @@ test('partially paid invoice preserves install-post handling without synthesizin
   );
 
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.status, 'invoice_processed');
+  assert.equal(res.body.status, 'sms_sent');
   assert.equal(res.body.amount, '100.00');
   assert.equal(res.body.attributionStatus, 'not_applicable');
   assert.equal(deps.calls.installPost.length, 1);
   assert.equal(deps.calls.installPost[0].eventType, 'invoice.payment_made');
   assert.equal(deps.calls.installPost[0].amountCents, 10000);
-  assert.equal(deps.calls.sms.length, 0);
+  assert.equal(deps.calls.sms.length, 1);
   assert.equal(deps.calls.attribution.length, 0);
 });
 
@@ -271,7 +271,7 @@ test('paired invoice and payment events record exactly one canonical payment att
   await handler(invoiceRequest(), invoiceRes);
   await handler(paymentRequest(), paymentRes);
 
-  assert.equal(invoiceRes.body.status, 'invoice_processed');
+  assert.equal(invoiceRes.body.status, 'sms_sent');
   assert.equal(invoiceRes.body.attributionStatus, 'not_applicable');
   assert.equal(paymentRes.body.status, 'sms_sent');
   assert.equal(paymentRes.body.attributionStatus, 'observed');

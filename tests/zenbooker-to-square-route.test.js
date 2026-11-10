@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import {
   applyZenbookerSquareAuditIndexUpdates,
   classifyZenbookerSquareAudit,
@@ -404,4 +405,124 @@ test('webhook authentication blocks before Square or attribution side effects', 
   await handler(request(payload(), { method: 'GET' }), wrongMethod);
   assert.equal(wrongMethod.statusCode, 405);
   assert.equal(sideEffects, 0);
+});
+
+function memoryKv() {
+  const values = new Map();
+  return {
+    values,
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, structuredClone(value));
+      return 'OK';
+    },
+    async get(key) {
+      const value = values.get(key);
+      return value === undefined ? null : structuredClone(value);
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+    async sadd() { return 0; },
+    async smembers() { return []; },
+    async expire() { return 1; },
+  };
+}
+
+const ADS_MEASUREMENT_LABEL = 'I consent to The Mounting Man securely sharing hashed contact information and service outcome data with advertising platforms for measurement';
+
+function consentRoute(store) {
+  return createZenbookerToSquareHandler({
+    findCustomer: async () => ({ id: 'square-customer-1' }),
+    createOrder: async () => ({ order: { id: 'square-order-1' }, error: null }),
+    createInvoice: async () => ({ invoice: { id: 'square-invoice-1', status: 'DRAFT' }, error: null }),
+    readAudit: async () => null,
+    writeAudit: async () => {},
+    operationsNotifier: async () => {},
+    attributionStore: store,
+    saveAttributionMapping: async () => ({ saved: true }),
+  });
+}
+
+test('zenbooker-to-square stores the booking text checkbox without blocking the Square invoice', async (t) => {
+  installSecret(t);
+  const kv = memoryKv();
+  const store = createAttributionStore(kv);
+  const handler = consentRoute(store);
+
+  const granted = createResponse();
+  await handler(request(payload({
+    id: 'job-sms-granted',
+    customer: {
+      email: 'customer@example.com',
+      phone: '6125550123',
+      first_name: 'Test',
+      last_name: 'Customer',
+      accepts_sms: true,
+    },
+  })), granted);
+  assert.equal(granted.statusCode, 200);
+  assert.equal(granted.body.processed, true);
+  assert.equal(granted.body.squareInvoiceId, 'square-invoice-1');
+  assert.deepEqual(await store.getReviewSmsConsent('job-sms-granted'), { smsConsent: 'granted' });
+
+  const denied = createResponse();
+  await handler(request(payload({
+    id: 'job-sms-denied',
+    customer: {
+      email: 'customer@example.com',
+      phone: '6125550123',
+      first_name: 'Test',
+      last_name: 'Customer',
+      accepts_sms: false,
+    },
+  }), { headers: { event: 'job.updated' } }), denied);
+  assert.equal(denied.body.squareInvoiceId, 'square-invoice-1');
+  assert.deepEqual(await store.getReviewSmsConsent('job-sms-denied'), { smsConsent: 'denied' });
+
+  const headerOnly = createResponse();
+  const headerBody = payload({
+    id: 'job-sms-header',
+    customer: {
+      email: 'customer@example.com',
+      phone: '6125550123',
+      first_name: 'Test',
+      last_name: 'Customer',
+      accepts_sms: true,
+    },
+  });
+  delete headerBody.type;
+  await handler(request(headerBody, { headers: { event: 'job.created' } }), headerOnly);
+  assert.deepEqual(await store.getReviewSmsConsent('job-sms-header'), { smsConsent: 'granted' });
+
+  const adsOnly = createResponse();
+  await handler(request(payload({
+    id: 'job-sms-ads',
+    consent: { ad_user_data: 'GRANTED' },
+    job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+  })), adsOnly);
+  assert.equal(adsOnly.body.processed, true);
+  assert.equal(await store.getReviewSmsConsent('job-sms-ads'), null);
+
+  const completed = createResponse();
+  const completedBody = payload({
+    id: 'job-sms-completed',
+    customer: {
+      email: 'customer@example.com',
+      phone: '6125550123',
+      first_name: 'Test',
+      last_name: 'Customer',
+      accepts_sms: true,
+    },
+  });
+  completedBody.type = 'job.completed';
+  await handler(request(completedBody), completed);
+  assert.equal(await store.getReviewSmsConsent('job-sms-completed'), null);
+
+  for (const [key, value] of kv.values.entries()) {
+    if (!key.startsWith('review-sms:consent:')) continue;
+    assert.equal(key.includes('job-sms-'), false);
+    assert.equal(Object.keys(value).join(','), 'smsConsent');
+    assert.equal(value.smsConsent === 'granted' || value.smsConsent === 'denied', true);
+  }
 });
