@@ -8,7 +8,7 @@
 //   4. After 24h install-post dedup, stage the phone-first Upstash queue and
 //      send the operator photo ask (upload link). Woodward is woken only for
 //      confidence holds or an undeliverable photo ask
-//   5. If customer has phone → send review SMS via Twilio
+//   5. If customer has phone → review SMS, only when REVIEW_SMS_ENABLED is exactly true
 //   6. Log routine outcomes. Urgent failures alert Q.
 //
 // Webhook URL:
@@ -32,6 +32,14 @@ import { customerWithMergedInstallAddress } from '../../../lib/install-post-seed
 import { deliverQAlert } from '../../../lib/q-alert.js';
 import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
+import {
+  REVIEW_SMS_PAUSED,
+  attachedReviewSmsBooking,
+  classifyReviewSmsOutcome,
+  sendReviewSms,
+} from '../../../lib/review-sms.js';
+
+export { REVIEW_SMS_PAUSED, sendReviewSms };
 
 export { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 
@@ -41,15 +49,6 @@ export { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 const SQUARE_BASE    = 'https://connect.squareup.com/v2';
 const SQUARE_VER     = '2024-01-18';
 const SQUARE_TOKEN   = process.env.NEXT_PUBLIC_SQUARE_ACCESS_TOKEN;
-
-// Twilio — stored in Vercel env vars (set during deploy)
-const TWILIO_SID     = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_TOKEN   = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_FROM    = process.env.TWILIO_FROM_NUMBER || '+19526496388';
-
-// Google Review link
-export const REVIEW_SMS_PAUSED = 'paused';
-const REVIEW_LINK    = 'https://g.page/r/CVhbFMF9evLaEBE/review';
 
 // Upstash Redis — for follow-up claim only
 const KV_URL   = process.env.KV_REST_API_URL;
@@ -508,9 +507,20 @@ export function createSquarePaymentHandler({
     // texting while the tech is still at the door. The API call chain
     // (Square webhook → Vercel → Square customer fetch → Twilio) adds
     // enough time that the customer has already left.
-    const smsOutcome = await reviewSmsSender({ paymentId, firstName, phone, amount });
-    const smsPaused = smsOutcome === REVIEW_SMS_PAUSED;
-    const smsSent = !smsPaused && Boolean(smsOutcome);
+    // The A2P 10DLC campaign was approved Oct 16, 2026 and is still VERIFIED.
+    // Sending stays off unless REVIEW_SMS_ENABLED is exactly true. The pause
+    // remains until the consent, delivery, and approved-wording checks exist
+    // and someone later enables the flag.
+    const smsOutcome = await reviewSmsSender({
+      paymentId,
+      firstName,
+      phone,
+      amount,
+      booking: attachedReviewSmsBooking({ payment, customer, invoice }),
+    });
+    const reviewSmsStatus = classifyReviewSmsOutcome(smsOutcome);
+    const smsPaused = reviewSmsStatus === 'paused';
+    const smsSent = reviewSmsStatus === 'sent';
 
     if (smsSent) {
       // Twilio accepting the request is not carrier delivery (async failures, e.g. 30034, arrive later).
@@ -519,14 +529,23 @@ export function createSquarePaymentHandler({
 
     logger.info('square_payment_processed', {
       attributionStatus,
-      reviewSmsStatus: smsPaused ? 'paused' : smsSent ? 'sent' : 'failed',
+      reviewSmsStatus,
     });
 
     const elapsed = Date.now() - startTime;
     console.log(`[square-webhook] Done in ${elapsed}ms`);
 
+    const responseStatus = smsPaused
+      ? 'sms_paused'
+      : smsSent
+        ? 'sms_sent'
+        : String(reviewSmsStatus).startsWith('skipped_')
+          ? 'sms_skipped'
+          : 'sms_failed';
+
     return res.status(attributionRetryable ? 503 : 200).json({
-      status: smsPaused ? 'sms_paused' : smsSent ? 'sms_sent' : 'sms_failed',
+      status: responseStatus,
+      reviewSmsStatus,
       paymentId,
       customerId,
       firstName,
@@ -556,57 +575,6 @@ export function createSquarePaymentHandler({
 }
 
 export default createSquarePaymentHandler();
-
-// ============================================================================
-// SMS SENDER
-// ============================================================================
-
-// Review-request SMS is paused until the A2P 10DLC campaign is approved and a consent gate exists.
-// Opt in explicitly with REVIEW_SMS_ENABLED=true. Default: off.
-// Returns true when Twilio accepted the request, REVIEW_SMS_PAUSED when the feature flag is off
-// (an intentional no-op, not a failure), and false for real send failures.
-export async function sendReviewSms(job) {
-  const { firstName, phone, amount, paymentId } = job;
-
-  if (process.env.REVIEW_SMS_ENABLED !== 'true') {
-    console.log(`[twilio-paused] Review SMS disabled (REVIEW_SMS_ENABLED not true) for payment ${paymentId}`);
-    return REVIEW_SMS_PAUSED;
-  }
-
-  if (!TWILIO_SID || !TWILIO_TOKEN) {
-    console.error('[twilio-skip] Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN');
-    console.error(`[twilio-skip] Review SMS not sent for payment ${paymentId}`);
-    return false;
-  }
-
-  const message = `Hey ${firstName}! Marshall here from The Mounting Man. Hope you're loving the new setup! 🎬 If you have 30 seconds, a quick Google review would mean the world → ${REVIEW_LINK}`;
-
-  try {
-    const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`;
-    const auth = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
-
-    await axios.post(
-      twilioUrl,
-      new URLSearchParams({
-        From: TWILIO_FROM,
-        To: phone,
-        Body: message,
-      }).toString(),
-      {
-        headers: {
-          Authorization: `Basic ${auth}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
-    );
-
-    console.log(`[twilio] SMS sent to ${phone} for payment ${paymentId}`);
-    return true;
-  } catch (err) {
-    console.error('[twilio-error]', err.response?.data || err.message);
-    return false;
-  }
-}
 
 // Disable Next.js body parser — required to read raw bytes for Square HMAC signature verification
 export const config = {
