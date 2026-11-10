@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isUrgentAlert } from '../lib/q-alert.js';
+import { deliverQAlert, isUrgentAlert } from '../lib/q-alert.js';
 import {
+  createReviewSmsAlertClaim,
   createTwilioStatusHandler,
   expectedTwilioSignature,
   validateTwilioSignature,
@@ -139,4 +140,147 @@ test('status callback rejects non-POST', async () => {
   const res = createResponse();
   await createTwilioStatusHandler({ authToken: AUTH_TOKEN })({ method: 'GET', headers: {} }, res);
   assert.equal(res.statusCode, 405);
+});
+
+function memoryKv() {
+  const values = new Map();
+  return {
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, value);
+      return 'OK';
+    },
+    async get(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+  };
+}
+
+function alertHandler({ alert, kv = memoryKv() }) {
+  const claim = createReviewSmsAlertClaim({ kv });
+  return {
+    kv,
+    handler: createTwilioStatusHandler({
+      authToken: AUTH_TOKEN,
+      signatureUrl: URL,
+      readRawBody: async (req) => req.body,
+      alert,
+      claimAlert: (key) => claim.claimAlert(key),
+      finalizeAlert: (key) => claim.finalizeAlert(key),
+      releaseAlert: (key) => claim.releaseAlert(key),
+    }),
+  };
+}
+
+const FAILED_CALLBACK = {
+  MessageSid: 'SM_retry',
+  MessageStatus: 'undelivered',
+  ErrorCode: '30034',
+};
+
+test('a returned alert failure stays retryable and success suppresses the duplicate', async () => {
+  const fetches = [];
+  let ok = false;
+  const { handler, kv } = alertHandler({
+    alert: (entry) => deliverQAlert({
+      kind: entry.kind,
+      subject: entry.subject,
+      body: entry.body,
+      env: { Q_ALERT_WEBHOOK_URL: 'https://alerts.example/hook' },
+      fetchImpl: async () => {
+        fetches.push(ok);
+        return { ok, status: ok ? 200 : 503 };
+      },
+    }),
+  });
+
+  const failed = createResponse();
+  await handler(signedRequest(FAILED_CALLBACK), failed);
+  assert.equal(failed.statusCode, 503);
+  assert.equal(failed.body.error, 'alert_failed');
+  assert.equal(failed.body.retryable, true);
+  assert.deepEqual(fetches, [false]);
+  assert.equal(await kv.get('review-sms:alert:SM_retry:undelivered:30034'), null);
+
+  ok = true;
+  const delivered = createResponse();
+  await handler(signedRequest(FAILED_CALLBACK), delivered);
+  assert.equal(delivered.statusCode, 200);
+  assert.deepEqual(fetches, [false, true]);
+  assert.equal(await kv.get('review-sms:alert:SM_retry:undelivered:30034'), 'sent');
+
+  const duplicate = createResponse();
+  await handler(signedRequest(FAILED_CALLBACK), duplicate);
+  assert.equal(duplicate.statusCode, 200);
+  assert.deepEqual(fetches, [false, true]);
+});
+
+test('a thrown alert failure releases the claim so a later success can be suppressed', async () => {
+  let mode = 'throw';
+  let calls = 0;
+  const { handler, kv } = alertHandler({
+    alert: async () => {
+      calls += 1;
+      if (mode === 'throw') throw new Error('delivery down');
+      return { delivered: true };
+    },
+  });
+  const fields = { MessageSid: 'SM_throw', MessageStatus: 'failed', ErrorCode: '30007' };
+  const thrown = createResponse();
+  await handler(signedRequest(fields), thrown);
+  assert.equal(thrown.statusCode, 500);
+  assert.equal(thrown.body.error, 'alert_failed');
+  assert.equal(thrown.body.retryable, true);
+  assert.equal(await kv.get('review-sms:alert:SM_throw:failed:30007'), null);
+
+  mode = 'ok';
+  const delivered = createResponse();
+  await handler(signedRequest(fields), delivered);
+  assert.equal(delivered.statusCode, 200);
+  assert.equal(calls, 2);
+
+  const duplicate = createResponse();
+  await handler(signedRequest(fields), duplicate);
+  assert.equal(duplicate.statusCode, 200);
+  assert.equal(calls, 2);
+  assert.equal(await kv.get('review-sms:alert:SM_throw:failed:30007'), 'sent');
+});
+
+test('an in-flight alert does not acknowledge a concurrent callback as delivered', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const { handler } = alertHandler({
+    alert: async () => {
+      calls += 1;
+      await gate;
+      return { delivered: true };
+    },
+  });
+  const fields = { MessageSid: 'SM_race', MessageStatus: 'undelivered', ErrorCode: '21610' };
+  const first = createResponse();
+  const firstDone = handler(signedRequest(fields), first);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  const second = createResponse();
+  await handler(signedRequest(fields), second);
+  assert.equal(second.statusCode, 503);
+  assert.equal(second.body.error, 'alert_in_progress');
+  assert.equal(calls, 1);
+  release();
+  await firstDone;
+  assert.equal(first.statusCode, 200);
+  const third = createResponse();
+  await handler(signedRequest(fields), third);
+  assert.equal(third.statusCode, 200);
+  assert.equal(calls, 1);
+});
+
+test('a legacy alert claim stays suppressed', async () => {
+  const kv = memoryKv();
+  await kv.set('review-sms:alert:SM_old:failed:21610', '1');
+  const claim = createReviewSmsAlertClaim({ kv });
+  assert.equal(await claim.claimAlert('SM_old:failed:21610'), 'duplicate');
 });

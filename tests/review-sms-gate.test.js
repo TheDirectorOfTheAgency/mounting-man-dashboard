@@ -7,9 +7,12 @@ import {
   REVIEW_SMS_PAUSED,
   REVIEW_SMS_SKIP_ALREADY_ASKED,
   REVIEW_SMS_SKIP_CONSENT_UNKNOWN,
+  REVIEW_SMS_SKIP_DUPLICATE,
   REVIEW_SMS_SKIP_NO_CONSENT,
   REVIEW_SMS_SKIP_TEST_MODE,
   reviewSmsBody,
+  reviewSmsSendLockKey,
+  selectReviewSmsBooking,
   sendReviewSms,
 } from '../lib/review-sms.js';
 import { createSquarePaymentHandler } from '../pages/api/webhooks/square-payment.js';
@@ -653,4 +656,350 @@ test('ad measurement consent on a payment does not replace a missing or stored b
     }), stored);
     assert.equal(stored.body.reviewSmsStatus, REVIEW_SMS_SKIP_NO_CONSENT);
   });
+});
+
+test('stored consent keeps already-asked markers and does not treat ads consent as the checkbox', async () => {
+  const httpClient = { async post() { throw new Error('should not send'); } };
+  const markers = ['alreadyAskedForReview', 'duringJobReviewAsked', 'reviewAskedDuringJob'];
+  await withEnv(enabledEnv(), async () => {
+    for (const marker of markers) {
+      const booking = selectReviewSmsBooking({
+        attached: { [marker]: true },
+        stored: { smsConsent: 'granted' },
+      });
+      assert.equal(booking[marker], true, marker);
+      assert.equal(booking.sms_consent, true, marker);
+      assert.equal(await sendReviewSms({
+        firstName: 'Pat',
+        phone: ALLOWED_PHONE,
+        paymentId: marker,
+        booking,
+      }, { httpClient }), REVIEW_SMS_SKIP_ALREADY_ASKED, marker);
+    }
+
+    const denied = selectReviewSmsBooking({
+      attached: { alreadyAskedForReview: true },
+      stored: { smsConsent: 'denied' },
+    });
+    assert.equal(denied.alreadyAskedForReview, true);
+    assert.equal(denied.sms_consent, false);
+    assert.equal(await sendReviewSms({
+      firstName: 'Pat',
+      phone: ALLOWED_PHONE,
+      paymentId: 'stored-denied',
+      booking: denied,
+    }, { httpClient }), REVIEW_SMS_SKIP_NO_CONSENT);
+
+    const unknown = selectReviewSmsBooking({
+      attached: { alreadyAskedForReview: true },
+      stored: null,
+    });
+    assert.equal(unknown.alreadyAskedForReview, true);
+    assert.equal(Object.hasOwn(unknown, 'sms_consent'), false);
+    assert.equal(await sendReviewSms({
+      firstName: 'Pat',
+      phone: ALLOWED_PHONE,
+      paymentId: 'stored-missing',
+      booking: unknown,
+    }, { httpClient }), REVIEW_SMS_SKIP_CONSENT_UNKNOWN);
+
+    const adsAttached = {
+      alreadyAskedForReview: true,
+      consent: { ad_user_data: 'GRANTED' },
+      job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+    };
+    const adsGranted = selectReviewSmsBooking({
+      attached: adsAttached,
+      stored: { smsConsent: 'granted' },
+    });
+    assert.equal(adsGranted.alreadyAskedForReview, true);
+    assert.equal(adsGranted.sms_consent, true);
+    assert.equal(await sendReviewSms({
+      firstName: 'Pat',
+      phone: ALLOWED_PHONE,
+      paymentId: 'ads-and-asked',
+      booking: adsGranted,
+    }, { httpClient }), REVIEW_SMS_SKIP_ALREADY_ASKED);
+
+    const explicitDenied = selectReviewSmsBooking({
+      attached: { sms_consent: false, alreadyAskedForReview: true },
+      stored: { smsConsent: 'granted' },
+    });
+    assert.equal(explicitDenied.sms_consent, false);
+    assert.equal(explicitDenied.alreadyAskedForReview, true);
+  });
+});
+
+test('the square handler skips already-asked bookings when only stored consent is granted', async () => {
+  const store = createAttributionStore(memoryKv());
+  await store.saveReviewSmsConsent({ jobId: 'job-asked', smsConsent: 'granted' });
+  await store.saveReviewSmsConsent({ jobId: 'job-denied-asked', smsConsent: 'denied' });
+  const markers = ['alreadyAskedForReview', 'duringJobReviewAsked', 'reviewAskedDuringJob'];
+  await withEnv(enabledEnv(), async () => {
+    for (const marker of markers) {
+      const res = createResponse();
+      await createSquarePaymentHandler(handlerDeps({
+        reviewSmsConsentStore: store,
+        loadSquareOrder: async () => ({ metadata: { zenbooker_job_id: 'job-asked' } }),
+        reviewSmsSender: senderThatMustNotPost(),
+      }))(paymentRequest({
+        id: `payment-${marker}`,
+        order_id: `order-${marker}`,
+        booking: {
+          [marker]: true,
+          consent: { ad_user_data: 'GRANTED' },
+          job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+        },
+      }), res);
+      assert.equal(res.body.reviewSmsStatus, REVIEW_SMS_SKIP_ALREADY_ASKED, marker);
+    }
+
+    const denied = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: store,
+      loadSquareOrder: async () => ({ metadata: { zenbooker_job_id: 'job-denied-asked' } }),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({
+      id: 'payment-denied-asked',
+      order_id: 'order-denied-asked',
+      booking: { alreadyAskedForReview: true },
+    }), denied);
+    assert.equal(denied.body.reviewSmsStatus, REVIEW_SMS_SKIP_NO_CONSENT);
+
+    const unknown = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: createAttributionStore(memoryKv()),
+      loadSquareOrder: async () => ({}),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({
+      id: 'payment-unknown-asked',
+      order_id: 'order-unknown-asked',
+      booking: { duringJobReviewAsked: true },
+    }), unknown);
+    assert.equal(unknown.body.reviewSmsStatus, REVIEW_SMS_SKIP_CONSENT_UNKNOWN);
+  });
+});
+
+function atomicClaim() {
+  const held = new Set();
+  const calls = [];
+  let tail = Promise.resolve();
+  return {
+    calls,
+    claim(key) {
+      const run = tail.then(() => {
+        calls.push(key);
+        if (held.has(key)) return 'duplicate';
+        held.add(key);
+        return 'claimed';
+      });
+      tail = run.then(() => {}, () => {});
+      return run;
+    },
+    async release(key) {
+      held.delete(key);
+      return 'released';
+    },
+  };
+}
+
+function sharedPaymentEvent() {
+  return paymentRequest({
+    id: 'pay-shared',
+    order_id: 'order-shared',
+    booking: { sms_consent: true },
+  });
+}
+
+function sharedInvoiceEvent() {
+  return {
+    method: 'POST',
+    headers: {},
+    body: {
+      type: 'invoice.payment_made',
+      data: {
+        object: {
+          invoice: {
+            id: 'inv-shared',
+            order_id: 'order-shared',
+            primary_recipient: { customer_id: 'customer-1' },
+            payment_requests: [
+              { total_completed_amount_money: { amount: 10000, currency: 'USD' } },
+            ],
+            booking: { sms_consent: true },
+          },
+        },
+      },
+    },
+  };
+}
+
+function lockHandler({ sender, follow = atomicClaim(), sms = atomicClaim(), install = [] } = {}) {
+  return {
+    follow,
+    sms,
+    install,
+    handler: createSquarePaymentHandler(handlerDeps({
+      followUpClaim: (key) => follow.claim(key),
+      reviewSmsClaim: (key) => sms.claim(key),
+      reviewSmsClaimRelease: (key) => sms.release(key),
+      operationsNotifier: async () => {},
+      installPostNotifier: async () => { install.push('install'); },
+      reviewSmsSender: sender,
+    })),
+  };
+}
+
+test('review SMS send lock prefers the shared order and keeps a booking id opaque', () => {
+  assert.equal(
+    reviewSmsSendLockKey({
+      orderId: 'order-shared',
+      bookingId: 'job-shared-booking',
+      paymentId: 'pay-shared',
+      invoiceId: 'inv-shared',
+    }),
+    'review-sms:send:order:order-shared',
+  );
+  const bookingKey = reviewSmsSendLockKey({ bookingId: 'job-shared-booking', paymentId: 'unknown' });
+  assert.equal(bookingKey.startsWith('review-sms:send:booking:'), true);
+  assert.equal(bookingKey.includes('job-shared-booking'), false);
+  assert.equal(bookingKey, reviewSmsSendLockKey({ bookingId: 'job-shared-booking' }));
+  assert.equal(
+    reviewSmsSendLockKey({ orderId: 'unknown', paymentId: 'pay-only' }),
+    'review-sms:send:payment:pay-only',
+  );
+});
+
+test('payment.updated and invoice.payment_made send one review SMS per transaction', async () => {
+  for (const order of [['payment', 'invoice'], ['invoice', 'payment']]) {
+    const sent = [];
+    const install = [];
+    const locked = lockHandler({
+      install,
+      sender: async () => {
+        sent.push(order.join('>'));
+        return true;
+      },
+    });
+    const events = { payment: sharedPaymentEvent(), invoice: sharedInvoiceEvent() };
+    const first = createResponse();
+    await locked.handler(events[order[0]], first);
+    const second = createResponse();
+    await locked.handler(events[order[1]], second);
+    assert.equal(sent.length, 1, order.join(' then '));
+    assert.equal(install.length, 2, order.join(' then '));
+    assert.equal(first.body.reviewSmsStatus, 'sent', order.join(' then '));
+    assert.equal(second.body.reviewSmsStatus, REVIEW_SMS_SKIP_DUPLICATE, order.join(' then '));
+    const expectedFollow = order[0] === 'payment'
+      ? ['square:payment:pay-shared', 'square:invoice:inv-shared']
+      : ['square:invoice:inv-shared', 'square:payment:pay-shared'];
+    assert.deepEqual(locked.follow.calls, expectedFollow);
+    assert.deepEqual(locked.sms.calls, [
+      'review-sms:send:order:order-shared',
+      'review-sms:send:order:order-shared',
+    ]);
+  }
+});
+
+test('repeat and concurrent review SMS callbacks still send once', async () => {
+  const repeatSent = [];
+  const repeat = lockHandler({
+    sender: async () => {
+      repeatSent.push('repeat');
+      return true;
+    },
+  });
+  const repeatFirst = createResponse();
+  await repeat.handler(sharedPaymentEvent(), repeatFirst);
+  const repeatSecond = createResponse();
+  await repeat.handler(sharedPaymentEvent(), repeatSecond);
+  assert.equal(repeatSent.length, 1);
+  assert.equal(repeatFirst.body.reviewSmsStatus, 'sent');
+  assert.equal(repeatSecond.body.status, 'duplicate');
+
+  const concurrentSent = [];
+  const concurrent = lockHandler({
+    sender: async () => {
+      concurrentSent.push('concurrent');
+      return true;
+    },
+  });
+  const responses = await Promise.all([sharedPaymentEvent(), sharedInvoiceEvent()].map(async (event) => {
+    const res = createResponse();
+    await concurrent.handler(event, res);
+    return res;
+  }));
+  assert.equal(concurrentSent.length, 1);
+  assert.equal(responses.filter((res) => res.body.reviewSmsStatus === 'sent').length, 1);
+  assert.equal(responses.filter((res) => res.body.reviewSmsStatus === REVIEW_SMS_SKIP_DUPLICATE).length, 1);
+  assert.equal(concurrent.install.length, 2);
+
+  const bookingSent = [];
+  const bookingLock = lockHandler({
+    sender: async () => {
+      bookingSent.push('booking');
+      return true;
+    },
+  });
+  const bookingPayment = paymentRequest({
+    id: 'pay-book',
+    metadata: { zenbooker_job_id: 'job-shared-booking' },
+    booking: { sms_consent: true },
+  });
+  const bookingInvoice = {
+    method: 'POST',
+    headers: {},
+    body: {
+      type: 'invoice.payment_made',
+      data: {
+        object: {
+          invoice: {
+            id: 'inv-book',
+            metadata: { zenbooker_job_id: 'job-shared-booking' },
+            primary_recipient: { customer_id: 'customer-1' },
+            payment_requests: [
+              { total_completed_amount_money: { amount: 10000, currency: 'USD' } },
+            ],
+          },
+        },
+      },
+    },
+  };
+  await bookingLock.handler(bookingPayment, createResponse());
+  await bookingLock.handler(bookingInvoice, createResponse());
+  assert.equal(bookingSent.length, 1);
+  assert.equal(bookingLock.sms.calls[0], bookingLock.sms.calls[1]);
+  assert.equal(bookingLock.sms.calls[0].includes('job-shared-booking'), false);
+});
+
+test('a failed review send keeps the lock and a paused send releases it', async () => {
+  const failedCalls = [];
+  const failed = lockHandler({
+    sender: async () => {
+      failedCalls.push('failed');
+      return false;
+    },
+  });
+  const failedFirst = createResponse();
+  await failed.handler(sharedPaymentEvent(), failedFirst);
+  const failedSecond = createResponse();
+  await failed.handler(sharedInvoiceEvent(), failedSecond);
+  assert.equal(failedCalls.length, 1);
+  assert.equal(failedFirst.body.reviewSmsStatus, 'failed');
+  assert.equal(failedSecond.body.reviewSmsStatus, REVIEW_SMS_SKIP_DUPLICATE);
+
+  const pausedCalls = [];
+  const paused = lockHandler({
+    sender: async () => {
+      pausedCalls.push('paused');
+      return REVIEW_SMS_PAUSED;
+    },
+  });
+  const pausedPayment = createResponse();
+  await paused.handler(sharedPaymentEvent(), pausedPayment);
+  const pausedInvoice = createResponse();
+  await paused.handler(sharedInvoiceEvent(), pausedInvoice);
+  assert.equal(pausedCalls.length, 2);
+  assert.equal(pausedPayment.body.reviewSmsStatus, REVIEW_SMS_PAUSED);
+  assert.equal(pausedInvoice.body.reviewSmsStatus, REVIEW_SMS_PAUSED);
 });

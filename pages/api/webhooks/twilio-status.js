@@ -4,7 +4,7 @@
 
 import { kv } from '@vercel/kv';
 import { deliverQAlert } from '../../../lib/q-alert.js';
-import { createTwilioStatusHandler } from '../../../lib/review-sms.js';
+import { createReviewSmsAlertClaim, createTwilioStatusHandler } from '../../../lib/review-sms.js';
 
 const STATUS_TTL_SECONDS = 60 * 60 * 24 * 30;
 const ALERT_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -32,16 +32,18 @@ async function recordStatus(entry) {
   }
 }
 
-async function claimAlert(key) {
-  if (!kvConfigured()) return true;
-  const result = await kv.set(`review-sms:alert:${key}`, '1', { nx: true, ex: ALERT_TTL_SECONDS });
-  return result === 'OK' || result === true;
-}
+const reviewSmsAlertClaim = createReviewSmsAlertClaim({
+  kv,
+  configured: kvConfigured,
+  sentTtlSeconds: ALERT_TTL_SECONDS,
+});
 
 const handler = createTwilioStatusHandler({
   alert: deliverQAlert,
   record: recordStatus,
-  claimAlert,
+  claimAlert: (key) => reviewSmsAlertClaim.claimAlert(key),
+  finalizeAlert: (key) => reviewSmsAlertClaim.finalizeAlert(key),
+  releaseAlert: (key) => reviewSmsAlertClaim.releaseAlert(key),
 });
 
 export default handler;

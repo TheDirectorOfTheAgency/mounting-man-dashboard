@@ -34,8 +34,12 @@ import { notifyQInstallPost } from '../../../lib/notify-install-post.mjs';
 import { resolveInstallPostSourceRefs } from '../../../lib/square-source-ids.mjs';
 import {
   REVIEW_SMS_PAUSED,
+  REVIEW_SMS_SEND_LOCK_TTL_SECONDS,
+  REVIEW_SMS_SKIP_DUPLICATE,
   attachedReviewSmsBooking,
   classifyReviewSmsOutcome,
+  reviewSmsSendLockKept,
+  reviewSmsSendLockKey,
   selectReviewSmsBooking,
   sendReviewSms,
   zenbookerJobIdFromSquareRecord,
@@ -107,6 +111,21 @@ async function kvClaimFollowUp(key, value, ttl) {
   }
 }
 
+/** Drop a follow-up or review-SMS lock after a non-send. */
+async function kvReleaseFollowUp(key) {
+  if (!KV_URL || !KV_TOKEN || !key) return 'unavailable';
+  try {
+    await axios.get(
+      `${KV_URL}/del/${encodeURIComponent(key)}`,
+      { headers: { Authorization: `Bearer ${KV_TOKEN}` } },
+    );
+    return 'released';
+  } catch (err) {
+    console.error('[kv-release-error]', err.response?.status || err.message);
+    return 'unavailable';
+  }
+}
+
 /** Clean a phone number to E.164 format (+1XXXXXXXXXX) */
 function cleanPhone(raw) {
   if (!raw) return '';
@@ -133,8 +152,11 @@ async function lookupStoredSmsConsent({
   loadSquareOrder,
   logger,
 }) {
-  if (!store || typeof store.getReviewSmsConsent !== 'function') return null;
-  let jobId = zenbookerJobIdFromSquareRecord(payment) || zenbookerJobIdFromSquareRecord(invoice);
+  const directJobId = zenbookerJobIdFromSquareRecord(payment) || zenbookerJobIdFromSquareRecord(invoice);
+  if (!store || typeof store.getReviewSmsConsent !== 'function') {
+    return { record: null, jobId: directJobId };
+  }
+  let jobId = directJobId;
   if (!jobId && typeof loadSquareOrder === 'function') {
     const orderId = String(payment?.order_id || invoice?.order_id || '').trim();
     if (orderId) {
@@ -146,12 +168,12 @@ async function lookupStoredSmsConsent({
       }
     }
   }
-  if (!jobId) return null;
+  if (!jobId) return { record: null, jobId: '' };
   try {
-    return await store.getReviewSmsConsent(jobId);
+    return { record: await store.getReviewSmsConsent(jobId), jobId };
   } catch (error) {
     logger.warn('review_sms_consent_lookup_failed', { errorType: error?.name || 'Error' });
-    return null;
+    return { record: null, jobId };
   }
 }
 
@@ -270,6 +292,8 @@ export function createSquarePaymentHandler({
   attributionCoordinatorFactory = createOfflineConversionCoordinator,
   attributionUploader = uploadOfflineConversion,
   followUpClaim = kvClaimFollowUp,
+  reviewSmsClaim = kvClaimFollowUp,
+  reviewSmsClaimRelease = kvReleaseFollowUp,
   reviewSmsConsentStore,
   loadSquareOrder,
   logger = console,
@@ -554,19 +578,56 @@ export function createSquarePaymentHandler({
       payment,
       invoice,
       store: consentStore,
-      loadSquareOrder: loadSquareOrder || ((orderId) => defaultLoadSquareOrder(orderId, httpClient)),
+      loadSquareOrder: loadSquareOrder || ((id) => defaultLoadSquareOrder(id, httpClient)),
       logger,
     });
-    const smsOutcome = await reviewSmsSender({
-      paymentId,
-      firstName,
-      phone,
-      amount,
-      booking: selectReviewSmsBooking({
-        attached: attachedReviewSmsBooking({ payment, customer, invoice }),
-        stored: storedConsent,
-      }),
+    const booking = selectReviewSmsBooking({
+      attached: attachedReviewSmsBooking({ payment, customer, invoice }),
+      stored: storedConsent.record,
     });
+    // Follow-up keys stay per event (square:payment vs square:invoice).
+    // This lock is the one shared by both events for the same order or booking.
+    const sendLockKey = reviewSmsSendLockKey({
+      orderId,
+      bookingId: storedConsent.jobId,
+      paymentId,
+      invoiceId,
+    });
+    let sendLockStatus = 'unavailable';
+    if (sendLockKey) {
+      try {
+        const claimed = await reviewSmsClaim(
+          sendLockKey,
+          { processed: new Date().toISOString() },
+          REVIEW_SMS_SEND_LOCK_TTL_SECONDS,
+        );
+        sendLockStatus = claimed === 'claimed' || claimed === 'duplicate' ? claimed : 'unavailable';
+      } catch (lockError) {
+        logger.warn('review_sms_send_lock_failed', { errorType: lockError?.name || 'Error' });
+        sendLockStatus = 'unavailable';
+      }
+    }
+    let smsOutcome;
+    if (sendLockStatus === 'duplicate') {
+      smsOutcome = REVIEW_SMS_SKIP_DUPLICATE;
+    } else {
+      smsOutcome = await reviewSmsSender({
+        paymentId,
+        firstName,
+        phone,
+        amount,
+        booking,
+      });
+      if (sendLockStatus === 'claimed' && !reviewSmsSendLockKept(smsOutcome)) {
+        try {
+          await reviewSmsClaimRelease(sendLockKey);
+        } catch (releaseError) {
+          logger.warn('review_sms_send_lock_release_failed', {
+            errorType: releaseError?.name || 'Error',
+          });
+        }
+      }
+    }
     const reviewSmsStatus = classifyReviewSmsOutcome(smsOutcome);
     const smsPaused = reviewSmsStatus === 'paused';
     const smsSent = reviewSmsStatus === 'sent';

@@ -29,6 +29,10 @@ import {
 import { createAttributionStore } from '../../../lib/offline-conversion-store.js';
 import { opaqueRef } from '../../../lib/offline-conversion-eligibility.js';
 import { alertBodyForError, deliverQAlert } from '../../../lib/q-alert.js';
+import {
+  REVIEW_SMS_BOOKING_EVENTS,
+  persistBookingSmsConsent,
+} from '../../../lib/review-sms.js';
 import { timingSafeEqualString } from '../../../lib/mcp-http.mjs';
 import {
   applyAssignment,
@@ -1410,6 +1414,32 @@ export function createZenbookerToSquareHandler({
   uploadEnhancement = createEnhancementUploader(),
   now = () => Date.now(),
 } = {}) {
+  async function persistRouteSmsConsent(req, payload) {
+    const eventName = String(
+      req.headers?.event
+      || req.headers?.['x-zenbooker-event']
+      || payload?.event
+      || payload?.type
+      || payload?.event_type
+      || ''
+    ).trim().toLowerCase();
+    if (!REVIEW_SMS_BOOKING_EVENTS.has(eventName)) return;
+    try {
+      const consentStore = attributionStore === undefined
+        ? await loadAttributionStore()
+        : attributionStore;
+      const result = await persistBookingSmsConsent({ store: consentStore, payload });
+      const jobRef = result.jobId ? opaqueRef(result.jobId).slice(0, 12) : null;
+      console.log('review_sms_consent_recorded', {
+        jobRef,
+        saved: Boolean(result.saved),
+        reason: result.reason || null,
+      });
+    } catch (error) {
+      console.error('review_sms_consent_store_failed', { errorType: error?.name || 'Error' });
+    }
+  }
+
   async function persistRouteMapping(jobId, squareCustomerId) {
     try {
       const activeAttributionStore = attributionStore === undefined
@@ -1445,6 +1475,7 @@ export function createZenbookerToSquareHandler({
 
   const payload = req.body;
   logPayloadConversionSummary(payload);
+  await persistRouteSmsConsent(req, payload);
   try {
     const bridgeStore = attributionStore === undefined
       ? await loadAttributionStore()
