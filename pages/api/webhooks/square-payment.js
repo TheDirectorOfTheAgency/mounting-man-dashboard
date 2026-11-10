@@ -486,6 +486,8 @@ export function createSquarePaymentHandler({
       });
     }
 
+    // Invoice payments return before review SMS. This event has no recorded
+    // ZenBooker text opt-in, so a later flag flip still must not send here.
     if (isInvoiceEvent) {
       const elapsed = Date.now() - startTime;
       console.log(`[square-webhook] Invoice path done in ${elapsed}ms`);
@@ -508,9 +510,10 @@ export function createSquarePaymentHandler({
     // (Square webhook → Vercel → Square customer fetch → Twilio) adds
     // enough time that the customer has already left.
     // The A2P 10DLC campaign was approved Oct 16, 2026 and is still VERIFIED.
-    // Sending stays off unless REVIEW_SMS_ENABLED is exactly true. The pause
-    // remains until the consent, delivery, and approved-wording checks exist
-    // and someone later enables the flag.
+    // Sending stays off unless REVIEW_SMS_ENABLED is exactly true. Card
+    // payments still skip as skipped_consent_unknown unless a ZenBooker text
+    // opt-in is already on the payload. Ad-measurement consent is not that
+    // opt-in. Do not enable the flag here.
     const smsOutcome = await reviewSmsSender({
       paymentId,
       firstName,

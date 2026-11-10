@@ -81,15 +81,24 @@ test('sendReviewSms returns a distinct paused outcome unless the flag is exactly
   assert.equal(posts.length, 0);
 });
 
-test('approved review wording keeps the Google review link, adds STOP, and has no emoji', () => {
+test('approved review wording uses the Nov 9 body, Google review link, STOP line, and no emoji', () => {
   const body = reviewSmsBody('Pat');
+  const expected = `Thank you so much for the business. If you could write a nice review on Google about me at the link here, and upload a photo of the work, that would help out a ton! ${REVIEW_LINK} Reply STOP to opt out.`;
+  assert.equal(body, expected);
+  assert.equal(reviewSmsBody(), expected);
+  assert.equal(body.includes('Thank you so much for the business.'), true);
   assert.equal(
-    body,
-    `Hi Pat, Marshall (The Mounting Man) here. Thanks for choosing us! If you have 30 seconds, we'd appreciate a Google review: ${REVIEW_LINK} Reply STOP to opt out.`,
+    body.includes('If you could write a nice review on Google about me at the link here, and upload a photo of the work, that would help out a ton!'),
+    true,
   );
+  assert.equal(body.includes('https://g.page/themountingman/review?id'), true);
+  assert.equal(body.includes('Reply STOP to opt out.'), true);
+  assert.equal(body.includes('Hi '), false);
+  assert.equal(body.includes('Pat'), false);
   assert.equal(body.includes('🎬'), false);
+  assert.equal(/\p{Extended_Pictographic}/u.test(body), false);
   assert.equal([...body].some((char) => char.codePointAt(0) > 0xffff), false);
-  assert.equal(REVIEW_LINK, 'https://g.page/r/CVhbFMF9evLaEBE/review');
+  assert.equal(REVIEW_LINK, 'https://g.page/themountingman/review?id');
 });
 
 test('test allowlist sends only listed numbers and logs everyone else as skipped_test_mode', async (t) => {
@@ -215,7 +224,9 @@ test('messaging service send posts MessagingServiceSid and StatusCallback, never
   assert.equal(params.get('From'), null);
   assert.equal(params.has('From'), false);
   assert.equal(params.get('To'), ALLOWED_PHONE);
-  assert.equal(params.get('Body'), reviewSmsBody('Pat'));
+  assert.equal(params.get('Body'), reviewSmsBody());
+  assert.equal(params.get('Body').includes('Pat'), false);
+  assert.equal(params.get('Body').includes('Hi '), false);
   assert.equal(
     params.get('StatusCallback'),
     'https://mounting-man-dashboard.vercel.app/api/webhooks/twilio-status',
