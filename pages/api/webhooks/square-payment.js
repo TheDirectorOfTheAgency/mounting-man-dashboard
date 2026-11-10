@@ -36,7 +36,9 @@ import {
   REVIEW_SMS_PAUSED,
   attachedReviewSmsBooking,
   classifyReviewSmsOutcome,
+  selectReviewSmsBooking,
   sendReviewSms,
+  zenbookerJobIdFromSquareRecord,
 } from '../../../lib/review-sms.js';
 
 export { REVIEW_SMS_PAUSED, sendReviewSms };
@@ -113,6 +115,44 @@ function cleanPhone(raw) {
   if (digits.startsWith('1') && digits.length === 11) return '+' + digits;
   if (digits.length === 10) return '+1' + digits;
   return digits.length >= 10 ? '+' + digits : '';
+}
+
+async function defaultLoadSquareOrder(orderId, httpClient) {
+  if (!orderId || !SQUARE_TOKEN) return null;
+  const response = await httpClient.get(
+    `${SQUARE_BASE}/orders/${encodeURIComponent(orderId)}`,
+    { headers: squareHeaders() },
+  );
+  return response?.data?.order || null;
+}
+
+async function lookupStoredSmsConsent({
+  payment,
+  invoice,
+  store,
+  loadSquareOrder,
+  logger,
+}) {
+  if (!store || typeof store.getReviewSmsConsent !== 'function') return null;
+  let jobId = zenbookerJobIdFromSquareRecord(payment) || zenbookerJobIdFromSquareRecord(invoice);
+  if (!jobId && typeof loadSquareOrder === 'function') {
+    const orderId = String(payment?.order_id || invoice?.order_id || '').trim();
+    if (orderId) {
+      try {
+        const order = await loadSquareOrder(orderId);
+        jobId = zenbookerJobIdFromSquareRecord(order);
+      } catch (error) {
+        logger.warn('review_sms_consent_lookup_failed', { errorType: error?.name || 'Error' });
+      }
+    }
+  }
+  if (!jobId) return null;
+  try {
+    return await store.getReviewSmsConsent(jobId);
+  } catch (error) {
+    logger.warn('review_sms_consent_lookup_failed', { errorType: error?.name || 'Error' });
+    return null;
+  }
 }
 
 function sumInvoiceCompletedAmount(invoice) {
@@ -230,6 +270,8 @@ export function createSquarePaymentHandler({
   attributionCoordinatorFactory = createOfflineConversionCoordinator,
   attributionUploader = uploadOfflineConversion,
   followUpClaim = kvClaimFollowUp,
+  reviewSmsConsentStore,
+  loadSquareOrder,
   logger = console,
 } = {}) {
   return async function handler(req, res) {
@@ -486,40 +528,44 @@ export function createSquarePaymentHandler({
       });
     }
 
-    // Invoice payments return before review SMS. This event has no recorded
-    // ZenBooker text opt-in, so a later flag flip still must not send here.
-    if (isInvoiceEvent) {
-      const elapsed = Date.now() - startTime;
-      console.log(`[square-webhook] Invoice path done in ${elapsed}ms`);
-      return res.status(200).json({
-        status: 'invoice_processed',
-        invoiceId,
-        customerId,
-        firstName,
-        lastName,
-        amount,
-        attributionStatus,
-        elapsed,
-      });
-    }
-
     // ---- Send review SMS directly ----
-    // Natural webhook processing latency (~2-5s) provides enough delay.
-    // Original n8n workflow had a 60s wait, but that was just to avoid
-    // texting while the tech is still at the door. The API call chain
-    // (Square webhook → Vercel → Square customer fetch → Twilio) adds
-    // enough time that the customer has already left.
+    // Card and invoice paid events both reach this step. Natural webhook
+    // processing latency (~2-5s) provides enough delay. The original n8n
+    // workflow had a 60s wait so the text did not go out while the tech was
+    // still at the door.
     // The A2P 10DLC campaign was approved Oct 16, 2026 and is still VERIFIED.
-    // Sending stays off unless REVIEW_SMS_ENABLED is exactly true. Card
-    // payments still skip as skipped_consent_unknown unless a ZenBooker text
-    // opt-in is already on the payload. Ad-measurement consent is not that
-    // opt-in. Do not enable the flag here.
+    // Sending stays off unless REVIEW_SMS_ENABLED is exactly true. The
+    // checkbox is the stored ZenBooker record (order metadata
+    // zenbooker_job_id), or a checkbox already on the payload. No stored
+    // record stays skipped_consent_unknown. Ad-measurement consent is not
+    // that checkbox. Do not enable the flag here. Do not backfill.
+    let consentStore = reviewSmsConsentStore;
+    if (consentStore === undefined) {
+      try {
+        consentStore = await attributionStoreLoader();
+      } catch (storeError) {
+        logger.warn('review_sms_consent_lookup_failed', {
+          errorType: storeError?.name || 'Error',
+        });
+        consentStore = null;
+      }
+    }
+    const storedConsent = await lookupStoredSmsConsent({
+      payment,
+      invoice,
+      store: consentStore,
+      loadSquareOrder: loadSquareOrder || ((orderId) => defaultLoadSquareOrder(orderId, httpClient)),
+      logger,
+    });
     const smsOutcome = await reviewSmsSender({
       paymentId,
       firstName,
       phone,
       amount,
-      booking: attachedReviewSmsBooking({ payment, customer, invoice }),
+      booking: selectReviewSmsBooking({
+        attached: attachedReviewSmsBooking({ payment, customer, invoice }),
+        stored: storedConsent,
+      }),
     });
     const reviewSmsStatus = classifyReviewSmsOutcome(smsOutcome);
     const smsPaused = reviewSmsStatus === 'paused';

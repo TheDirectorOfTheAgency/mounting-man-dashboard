@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createAttributionStore } from '../lib/offline-conversion-store.js';
 import {
   REVIEW_LINK,
   REVIEW_SMS_PAUSED,
@@ -12,7 +13,13 @@ import {
   sendReviewSms,
 } from '../lib/review-sms.js';
 import { createSquarePaymentHandler } from '../pages/api/webhooks/square-payment.js';
-import { createResponse } from './webhook-test-helpers.js';
+import { createZenbookerWebhookHandler } from '../pages/api/webhooks/zenbooker.js';
+import {
+  completedPayload,
+  createRequest,
+  createResponse,
+  installTestEnvironment,
+} from './webhook-test-helpers.js';
 
 const SERVICE_SID = 'MG0123456789abcdef0123456789abcdef';
 const ACCOUNT_SID = 'AC_test_sid';
@@ -344,12 +351,51 @@ test('an unticked checkbox on the payment booking skips before any send', async 
   });
 });
 
-test('invoice payments still return before review SMS', async () => {
-  let smsCalls = 0;
-  const res = createResponse();
-  await createSquarePaymentHandler(handlerDeps({
-    reviewSmsSender: async () => { smsCalls += 1; return true; },
-  }))({
+const ADS_MEASUREMENT_LABEL = 'I consent to The Mounting Man securely sharing hashed contact information and service outcome data with advertising platforms for measurement';
+
+function memoryKv() {
+  const values = new Map();
+  return {
+    values,
+    async set(key, value, options = {}) {
+      if (options.nx && values.has(key)) return null;
+      values.set(key, structuredClone(value));
+      return 'OK';
+    },
+    async get(key) {
+      const value = values.get(key);
+      return value === undefined ? null : structuredClone(value);
+    },
+    async del(key) {
+      return values.delete(key) ? 1 : 0;
+    },
+    async sadd() {
+      return 0;
+    },
+    async smembers() {
+      return [];
+    },
+    async expire() {
+      return 1;
+    },
+  };
+}
+
+function bookingRequest(event, data) {
+  return {
+    method: 'POST',
+    query: { secret: 'test-webhook-secret' },
+    headers: { event },
+    body: { event, data },
+  };
+}
+
+function quietZenbookerLogger() {
+  return { info() {}, warn() {}, error() {} };
+}
+
+function invoicePaymentRequest() {
+  return {
     method: 'POST',
     headers: {},
     body: {
@@ -358,6 +404,7 @@ test('invoice payments still return before review SMS', async () => {
         object: {
           invoice: {
             id: 'invoice-1',
+            order_id: 'order-invoice-1',
             primary_recipient: { customer_id: 'customer-1' },
             payment_requests: [
               { total_completed_amount_money: { amount: 32500, currency: 'USD' } },
@@ -366,7 +413,244 @@ test('invoice payments still return before review SMS', async () => {
         },
       },
     },
-  }, res);
-  assert.equal(res.body.status, 'invoice_processed');
-  assert.equal(smsCalls, 0);
+  };
+}
+
+function senderThatMustNotPost() {
+  return (job) => sendReviewSms(job, {
+    httpClient: { async post() { throw new Error('should not send'); } },
+  });
+}
+
+test('booking created and updated store the ZenBooker text checkbox', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  const kv = memoryKv();
+  const store = createAttributionStore(kv);
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: store,
+    logger: quietZenbookerLogger(),
+  });
+
+  const created = createResponse();
+  await handler(bookingRequest('job.created', {
+    id: 'job-created-1',
+    customer: { accepts_sms: true },
+  }), created);
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.body.status, 'sms_consent_stored');
+  assert.deepEqual(await store.getReviewSmsConsent('job-created-1'), { smsConsent: 'granted' });
+
+  const updated = createResponse();
+  await handler(bookingRequest('job.updated', {
+    id: 'job-created-1',
+    customer: { accepts_sms: false },
+  }), updated);
+  assert.equal(updated.body.status, 'sms_consent_stored');
+  assert.deepEqual(await store.getReviewSmsConsent('job-created-1'), { smsConsent: 'denied' });
+
+  const labeled = createResponse();
+  await handler(bookingRequest('job.created', {
+    id: 'job-label-1',
+    job_fields: [{
+      field_name: 'Send me notifications about this appointment via text message',
+      text_value: 'Yes',
+    }],
+  }), labeled);
+  assert.equal(labeled.body.status, 'sms_consent_stored');
+  assert.deepEqual(await store.getReviewSmsConsent('job-label-1'), { smsConsent: 'granted' });
+
+  const entries = [...kv.values.entries()];
+  assert.equal(entries.length, 2);
+  for (const [key, value] of entries) {
+    assert.equal(key.includes('job-created-1'), false);
+    assert.equal(key.includes('job-label-1'), false);
+    assert.equal(Object.keys(value).join(','), 'smsConsent');
+    assert.equal(value.smsConsent === 'granted' || value.smsConsent === 'denied', true);
+  }
+});
+
+test('advertising measurement consent is not stored as the booking SMS checkbox', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  const store = createAttributionStore(memoryKv());
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: store,
+    logger: quietZenbookerLogger(),
+  });
+  const adsOnly = createResponse();
+  await handler(bookingRequest('job.created', {
+    id: 'job-ads-1',
+    consent: { ad_user_data: 'GRANTED' },
+    job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+  }), adsOnly);
+  assert.equal(adsOnly.body.status, 'sms_consent_not_stored');
+  assert.equal(adsOnly.body.reason, 'consent_unknown');
+  assert.equal(await store.getReviewSmsConsent('job-ads-1'), null);
+
+  const unticked = createResponse();
+  await handler(bookingRequest('job.updated', {
+    id: 'job-ads-unticked',
+    customer: { accepts_sms: false },
+    consent: { ad_user_data: 'GRANTED' },
+    job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+  }), unticked);
+  assert.deepEqual(await store.getReviewSmsConsent('job-ads-unticked'), { smsConsent: 'denied' });
+});
+
+test('job.completed keeps the paid-job path when the text checkbox is present', async (t) => {
+  const restoreEnv = installTestEnvironment();
+  t.after(restoreEnv);
+  const store = createAttributionStore(memoryKv());
+  await store.saveJobMapping({ jobId: 'test-job-123', squareCustomerId: 'square-customer-1' });
+  const calls = [];
+  const handler = createZenbookerWebhookHandler({
+    attributionStore: store,
+    coordinator: {
+      async registerJob(value) {
+        calls.push(value);
+        return { status: 'observed' };
+      },
+    },
+    disclosureVersion: '2026-07-10',
+    logger: quietZenbookerLogger(),
+  });
+  const res = createResponse();
+  await handler(createRequest(completedPayload({ accepts_sms: true })), res);
+  assert.equal(res.body.status, 'observed');
+  assert.equal(calls.length, 1);
+  assert.equal(await store.getReviewSmsConsent('test-job-123'), null);
+});
+
+test('square payment lookup uses the stored ZenBooker checkbox', async () => {
+  const store = createAttributionStore(memoryKv());
+  await store.saveReviewSmsConsent({ jobId: 'job-pay-1', smsConsent: 'denied' });
+  await withEnv(enabledEnv({
+    TWILIO_ACCOUNT_SID: undefined,
+    TWILIO_AUTH_TOKEN: undefined,
+    TWILIO_MESSAGING_SERVICE_SID: undefined,
+  }), async () => {
+    const res = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: store,
+      loadSquareOrder: async (orderId) => {
+        assert.equal(orderId, 'order-pay-1');
+        return { metadata: { zenbooker_job_id: 'job-pay-1' } };
+      },
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({ order_id: 'order-pay-1' }), res);
+    assert.equal(res.body.status, 'sms_skipped');
+    assert.equal(res.body.reviewSmsStatus, REVIEW_SMS_SKIP_NO_CONSENT);
+  });
+});
+
+test('a payment with no stored checkbox stays skipped_consent_unknown', async () => {
+  const store = createAttributionStore(memoryKv());
+  await withEnv(enabledEnv({
+    TWILIO_ACCOUNT_SID: undefined,
+    TWILIO_AUTH_TOKEN: undefined,
+    TWILIO_MESSAGING_SERVICE_SID: undefined,
+  }), async () => {
+    const res = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: store,
+      loadSquareOrder: async () => ({ metadata: { zenbooker_job_id: 'job-missing' } }),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({ order_id: 'order-missing' }), res);
+    assert.equal(res.body.status, 'sms_skipped');
+    assert.equal(res.body.reviewSmsStatus, REVIEW_SMS_SKIP_CONSENT_UNKNOWN);
+  });
+});
+
+test('invoice payments reach the review SMS path', async () => {
+  let smsCalls = 0;
+  const seen = [];
+  const res = createResponse();
+  await createSquarePaymentHandler(handlerDeps({
+    reviewSmsSender: async (job) => {
+      smsCalls += 1;
+      seen.push(job);
+      return REVIEW_SMS_PAUSED;
+    },
+  }))(invoicePaymentRequest(), res);
+  assert.equal(smsCalls, 1);
+  assert.equal(seen[0].amount, '325.00');
+  assert.equal(res.body.status, 'sms_paused');
+  assert.equal(res.body.reviewSmsStatus, REVIEW_SMS_PAUSED);
+});
+
+test('an invoice with the flag off pauses and an invoice with no stored checkbox stays unknown', async () => {
+  const paused = createResponse();
+  await withEnv({ REVIEW_SMS_ENABLED: undefined }, async () => {
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(invoicePaymentRequest(), paused);
+  });
+  assert.equal(paused.body.status, 'sms_paused');
+  assert.equal(paused.body.reviewSmsStatus, REVIEW_SMS_PAUSED);
+
+  const unknown = createResponse();
+  await withEnv(enabledEnv({
+    TWILIO_ACCOUNT_SID: undefined,
+    TWILIO_AUTH_TOKEN: undefined,
+    TWILIO_MESSAGING_SERVICE_SID: undefined,
+  }), async () => {
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: createAttributionStore(memoryKv()),
+      loadSquareOrder: async () => ({ id: 'order-invoice-1' }),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(invoicePaymentRequest(), unknown);
+  });
+  assert.equal(unknown.body.status, 'sms_skipped');
+  assert.equal(unknown.body.reviewSmsStatus, REVIEW_SMS_SKIP_CONSENT_UNKNOWN);
+});
+
+test('REVIEW_SMS_ENABLED still pauses a stored checkbox unless it is exactly true', async () => {
+  const store = createAttributionStore(memoryKv());
+  await store.saveReviewSmsConsent({ jobId: 'job-pause', smsConsent: 'granted' });
+  const deps = handlerDeps({
+    reviewSmsConsentStore: store,
+    loadSquareOrder: async () => ({ metadata: { zenbooker_job_id: 'job-pause' } }),
+    reviewSmsSender: senderThatMustNotPost(),
+  });
+  for (const flag of [undefined, 'false', 'TRUE', '1']) {
+    const res = createResponse();
+    await withEnv({ REVIEW_SMS_ENABLED: flag }, async () => {
+      await createSquarePaymentHandler(deps)(paymentRequest({ order_id: 'order-pause' }), res);
+    });
+    assert.equal(res.body.status, 'sms_paused', `flag ${String(flag)}`);
+    assert.equal(res.body.reviewSmsStatus, REVIEW_SMS_PAUSED);
+  }
+});
+
+test('ad measurement consent on a payment does not replace a missing or stored booking checkbox', async () => {
+  const store = createAttributionStore(memoryKv());
+  await store.saveReviewSmsConsent({ jobId: 'job-stored-deny', smsConsent: 'denied' });
+  const adsBooking = {
+    consent: { ad_user_data: 'GRANTED' },
+    job_fields: [{ field_name: ADS_MEASUREMENT_LABEL, text_value: 'yes' }],
+  };
+  await withEnv(enabledEnv({
+    TWILIO_ACCOUNT_SID: undefined,
+    TWILIO_AUTH_TOKEN: undefined,
+    TWILIO_MESSAGING_SERVICE_SID: undefined,
+  }), async () => {
+    const adsOnly = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: createAttributionStore(memoryKv()),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({ booking: adsBooking }), adsOnly);
+    assert.equal(adsOnly.body.reviewSmsStatus, REVIEW_SMS_SKIP_CONSENT_UNKNOWN);
+
+    const stored = createResponse();
+    await createSquarePaymentHandler(handlerDeps({
+      reviewSmsConsentStore: store,
+      loadSquareOrder: async () => ({ metadata: { zenbooker_job_id: 'job-stored-deny' } }),
+      reviewSmsSender: senderThatMustNotPost(),
+    }))(paymentRequest({
+      order_id: 'order-stored-deny',
+      booking: adsBooking,
+    }), stored);
+    assert.equal(stored.body.reviewSmsStatus, REVIEW_SMS_SKIP_NO_CONSENT);
+  });
 });

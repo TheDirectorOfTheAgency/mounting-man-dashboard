@@ -357,3 +357,26 @@ test('unpaid session captures expire after 90 days and keep channel context', as
   assert.equal(sets[0].value.acquisition.channel, 'organic');
   assert.equal(sets[0].value.acquisition.paidEvidence, false);
 });
+
+test('review SMS consent stores only the checkbox state under an opaque booking key', async () => {
+  const kv = createFakeKv();
+  const store = createAttributionStore(kv);
+  const jobId = 'job-consent-1';
+
+  assert.deepEqual(await store.saveReviewSmsConsent({ jobId, smsConsent: 'unknown' }), { saved: false });
+  assert.equal(kv.values.size, 0);
+  assert.deepEqual(
+    await store.saveReviewSmsConsent({ jobId, smsConsent: 'granted' }),
+    { saved: true },
+  );
+  assert.deepEqual(await store.getReviewSmsConsent(jobId), { smsConsent: 'granted' });
+  await store.saveReviewSmsConsent({ jobId, smsConsent: 'denied' });
+  assert.deepEqual(await store.getReviewSmsConsent(jobId), { smsConsent: 'denied' });
+
+  const entries = [...kv.values.entries()];
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0][0].includes(jobId), false);
+  assert.match(entries[0][0], /^review-sms:consent:[a-f0-9]{24}$/);
+  assert.deepEqual(entries[0][1], { smsConsent: 'denied' });
+  assert.equal(await store.getReviewSmsConsent(''), null);
+});
